@@ -29,7 +29,8 @@ interface Contact {
 
 const PAGE_SIZE = 10;
 
-export function ContactListView() {
+export function ContactListView({ user }: { user?: any }) {
+  const labelsKey = user?.org_id ? `sipesa_contact_labels_${user.org_id}` : "sipesa_contact_labels";
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -58,6 +59,7 @@ export function ContactListView() {
   // Form states
   const [formData, setFormData] = useState({ name: "", phone: "", label: "" });
   const [formSaving, setFormSaving] = useState(false);
+  const [deletingBulk, setDeletingBulk] = useState(false);
 
   // Import CSV states
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -67,7 +69,15 @@ export function ContactListView() {
 
   const loadContactLabels = () => {
     try {
-      const labels = JSON.parse(localStorage.getItem("sipesa_contact_labels") || "{}");
+      let labelsStr = localStorage.getItem(labelsKey);
+      if (!labelsStr) {
+        const oldLabels = localStorage.getItem("sipesa_contact_labels");
+        if (oldLabels) {
+          localStorage.setItem(labelsKey, oldLabels);
+          labelsStr = oldLabels;
+        }
+      }
+      const labels = JSON.parse(labelsStr || "{}");
       setContactLabels(labels);
     } catch (e) {
       console.error(e);
@@ -143,7 +153,7 @@ export function ContactListView() {
           delete newLabels[editingContact.phone];
         }
         newLabels[savedPhone] = label;
-        localStorage.setItem("sipesa_contact_labels", JSON.stringify(newLabels));
+        localStorage.setItem(labelsKey, JSON.stringify(newLabels));
         setContactLabels(newLabels);
 
         toast.success(editingContact ? "Kontak berhasil diperbarui" : "Kontak berhasil ditambahkan");
@@ -265,8 +275,24 @@ export function ContactListView() {
 
     try {
       const newLabels = { ...contactLabels };
+      
+      const existingContactsMap = new Map<string, string>(); // normPhone -> id
+      contacts.forEach(c => {
+        const norm = String(c.phone).replace(/\D/g, "");
+        existingContactsMap.set(norm, c.id);
+      });
+
       for (const item of parsedContacts) {
-        const result = await api.createContact({ name: item.name, phone: item.phone });
+        const normPhone = String(item.phone).replace(/\D/g, "");
+        const existingId = existingContactsMap.get(normPhone);
+
+        let result;
+        if (existingId) {
+          result = await api.updateContact(existingId, { name: item.name, phone: item.phone });
+        } else {
+          result = await api.createContact({ name: item.name, phone: item.phone });
+        }
+
         if (result.success) {
           successCount++;
           if (item.label) {
@@ -278,7 +304,7 @@ export function ContactListView() {
         }
       }
 
-      localStorage.setItem("sipesa_contact_labels", JSON.stringify(newLabels));
+      localStorage.setItem(labelsKey, JSON.stringify(newLabels));
       setContactLabels(newLabels);
 
       toast.success(`Berhasil mengimport ${successCount} kontak. Gagal: ${failCount}`);
@@ -291,6 +317,41 @@ export function ContactListView() {
       toast.error("Gagal melakukan import kontak secara massal");
     } finally {
       setImporting(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!confirm(`Apakah Anda yakin ingin menghapus ${selectedContactIds.length} kontak terpilih?`)) return;
+
+    setDeletingBulk(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    try {
+      const newLabels = { ...contactLabels };
+      for (const contactId of selectedContactIds) {
+        const contact = contacts.find((c) => c.id === contactId);
+        const res = await api.deleteContact(contactId);
+        if (res.success) {
+          successCount++;
+          if (contact) {
+            delete newLabels[contact.phone];
+          }
+        } else {
+          failCount++;
+        }
+      }
+
+      localStorage.setItem(labelsKey, JSON.stringify(newLabels));
+      setContactLabels(newLabels);
+      setSelectedContactIds([]);
+      toast.success(`Berhasil menghapus ${successCount} kontak.${failCount > 0 ? ` Gagal: ${failCount}` : ""}`);
+      await loadContacts();
+    } catch (err) {
+      console.error("Error bulk deleting contacts:", err);
+      toast.error("Gagal menghapus kontak terpilih");
+    } finally {
+      setDeletingBulk(false);
     }
   };
 
@@ -448,6 +509,16 @@ export function ContactListView() {
                 className="bg-primary hover:bg-primary/95 text-white text-xs h-8 px-3 rounded-lg"
               >
                 Ganti Label Massal
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={handleBulkDelete}
+                disabled={deletingBulk}
+                className="bg-red-600 hover:bg-red-700 text-white text-xs h-8 px-3 rounded-lg flex items-center gap-1 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{deletingBulk ? "Menghapus..." : "Hapus Terpilih"}</span>
               </Button>
               <Button
                 size="sm"
@@ -852,12 +923,12 @@ export function ContactListView() {
               <div className="flex gap-3 pt-2">
                 <Button
                   onClick={() => {
-                    const savedLabels = JSON.parse(localStorage.getItem("sipesa_contact_labels") || "{}");
+                    const savedLabels = JSON.parse(localStorage.getItem(labelsKey) || "{}");
                     const selectedContacts = contacts.filter(c => selectedContactIds.includes(c.id));
                     selectedContacts.forEach(c => {
                       savedLabels[c.phone] = bulkLabelText.trim();
                     });
-                    localStorage.setItem("sipesa_contact_labels", JSON.stringify(savedLabels));
+                    localStorage.setItem(labelsKey, JSON.stringify(savedLabels));
                     setContactLabels(savedLabels);
                     toast.success(`Berhasil memperbarui label untuk ${selectedContactIds.length} kontak`);
                     setShowBulkLabelModal(false);

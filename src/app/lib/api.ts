@@ -431,6 +431,71 @@ export const api = {
     return ok(res.data);
   },
 
+  async getPaymentSettings(): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/billing/payment-settings`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async getManualRequests(): Promise<AppResult<any[]>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/billing/manual-requests`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data ?? []);
+  },
+
+  async createManualRequest(tokens: number, receiptData: string): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/billing/manual-requests`, {
+      method: "POST",
+      body: JSON.stringify({ tokens, receipt_data: receiptData }),
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async getSuperadminPaymentSettings(): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/superadmin/payment-settings`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async updateSuperadminPaymentSettings(settings: any): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/superadmin/payment-settings`, {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async getSuperadminManualRequests(): Promise<AppResult<any[]>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/superadmin/manual-requests`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data ?? []);
+  },
+
+  async approveManualRequest(id: string): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/superadmin/manual-requests/${id}/approve`, {
+      method: "POST",
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async rejectManualRequest(id: string, notes: string): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/superadmin/manual-requests/${id}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ notes }),
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async getSuperadminOrgStats(orgId: string): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/superadmin/orgs/${orgId}/stats`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
   async getBroadcastHistory(): Promise<AppResult<BroadcastHistoryItem[]>> {
     const res = await apiFetch<any>(`${API_PREFIX}/broadcasts`, { method: "GET" });
     if (isApiFail(res)) return fail(res.error);

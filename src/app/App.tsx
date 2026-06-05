@@ -456,11 +456,12 @@ export default function App() {
           <BroadcastView
             onViewHistory={() => setActiveView("history")}
             onBroadcastSent={loadData}
+            user={user}
           />
         );
 
       case "contacts":
-        return <ContactListView />;
+        return <ContactListView user={user} />;
 
       case "templates":
         return <TemplateManagement />;

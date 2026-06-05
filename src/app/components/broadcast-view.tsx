@@ -40,6 +40,7 @@ interface UploadIssue {
 interface BroadcastViewProps {
   onViewHistory: () => void;
   onBroadcastSent?: () => void;
+  user?: any;
 }
 
 type HeaderType = "none" | "text" | "image" | "video" | "document" | "location";
@@ -476,7 +477,8 @@ function WhatsAppBubblePreview({
   );
 }
 
-export function BroadcastView({ onViewHistory, onBroadcastSent }: BroadcastViewProps) {
+export function BroadcastView({ onViewHistory, onBroadcastSent, user }: BroadcastViewProps) {
+  const labelsKey = user?.org_id ? `sipesa_contact_labels_${user.org_id}` : "sipesa_contact_labels";
   const [selectedNumber, setSelectedNumber] = useState("");
   const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
   const [templates, setTemplates] = useState<LocalTemplate[]>([]);
@@ -710,7 +712,15 @@ export function BroadcastView({ onViewHistory, onBroadcastSent }: BroadcastViewP
         setAllOrgContacts(contactsRes.data);
       }
       try {
-        const labels = JSON.parse(localStorage.getItem("sipesa_contact_labels") || "{}");
+        let labelsStr = localStorage.getItem(labelsKey);
+        if (!labelsStr) {
+          const oldLabels = localStorage.getItem("sipesa_contact_labels");
+          if (oldLabels) {
+            localStorage.setItem(labelsKey, oldLabels);
+            labelsStr = oldLabels;
+          }
+        }
+        const labels = JSON.parse(labelsStr || "{}");
         setContactLabels(labels);
       } catch (e) {
         console.error(e);
@@ -1046,7 +1056,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent }: BroadcastViewP
 
           let savedLabels: Record<string, string> = {};
           try {
-            savedLabels = JSON.parse(localStorage.getItem("sipesa_contact_labels") || "{}");
+            savedLabels = JSON.parse(localStorage.getItem(labelsKey) || "{}");
           } catch (e) {
             console.error(e);
           }
@@ -1078,7 +1088,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent }: BroadcastViewP
             savedLabels[phoneWithPlus] = selectedTemplate.name;
           }
 
-          localStorage.setItem("sipesa_contact_labels", JSON.stringify(savedLabels));
+          localStorage.setItem(labelsKey, JSON.stringify(savedLabels));
         } catch (err) {
           console.error("Failed to automatically save contacts during broadcast:", err);
         }

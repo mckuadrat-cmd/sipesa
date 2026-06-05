@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { Card } from "./ui/card";
+import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -21,6 +22,8 @@ import {
   Mail,
   Loader2,
   Trash2,
+  Eye,
+  Upload,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { toast } from "sonner";
@@ -78,12 +81,33 @@ interface SignupItem {
 }
 
 export function SuperadminDashboardView() {
-  const [activeTab, setActiveTab] = useState<"orgs" | "signups">("orgs");
+  const [activeTab, setActiveTab] = useState<"orgs" | "signups" | "payments" | "settings">("orgs");
   const [orgs, setOrgs] = useState<OrgItem[]>([]);
   const [signups, setSignups] = useState<SignupItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [planFilter, setPlanFilter] = useState("all");
+
+  // Manual payment state variables
+  const [paymentRequests, setPaymentRequests] = useState<any[]>([]);
+  const [loadingRequests, setLoadingRequests] = useState(false);
+  const [bankTransferText, setBankTransferText] = useState("");
+  const [gopayText, setGopayText] = useState("");
+  const [qrisBase64, setQrisBase64] = useState<string | null>(null);
+  const [qrisFileName, setQrisFileName] = useState("");
+  const [submittingSettings, setSubmittingSettings] = useState(false);
+
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [selectedRequest, setSelectedRequest] = useState<any | null>(null);
+  const [rejectNotes, setRejectNotes] = useState("");
+  const [submittingProcess, setSubmittingProcess] = useState(false);
+  const [receiptZoom, setReceiptZoom] = useState<string | null>(null);
+
+  // Org detail stats states
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [selectedDetailOrg, setSelectedDetailOrg] = useState<OrgItem | null>(null);
+  const [orgStats, setOrgStats] = useState<any | null>(null);
+  const [loadingStats, setLoadingStats] = useState(false);
 
   // Modals state
   const [selectedOrg, setSelectedOrg] = useState<OrgItem | null>(null);
@@ -159,7 +183,190 @@ export function SuperadminDashboardView() {
   useEffect(() => {
     loadOrgs();
     loadSignups();
+    loadSuperadminRequests();
+    loadSuperadminSettings();
   }, []);
+
+  const loadSuperadminRequests = async () => {
+    setLoadingRequests(true);
+    try {
+      const res = await api.getSuperadminManualRequests();
+      if (res.success) {
+        setPaymentRequests(res.data);
+      } else {
+        toast.error("Gagal mengambil data pengajuan top-up.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Terjadi kesalahan koneksi saat mengambil pengajuan top-up.");
+    } finally {
+      setLoadingRequests(false);
+    }
+  };
+
+  const loadSuperadminSettings = async () => {
+    try {
+      const res = await api.getSuperadminPaymentSettings();
+      if (res.success && res.data) {
+        setBankTransferText(res.data.bank_transfer || "");
+        setGopayText(res.data.gopay || "");
+        setQrisBase64(res.data.qris_url || null);
+        setQrisFileName(res.data.qris_url ? "QRIS_Barcode.png" : "");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    setSubmittingSettings(true);
+    try {
+      const res = await api.updateSuperadminPaymentSettings({
+        bank_transfer: bankTransferText,
+        gopay: gopayText,
+        qris_url: qrisBase64,
+      });
+      if (res.success) {
+        toast.success("Pengaturan pembayaran manual berhasil disimpan.");
+      } else {
+        const errorMsg = "error" in res ? res.error : "Gagal menyimpan";
+        toast.error("Gagal menyimpan pengaturan: " + errorMsg);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Terjadi kesalahan jaringan.");
+    } finally {
+      setSubmittingSettings(false);
+    }
+  };
+
+  const handleQrisUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Ukuran barcode QRIS maksimal 2MB");
+      return;
+    }
+
+    setQrisFileName(file.name);
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setQrisBase64(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleApproveRequest = async (req: any) => {
+    if (!confirm(`Setujui pengajuan top-up sebesar ${req.amount_tokens} token untuk ${req.org_name}?`)) {
+      return;
+    }
+    setSubmittingProcess(true);
+    try {
+      const res = await api.approveManualRequest(req.id);
+      if (res.success) {
+        toast.success(`Pembayaran disetujui. Saldo token ${req.org_name} bertambah.`);
+        loadSuperadminRequests();
+        loadOrgs(); // refresh org list to show updated token balance
+      } else {
+        const errorMsg = "error" in res ? res.error : "Gagal memproses";
+        toast.error("Gagal menyetujui: " + errorMsg);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Terjadi kesalahan jaringan.");
+    } finally {
+      setSubmittingProcess(false);
+    }
+  };
+
+  const handleRejectRequest = (req: any) => {
+    setSelectedRequest(req);
+    setRejectNotes("");
+    setRejectModalOpen(true);
+  };
+
+  const handleConfirmReject = async () => {
+    if (!selectedRequest) return;
+    setSubmittingProcess(true);
+    try {
+      const res = await api.rejectManualRequest(selectedRequest.id, rejectNotes);
+      if (res.success) {
+        toast.success(`Pembayaran untuk ${selectedRequest.org_name} ditolak.`);
+        setRejectModalOpen(false);
+        setSelectedRequest(null);
+        loadSuperadminRequests();
+      } else {
+        const errorMsg = "error" in res ? res.error : "Gagal memproses";
+        toast.error("Gagal menolak: " + errorMsg);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Terjadi kesalahan jaringan.");
+    } finally {
+      setSubmittingProcess(false);
+    }
+  };
+
+  const handleOpenDetailModal = async (org: OrgItem) => {
+    setSelectedDetailOrg(org);
+    setOrgStats(null);
+    setDetailModalOpen(true);
+    setLoadingStats(true);
+    try {
+      const res = await api.getSuperadminOrgStats(org.id);
+      if (res.success) {
+        setOrgStats(res.data);
+      } else {
+        toast.error("Gagal mengambil statistik instansi.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Terjadi kesalahan jaringan.");
+    } finally {
+      setLoadingStats(false);
+    }
+  };
+
+  const handleUpdateDetailTokens = async () => {
+    if (!selectedDetailOrg) return;
+    if (tokenDelta === 0) {
+      toast.error("Nominal penyesuaian token tidak boleh 0");
+      return;
+    }
+
+    setSubmittingToken(true);
+    try {
+      const res = await api.updateSuperadminOrgTokens(selectedDetailOrg.id, tokenDelta, tokenNote);
+      if (res.success) {
+        toast.success(`Berhasil menyesuaikan token sebesar ${tokenDelta > 0 ? "+" : ""}${tokenDelta} untuk ${selectedDetailOrg.name}`);
+
+        const updatedOrg = {
+          ...selectedDetailOrg,
+          tokensBalance: res.data.tokensBalance ?? (selectedDetailOrg.tokensBalance + tokenDelta),
+        };
+        setSelectedDetailOrg(updatedOrg);
+
+        loadOrgs();
+
+        const statsRes = await api.getSuperadminOrgStats(selectedDetailOrg.id);
+        if (statsRes.success) {
+          setOrgStats(statsRes.data);
+        }
+
+        setTokenDelta(100);
+        setTokenNote("Top-up token manual");
+      } else {
+        const errorMsg = "error" in res ? res.error : "Terjadi kesalahan";
+        toast.error("Gagal update token: " + errorMsg);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Terjadi kesalahan jaringan.");
+    } finally {
+      setSubmittingToken(false);
+    }
+  };
 
   const loadOrgs = async () => {
     setLoading(true);
@@ -364,7 +571,7 @@ export function SuperadminDashboardView() {
     <div className="p-8 max-w-7xl mx-auto space-y-8">
       {/* Title */}
       <div>
-        <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Manajemen Pemilik (Owner Panel)</h1>
+        <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Manajemen User</h1>
         <p className="text-muted-foreground mt-1">Kelola akun-akun sekolah, balance token, konfigurasi nomor Meta, dan pendaftaran baru.</p>
       </div>
 
@@ -435,6 +642,24 @@ export function SuperadminDashboardView() {
         >
           Pendaftaran Baru ({signups.length})
         </button>
+        <button
+          onClick={() => setActiveTab("payments")}
+          className={`px-5 py-3 text-sm font-semibold border-b-2 transition-all ${activeTab === "payments"
+            ? "border-primary text-primary"
+            : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+        >
+          Persetujuan Pembayaran ({paymentRequests.filter((r) => r.status === "pending").length})
+        </button>
+        <button
+          onClick={() => setActiveTab("settings")}
+          className={`px-5 py-3 text-sm font-semibold border-b-2 transition-all ${activeTab === "settings"
+            ? "border-primary text-primary"
+            : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+        >
+          Pengaturan Pembayaran
+        </button>
       </div>
 
       {/* Tab Contents: Orgs List */}
@@ -495,7 +720,12 @@ export function SuperadminDashboardView() {
                       <tr key={org.id} className="hover:bg-slate-50/50 transition-colors">
                         {/* Name / Slug */}
                         <td className="px-5 py-4">
-                          <div className="font-semibold text-slate-800">{org.name}</div>
+                          <button
+                            onClick={() => handleOpenDetailModal(org)}
+                            className="font-semibold text-slate-800 hover:text-primary hover:underline text-left cursor-pointer transition-colors font-medium bg-transparent border-0 p-0"
+                          >
+                            {org.name}
+                          </button>
                           <div className="text-xs text-slate-400 font-mono mt-0.5">/{org.slug}</div>
                         </td>
                         {/* Plan & Status */}
@@ -540,10 +770,13 @@ export function SuperadminDashboardView() {
                         <td className="px-5 py-4">
                           {owner ? (
                             <div>
-                              <div className="font-medium text-slate-800 flex items-center gap-1">
+                              <button
+                                onClick={() => handleOpenDetailModal(org)}
+                                className="font-medium text-slate-800 hover:text-primary hover:underline text-left cursor-pointer transition-colors flex items-center gap-1 bg-transparent border-0 p-0"
+                              >
                                 <User className="w-3.5 h-3.5 text-slate-400" />
                                 <span>{owner.fullName}</span>
-                              </div>
+                              </button>
                               <div className="text-xs text-slate-400 mt-0.5">{owner.email}</div>
                             </div>
                           ) : (
@@ -705,6 +938,214 @@ export function SuperadminDashboardView() {
                 )}
               </tbody>
             </table>
+          </div>
+        </Card>
+      )}
+
+      {/* Tab Contents: Manual Topup Payments Approvals */}
+      {activeTab === "payments" && (
+        <Card className="p-6 space-y-6">
+          <div className="flex justify-between items-center">
+            <h3 className="text-lg font-bold text-slate-800">Persetujuan Pembayaran Top-up Manual</h3>
+            <Button onClick={loadSuperadminRequests} variant="outline" className="h-8 text-xs">
+              Refresh Pengajuan
+            </Button>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-slate-100">
+            <table className="min-w-full divide-y divide-slate-100 text-sm">
+              <thead className="bg-slate-50/70">
+                <tr className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th className="px-5 py-3 text-left">Tanggal</th>
+                  <th className="px-5 py-3 text-left">Nama Instansi</th>
+                  <th className="px-5 py-3 text-left">Jumlah Token</th>
+                  <th className="px-5 py-3 text-left">Nominal Transfer (Referral)</th>
+                  <th className="px-5 py-3 text-left">Diajukan Oleh</th>
+                  <th className="px-5 py-3 text-left">Bukti</th>
+                  <th className="px-5 py-3 text-left">Status</th>
+                  <th className="px-5 py-3 text-right">Aksi</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {paymentRequests.map((req) => (
+                  <tr key={req.id} className="hover:bg-slate-50/50 transition-colors">
+                    <td className="px-5 py-4 font-medium text-slate-600">
+                      {formatDate(req.created_at)}
+                    </td>
+                    <td className="px-5 py-4 font-semibold text-slate-800">
+                      {req.org_name}
+                    </td>
+                    <td className="px-5 py-4 font-bold text-slate-700">
+                      {Number(req.amount_tokens ?? 0).toLocaleString()} token
+                    </td>
+                    <td className="px-5 py-4 font-mono font-bold text-primary">
+                      Rp {Number(req.amount_idr ?? 0).toLocaleString("id-ID")}
+                    </td>
+                    <td className="px-5 py-4 text-slate-600">
+                      {req.created_by_email}
+                    </td>
+                    <td className="px-5 py-4">
+                      {req.receipt_url && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setReceiptZoom(req.receipt_url)}
+                          className="h-8 text-xs font-semibold flex items-center gap-1"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          Lihat Bukti
+                        </Button>
+                      )}
+                    </td>
+                    <td className="px-5 py-4">
+                      <Badge
+                        className={
+                          req.status === "approved"
+                            ? "bg-emerald-500 text-white"
+                            : req.status === "rejected"
+                              ? "bg-rose-500 text-white"
+                              : "bg-amber-500 text-black"
+                        }
+                      >
+                        {req.status === "approved"
+                          ? "Disetujui"
+                          : req.status === "rejected"
+                            ? "Ditolak"
+                            : "Menunggu"}
+                      </Badge>
+                    </td>
+                    <td className="px-5 py-4 text-right">
+                      {req.status === "pending" ? (
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() => handleApproveRequest(req)}
+                            disabled={submittingProcess}
+                            className="h-8 text-xs font-semibold px-3 bg-emerald-600 hover:bg-emerald-700 text-white"
+                          >
+                            Setujui
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRejectRequest(req)}
+                            disabled={submittingProcess}
+                            className="h-8 text-xs font-semibold px-3 text-rose-600 border-rose-200 hover:bg-rose-50"
+                          >
+                            Tolak
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="text-xs text-slate-400">
+                          {req.notes ? (
+                            <span className="truncate max-w-[150px] inline-block" title={req.notes}>
+                              Catatan: {req.notes}
+                            </span>
+                          ) : (
+                            <span>Oleh {req.approved_by}</span>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {paymentRequests.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="px-5 py-10 text-center text-slate-400">
+                      Belum ada pengajuan top-up manual.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* Tab Contents: Manual Payment Settings */}
+      {activeTab === "settings" && (
+        <Card className="p-6 max-w-2xl space-y-6">
+          <div>
+            <h3 className="text-lg font-bold text-slate-800 mb-1">Pengaturan Akun Transfer Pembayaran</h3>
+            <p className="text-xs text-slate-400">Atur bank transfer, nomor gopay, dan QRIS yang akan ditampilkan kepada pengguna di halaman billing.</p>
+          </div>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="bank-transfer" className="text-sm font-semibold text-slate-700">Info Rekening Bank Transfer</Label>
+              <textarea
+                id="bank-transfer"
+                rows={3}
+                placeholder="Contoh:&#10;Bank Mandiri&#10;No Rek: 123-456-7890&#10;a/n PT MCKUADRAT"
+                value={bankTransferText}
+                onChange={(e) => setBankTransferText(e.target.value)}
+                className="w-full text-sm p-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary whitespace-pre-line bg-white"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="gopay" className="text-sm font-semibold text-slate-700">Nomor Gopay / E-Wallet</Label>
+              <Input
+                id="gopay"
+                placeholder="Contoh: 081234567890 (a/n PT MCKUADRAT)"
+                value={gopayText}
+                onChange={(e) => setGopayText(e.target.value)}
+                className="h-10 text-sm"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-sm font-semibold text-slate-700">Barcode QRIS Pembayaran (Gambar)</Label>
+              <div className="flex flex-col gap-3">
+                <label className="border-2 border-dashed border-slate-200 hover:border-primary/50 transition-colors rounded-lg p-6 flex flex-col items-center justify-center cursor-pointer bg-slate-50/50 hover:bg-slate-50 group">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleQrisUpload}
+                    className="hidden"
+                  />
+                  <Upload className="w-8 h-8 text-slate-400 group-hover:text-primary transition-colors mb-2" />
+                  <span className="text-sm font-semibold text-slate-600 group-hover:text-primary transition-colors">
+                    {qrisFileName || "Pilih gambar barcode QRIS"}
+                  </span>
+                  <span className="text-xs text-slate-400 mt-1">Format gambar (PNG, JPG), maks. 2MB</span>
+                </label>
+
+                {qrisBase64 && (
+                  <div className="border rounded-lg p-3 bg-white flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-500">Preview QRIS:</span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setQrisBase64(null);
+                          setQrisFileName("");
+                        }}
+                        className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 h-7 text-xs"
+                      >
+                        Hapus QRIS
+                      </Button>
+                    </div>
+                    <img
+                      src={qrisBase64}
+                      alt="QRIS Preview"
+                      className="max-w-[200px] h-auto object-contain border rounded p-1 mx-auto bg-white"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <Button
+                onClick={handleSaveSettings}
+                disabled={submittingSettings}
+                className="bg-primary hover:bg-primary/90 text-white font-semibold"
+              >
+                {submittingSettings ? "Menyimpan..." : "Simpan Pengaturan"}
+              </Button>
+            </div>
           </div>
         </Card>
       )}
@@ -996,6 +1437,227 @@ export function SuperadminDashboardView() {
                 onChange={(e) => setNumAccessToken(e.target.value)}
                 className="mt-2 text-sm font-mono"
               />
+            </div>
+          </div>
+        )}
+      </AppModal>
+
+      {/* Rejection Notes Modal */}
+      <AppModal
+        open={rejectModalOpen}
+        title="Tolak Pembayaran Top-up"
+        onClose={() => setRejectModalOpen(false)}
+        footer={
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={() => setRejectModalOpen(false)} disabled={submittingProcess}>
+              Batal
+            </Button>
+            <Button
+              onClick={handleConfirmReject}
+              disabled={submittingProcess || !rejectNotes.trim()}
+              className="bg-rose-600 hover:bg-rose-700 text-white font-semibold"
+            >
+              {submittingProcess ? "Menolak..." : "Ya, Tolak Pembayaran"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600">
+            Berikan alasan mengapa pembayaran top-up untuk <span className="font-semibold">{selectedRequest?.org_name}</span> ditolak. Pengguna akan melihat catatan ini di halaman billing mereka.
+          </p>
+          <div>
+            <Label htmlFor="reject-notes" className="text-slate-700">Catatan Penolakan</Label>
+            <textarea
+              id="reject-notes"
+              rows={3}
+              placeholder="Contoh: Bukti transfer tidak valid / tidak terbaca, Nominal transfer kurang dari Rp..."
+              value={rejectNotes}
+              onChange={(e) => setRejectNotes(e.target.value)}
+              className="w-full text-sm mt-2 p-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary bg-white"
+            />
+          </div>
+        </div>
+      </AppModal>
+
+      {/* Zoom Receipt Modal */}
+      <AppModal
+        open={!!receiptZoom}
+        title="Bukti Transfer"
+        onClose={() => setReceiptZoom(null)}
+        footer={
+          <div className="flex justify-end">
+            <Button onClick={() => setReceiptZoom(null)}>Tutup</Button>
+          </div>
+        }
+      >
+        {receiptZoom && (
+          <div className="flex items-center justify-center p-2 bg-slate-900/5 rounded-lg overflow-hidden border">
+            <img
+              src={receiptZoom}
+              alt="Zoom Bukti Transfer"
+              className="max-w-full max-h-[70vh] object-contain rounded"
+            />
+          </div>
+        )}
+      </AppModal>
+
+      {/* Org / User Details & Statistics Modal */}
+      <AppModal
+        open={detailModalOpen && !!selectedDetailOrg}
+        title="Detail & Statistik Instansi"
+        onClose={() => setDetailModalOpen(false)}
+        footer={
+          <div className="flex justify-end">
+            <Button onClick={() => setDetailModalOpen(false)}>Tutup</Button>
+          </div>
+        }
+      >
+        {selectedDetailOrg && (
+          <div className="space-y-6 max-h-[75vh] overflow-y-auto pr-1">
+            {/* Header / Info Instansi */}
+            <div className="border-b pb-4">
+              <div className="flex justify-between items-start">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-800">{selectedDetailOrg.name}</h2>
+                  <p className="text-sm text-slate-400 font-mono mt-0.5">Subdomain: /{selectedDetailOrg.slug}</p>
+                </div>
+                <Badge className={selectedDetailOrg.plan === "pro" ? "bg-purple-500 text-white animate-pulse" : "bg-slate-500 text-white"}>
+                  PLAN: {selectedDetailOrg.plan.toUpperCase()}
+                </Badge>
+              </div>
+
+              {/* Owner details */}
+              {(() => {
+                const owner = selectedDetailOrg.users.find((u) => u.role === "owner") || selectedDetailOrg.users[0];
+                return owner ? (
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs bg-slate-50/50 p-3 rounded-lg border">
+                    <div>
+                      <span className="text-slate-400 block">Pengelola (Owner)</span>
+                      <span className="font-semibold text-slate-700">{owner.fullName}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block">Email Pengelola</span>
+                      <span className="font-semibold text-slate-700">{owner.email}</span>
+                    </div>
+                  </div>
+                ) : null;
+              })()}
+            </div>
+
+            {/* Statistics Section */}
+            <div>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Statistik Penggunaan</h3>
+              {loadingStats ? (
+                <div className="flex items-center justify-center py-6 text-slate-400">
+                  <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                  <span className="text-xs">Memuat data statistik...</span>
+                </div>
+              ) : orgStats ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="bg-slate-50/50 p-3 rounded-lg border text-center">
+                    <span className="text-[10px] text-slate-400 font-semibold uppercase block">Total Broadcast</span>
+                    <span className="text-lg font-bold text-slate-800 mt-1 block">{orgStats.totalBroadcasts}</span>
+                  </div>
+                  <div className="bg-slate-50/50 p-3 rounded-lg border text-center">
+                    <span className="text-[10px] text-slate-400 font-semibold uppercase block">Pesan Terkirim</span>
+                    <span className="text-lg font-bold text-slate-800 mt-1 block">{orgStats.messagesSent}</span>
+                  </div>
+                  <div className="bg-slate-50/50 p-3 rounded-lg border text-center">
+                    <span className="text-[10px] text-slate-400 font-semibold uppercase block">Pesan Masuk</span>
+                    <span className="text-lg font-bold text-slate-800 mt-1 block">{orgStats.messagesReceived}</span>
+                  </div>
+                  <div className="bg-slate-50/50 p-3 rounded-lg border text-center">
+                    <span className="text-[10px] text-slate-400 font-semibold uppercase block">Total Kontak</span>
+                    <span className="text-lg font-bold text-slate-800 mt-1 block">{orgStats.totalContacts}</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-red-500">Gagal memuat statistik</p>
+              )}
+            </div>
+
+            {/* Quick Token Adjuster */}
+            <div className="bg-amber-50/50 border border-amber-200/60 rounded-xl p-4 space-y-3">
+              <div>
+                <h4 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <Coins className="w-4 h-4 text-amber-500" />
+                  Atur & Sesuaikan Saldo Token
+                </h4>
+                <p className="text-[11px] text-slate-400 font-medium">Tambah atau kurangi token untuk instansi ini secara manual.</p>
+              </div>
+
+              <div className="p-3 bg-white border border-amber-100 rounded-lg text-xs flex justify-between items-center mb-2">
+                <span className="text-slate-500 font-medium">Saldo Token Saat Ini:</span>
+                <span className="font-extrabold text-amber-600 text-sm">{selectedDetailOrg.tokensBalance.toLocaleString()} Token</span>
+              </div>
+
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-1">
+                    <Label htmlFor="detail-token-delta" className="text-xs text-slate-500">Jumlah Penyesuaian</Label>
+                    <Input
+                      id="detail-token-delta"
+                      type="number"
+                      placeholder="Misal: 100 atau -50"
+                      value={tokenDelta}
+                      onChange={(e) => setTokenDelta(parseInt(e.target.value) || 0)}
+                      className="h-9 text-xs font-bold mt-1.5"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <Label htmlFor="detail-token-note" className="text-xs text-slate-500">Catatan/Alasan</Label>
+                    <Input
+                      id="detail-token-note"
+                      placeholder="Contoh: Top-up manual via WA / Koreksi sistem"
+                      value={tokenNote}
+                      onChange={(e) => setTokenNote(e.target.value)}
+                      className="h-9 text-xs mt-1.5"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-1">
+                  <Button
+                    size="sm"
+                    onClick={handleUpdateDetailTokens}
+                    disabled={submittingToken || tokenDelta === 0}
+                    className="bg-amber-500 hover:bg-amber-600 text-white font-semibold text-xs h-8 px-4"
+                  >
+                    {submittingToken ? "Memproses..." : "Sesuaikan Saldo Token"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* Recent Transactions & Payments Logs */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Aktivitas Transaksi Terbaru</h4>
+              {loadingStats ? (
+                <div className="text-center py-6 text-slate-400 text-xs">Memuat log transaksi...</div>
+              ) : orgStats?.recentTransactions && orgStats.recentTransactions.length > 0 ? (
+                <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                  {orgStats.recentTransactions.map((tx: any) => (
+                    <div key={tx.id} className="border rounded-lg p-3 text-xs flex justify-between items-center bg-white">
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${tx.type === "usage" ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"
+                            }`}>
+                            {tx.type}
+                          </span>
+                          <span className="font-semibold text-slate-700">{tx.description}</span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 block mt-1">{formatDate(tx.createdAt)}</span>
+                      </div>
+                      <span className={`font-bold ${tx.tokensDelta >= 0 ? "text-green-600" : "text-rose-600"}`}>
+                        {tx.tokensDelta >= 0 ? "+" : ""}{tx.tokensDelta}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs italic text-slate-400 text-center py-4 bg-slate-50 rounded border">Belum ada riwayat transaksi</p>
+              )}
             </div>
           </div>
         )}

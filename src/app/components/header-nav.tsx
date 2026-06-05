@@ -72,12 +72,25 @@ export function HeaderNav({
 
   useEffect(() => {
     const loadAvatar = () => {
-      setAvatar(localStorage.getItem("sipesa_avatar"));
+      if (!user?.id) {
+        setAvatar(null);
+        return;
+      }
+      const avatarKey = `sipesa_avatar_${user.id}`;
+      let avatarVal = localStorage.getItem(avatarKey);
+      if (!avatarVal) {
+        const oldAvatar = localStorage.getItem("sipesa_avatar");
+        if (oldAvatar) {
+          localStorage.setItem(avatarKey, oldAvatar);
+          avatarVal = oldAvatar;
+        }
+      }
+      setAvatar(avatarVal);
     };
     loadAvatar();
     window.addEventListener("sipesa-avatar-updated", loadAvatar);
     return () => window.removeEventListener("sipesa-avatar-updated", loadAvatar);
-  }, []);
+  }, [user?.id]);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -99,16 +112,16 @@ export function HeaderNav({
   const isSuperadmin = user?.email?.toLowerCase() === "mckuadratid@gmail.com";
 
   const navItems = isSuperadmin
-    ? [{ id: "superadmin", label: "Manajemen Akun", icon: LayoutDashboard }]
+    ? [{ id: "superadmin", label: "Manajemen User", icon: LayoutDashboard }]
     : [
-        { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-        { id: "contacts", label: "Daftar Kontak", icon: Users },
-        { id: "templates", label: "Template Pesan", icon: FileText },
-        { id: "broadcast", label: "Broadcast", icon: Send },
-        { id: "inbox", label: "Kotak Masuk", icon: MessageSquare },
-        { id: "history", label: "Riwayat Broadcast", icon: History },
-        { id: "billing", label: "Billing & Token", icon: CreditCard },
-      ];
+      { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { id: "contacts", label: "Daftar Kontak", icon: Users },
+      { id: "templates", label: "Template Pesan", icon: FileText },
+      { id: "broadcast", label: "Broadcast", icon: Send },
+      { id: "inbox", label: "Kotak Masuk", icon: MessageSquare },
+      { id: "history", label: "Riwayat Broadcast", icon: History },
+      { id: "billing", label: "Billing & Token", icon: CreditCard },
+    ];
 
   // Formatting date for notification items
   const formatTimeAgo = (dateStr?: string) => {
@@ -163,11 +176,10 @@ export function HeaderNav({
                   setShowNotifDropdown(false);
                   setShowMailDropdown(false);
                 }}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 relative ${
-                  isActive
-                    ? "bg-slate-100 text-slate-900"
-                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                }`}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 relative ${isActive
+                  ? "bg-slate-100 text-slate-900"
+                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                  }`}
               >
                 <div className="relative">
                   <Icon className={`w-4 h-4 ${isActive ? "text-primary" : "text-slate-400"}`} />
@@ -400,7 +412,7 @@ export function HeaderNav({
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50/50 rounded-lg transition-colors"
                     >
                       <LogOut className="w-4 h-4 text-red-400" />
-                      Keluar (Logout)
+                      Logout
                     </button>
                   )}
                 </div>
