@@ -1,0 +1,127 @@
+# Kebijakan Penggunaan Fitur Broadcast WhatsApp
+
+## Tujuan Penggunaan
+
+Fitur Broadcast WhatsApp disediakan untuk membantu pengguna menyampaikan informasi, pemberitahuan, pengingat, layanan pelanggan, promosi, maupun komunikasi bisnis secara efektif kepada pelanggan yang telah memiliki hubungan sebelumnya dengan pengguna.
+
+Seluruh pengiriman pesan melalui platform ini menggunakan WhatsApp Business Platform (WABA) resmi dan Template Message yang telah mendapatkan persetujuan dari Meta.
+
+---
+
+## Ketentuan Penggunaan
+
+Dengan menggunakan fitur Broadcast WhatsApp, pengguna menyatakan dan menjamin bahwa:
+
+### 1. Penerima Pesan Merupakan Kontak yang Relevan
+
+Pesan hanya dikirim kepada penerima yang:
+
+* Telah menjadi pelanggan, anggota, peserta, atau kontak resmi pengguna.
+* Pernah berinteraksi dengan bisnis atau organisasi pengguna.
+* Telah memberikan nomor WhatsApp kepada pengguna melalui proses yang sah.
+* Memiliki hubungan yang relevan dengan informasi yang dikirimkan.
+
+### 2. Memiliki Persetujuan atau Dasar Komunikasi yang Wajar
+
+Pengguna bertanggung jawab memastikan bahwa penerima:
+
+* Mengetahui bahwa nomor WhatsApp mereka digunakan untuk komunikasi bisnis atau layanan.
+* Tidak keberatan menerima informasi yang berkaitan dengan produk, layanan, kegiatan, atau komunikasi operasional dari pengguna.
+
+### 3. Menggunakan Template Resmi Meta
+
+Seluruh pesan broadcast wajib menggunakan Template Message yang telah disetujui oleh Meta.
+
+Pengguna tidak diperkenankan melakukan modifikasi atau penggunaan template yang bertentangan dengan kebijakan WhatsApp Business Platform.
+
+### 4. Menyampaikan Informasi yang Relevan
+
+Pesan yang dikirim harus:
+
+* Sesuai dengan kebutuhan penerima.
+* Tidak menyesatkan.
+* Tidak mengandung informasi palsu.
+* Tidak mengandung unsur penipuan, manipulasi, atau klaim yang tidak dapat dipertanggungjawabkan.
+
+---
+
+## Larangan Penggunaan
+
+Pengguna dilarang menggunakan layanan untuk:
+
+### 1. Pengiriman Spam
+
+Termasuk namun tidak terbatas pada:
+
+* Pengiriman pesan massal kepada penerima yang tidak dikenal.
+* Pengiriman berulang secara berlebihan.
+* Pengiriman pesan yang tidak relevan dengan penerima.
+
+### 2. Penggunaan Database Tidak Sah
+
+Termasuk:
+
+* Membeli database nomor telepon.
+* Mengambil nomor dari internet tanpa izin.
+* Mengumpulkan nomor melalui scraping atau metode tidak sah lainnya.
+
+### 3. Konten Terlarang
+
+Dilarang mengirimkan pesan yang mengandung:
+
+* Penipuan.
+* Judi.
+* Malware atau tautan berbahaya.
+* Konten ilegal.
+* Ujaran kebencian.
+* Pelanggaran hak cipta.
+* Konten yang melanggar hukum yang berlaku.
+
+### 4. Upaya Mengakali Kebijakan WhatsApp
+
+Termasuk:
+
+* Mengirim template yang tidak sesuai tujuan persetujuannya.
+* Menggunakan bahasa yang menyesatkan untuk meningkatkan respons.
+* Menghindari mekanisme pelaporan atau penghentian langganan penerima.
+
+---
+
+## Hak Penerima Pesan
+
+Setiap penerima berhak untuk:
+
+* Mengabaikan pesan yang diterima.
+* Meminta penghentian komunikasi.
+* Memblokir nomor pengirim.
+* Melaporkan pesan yang dianggap tidak relevan atau mengganggu.
+
+Pengguna wajib menghormati permintaan penghentian komunikasi dari penerima.
+
+---
+
+## Tanggung Jawab Pengguna
+
+Pengguna bertanggung jawab penuh atas:
+
+* Daftar kontak yang digunakan.
+* Isi pesan yang dikirim.
+* Kepatuhan terhadap kebijakan Meta, WhatsApp Business Platform, dan peraturan perundang-undangan yang berlaku.
+
+Platform hanya menyediakan sarana pengiriman pesan dan tidak bertanggung jawab atas pelanggaran yang dilakukan oleh pengguna.
+
+---
+
+## Sanksi
+
+Kami berhak membatasi, menangguhkan, atau menghentikan akses pengguna apabila ditemukan:
+
+* Penggunaan yang melanggar kebijakan ini.
+* Tingkat keluhan atau laporan spam yang tinggi.
+* Aktivitas yang berpotensi merugikan penerima, platform, maupun ekosistem WhatsApp Business.
+
+---
+
+## Penutup
+
+Kami mendorong setiap pengguna untuk menggunakan fitur Broadcast WhatsApp secara bertanggung jawab, profesional, dan berorientasi pada manfaat bagi penerima pesan. Komunikasi yang relevan dan berkualitas akan membantu menjaga reputasi bisnis, meningkatkan kepercayaan pelanggan, serta mendukung keberlangsungan layanan WhatsApp Business Platform.

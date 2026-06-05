@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Card } from "./ui/card";
+import { AppModal } from "./AppModal";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 import { Label } from "./ui/label";
@@ -60,6 +61,9 @@ export function ContactListView({ user }: { user?: any }) {
   const [formData, setFormData] = useState({ name: "", phone: "", label: "" });
   const [formSaving, setFormSaving] = useState(false);
   const [deletingBulk, setDeletingBulk] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [contactToDelete, setContactToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
 
   // Import CSV states
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -162,7 +166,8 @@ export function ContactListView({ user }: { user?: any }) {
         setEditingContact(null);
         await loadContacts();
       } else {
-        toast.error("Gagal menyimpan kontak: " + result.error);
+        const errorMsg = "error" in result ? result.error : "Terjadi kesalahan";
+        toast.error("Gagal menyimpan kontak: " + errorMsg);
       }
     } catch (error) {
       console.error("Error saving contact:", error);
@@ -172,16 +177,23 @@ export function ContactListView({ user }: { user?: any }) {
     }
   };
 
-  const handleDeleteContact = async (contactId: string, name: string) => {
-    if (!confirm(`Apakah Anda yakin ingin menghapus kontak "${name}"?`)) return;
+  const handleDeleteContact = (contactId: string, name: string) => {
+    setContactToDelete({ id: contactId, name });
+    setDeleteConfirmOpen(true);
+  };
 
+  const handleConfirmDeleteSingle = async () => {
+    if (!contactToDelete) return;
     try {
-      const result = await api.deleteContact(contactId);
+      const result = await api.deleteContact(contactToDelete.id);
       if (result.success) {
         toast.success("Kontak berhasil dihapus");
+        setDeleteConfirmOpen(false);
+        setContactToDelete(null);
         await loadContacts();
       } else {
-        toast.error("Gagal menghapus kontak: " + result.error);
+        const errorMsg = "error" in result ? result.error : "Terjadi kesalahan";
+        toast.error("Gagal menghapus kontak: " + errorMsg);
       }
     } catch (err) {
       console.error("Error deleting contact:", err);
@@ -320,9 +332,12 @@ export function ContactListView({ user }: { user?: any }) {
     }
   };
 
-  const handleBulkDelete = async () => {
-    if (!confirm(`Apakah Anda yakin ingin menghapus ${selectedContactIds.length} kontak terpilih?`)) return;
+  const handleBulkDelete = () => {
+    setBulkDeleteConfirmOpen(true);
+  };
 
+  const handleConfirmBulkDelete = async () => {
+    setBulkDeleteConfirmOpen(false);
     setDeletingBulk(true);
     let successCount = 0;
     let failCount = 0;
@@ -414,7 +429,7 @@ export function ContactListView({ user }: { user?: any }) {
   }, [searchQuery]);
 
   return (
-    <div className="p-6 md:p-8 bg-white min-h-screen">
+    <div className="w-full p-6 md:p-8 bg-white min-h-screen">
       
       {/* Header Section */}
       <div className="mb-8 flex items-center justify-between gap-4 flex-wrap">
@@ -951,6 +966,66 @@ export function ContactListView({ user }: { user?: any }) {
           </div>
         </div>
       )}
+
+      {/* Delete Contact Modal */}
+      <AppModal
+        open={deleteConfirmOpen}
+        title="Hapus Kontak"
+        onClose={() => {
+          setDeleteConfirmOpen(false);
+          setContactToDelete(null);
+        }}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteConfirmOpen(false);
+                setContactToDelete(null);
+              }}
+            >
+              Batal
+            </Button>
+            <Button
+              className="bg-red-500 hover:bg-red-600 text-white"
+              onClick={handleConfirmDeleteSingle}
+            >
+              Hapus
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-slate-600">
+          Apakah Anda yakin ingin menghapus kontak <strong className="text-slate-800 font-bold">&ldquo;{contactToDelete?.name}&rdquo;</strong>? Tindakan ini tidak dapat dibatalkan.
+        </p>
+      </AppModal>
+
+      {/* Bulk Delete Contacts Modal */}
+      <AppModal
+        open={bulkDeleteConfirmOpen}
+        title="Hapus Kontak Terpilih"
+        onClose={() => setBulkDeleteConfirmOpen(false)}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setBulkDeleteConfirmOpen(false)}
+            >
+              Batal
+            </Button>
+            <Button
+              className="bg-red-500 hover:bg-red-600 text-white"
+              onClick={handleConfirmBulkDelete}
+            >
+              Hapus
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-slate-600">
+          Apakah Anda yakin ingin menghapus <strong className="text-slate-800 font-bold">{selectedContactIds.length} kontak terpilih</strong>? Tindakan ini tidak dapat dibatalkan.
+        </p>
+      </AppModal>
 
     </div>
   );

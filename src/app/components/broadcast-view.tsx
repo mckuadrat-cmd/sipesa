@@ -1153,7 +1153,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   }
 
   return (
-    <div className="p-8">
+    <div className="w-full p-6 md:p-8 bg-white">
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="mb-2">Kirim Broadcast</h1>
@@ -1437,7 +1437,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                                 className="rounded border-slate-300 text-primary focus:ring-primary w-4 h-4 cursor-pointer"
                               />
                               <span className="flex-1 truncate">{labelName}</span>
-                              <span className="text-[10px] text-slate-400 font-medium px-2 py-0.5 rounded-full bg-slate-100 border">{count} kontak</span>
+                              <span className="text-xs text-slate-400 font-medium px-2 py-0.5 rounded-full bg-slate-100 border">{count} kontak</span>
                             </label>
                           );
                         })}
@@ -1483,10 +1483,10 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                               />
                               <div className="flex-1 min-w-0">
                                 <p className="truncate">{c.name}</p>
-                                 <p className="text-[10px] text-slate-400 font-medium">{c.phone.startsWith("+") ? c.phone : `+${c.phone}`}</p>
+                                 <p className="text-xs text-slate-400 font-medium">{c.phone.startsWith("+") ? c.phone : `+${c.phone}`}</p>
                               </div>
                               {contactLabels[c.phone] && (
-                                <span className="text-[9px] font-bold text-primary bg-primary/10 border border-primary/20 px-1.5 py-0.5 rounded-full">{contactLabels[c.phone]}</span>
+                                <span className="text-xs font-bold text-primary bg-primary/10 border border-primary/20 px-1.5 py-0.5 rounded-full">{contactLabels[c.phone]}</span>
                               )}
                             </label>
                           ))}

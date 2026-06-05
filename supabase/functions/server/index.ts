@@ -1570,6 +1570,93 @@ app.put(`${API_PREFIX}/templates/:id`, requireAuth, async (c) => {
 
     const components = buildTemplateComponentsFromPayload(body);
 
+    if (existing.meta_template_id) {
+      const { data: numberRow, error: numErr } = await supa
+        .from("wa_numbers")
+        .select("*")
+        .eq("org_id", user.org_id)
+        .not("waba_id", "is", null)
+        .not("access_token", "is", null)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (numErr) return c.json(jsonFail(numErr.message), 500);
+      if (!numberRow) return c.json(jsonFail("Belum ada WABA aktif untuk mengedit template di Meta"), 404);
+
+      const wabaId = String(numberRow.waba_id ?? "").trim();
+      const accessToken = String(numberRow.access_token ?? "").trim();
+
+      if (!wabaId) return c.json(jsonFail("WABA ID kosong"), 400);
+      if (!accessToken) return c.json(jsonFail("Access Token kosong"), 400);
+
+      // Format components for Meta
+      const formattedComponents = components.map((comp: any) => {
+        const newComp = { ...comp };
+        newComp.type = String(newComp.type).toUpperCase();
+        
+        if ("example_values" in newComp) {
+          delete newComp.example_values;
+        }
+        
+        if (newComp.type === "BODY") {
+          const bodyText = String(newComp.text || "");
+          const matches = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map(m => Number(m[1]));
+          if (matches.length > 0) {
+            const maxIndex = Math.max(...matches);
+            const bodyTextExamples: string[] = [];
+            const sourceExamples = comp.example_values || comp.examples || {};
+            
+            for (let idx = 1; idx <= maxIndex; idx++) {
+              const val = sourceExamples[idx] || sourceExamples[String(idx)] || `Sample ${idx}`;
+              bodyTextExamples.push(String(val));
+            }
+            
+            newComp.example = {
+              body_text: [bodyTextExamples]
+            };
+          } else {
+            delete newComp.example;
+          }
+        }
+        
+        if (newComp.type === "HEADER" && newComp.example) {
+          const example = { ...newComp.example };
+          const cleanExample: any = {};
+          if (example.header_handle) {
+            cleanExample.header_handle = example.header_handle;
+          } else if (example.header_text) {
+            cleanExample.header_text = example.header_text;
+          }
+          newComp.example = cleanExample;
+        }
+        
+        return newComp;
+      });
+
+      const payload = {
+        components: formattedComponents,
+        category: category.toUpperCase(),
+      };
+
+      const res = await fetch(
+        `https://graph.facebook.com/${graphVersion()}/${existing.meta_template_id}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      const json = await res.json();
+      if (!res.ok) {
+        return c.json(jsonFail(json?.error?.message || "Gagal mengupdate template di Meta"), 400);
+      }
+    }
+
     const { data, error } = await supa
       .from("wa_templates")
       .update({
@@ -1635,6 +1722,37 @@ app.delete(`${API_PREFIX}/templates/:id`, requireAuth, async (c) => {
 
     if (exErr) return c.json(jsonFail(exErr.message), 500);
     if (!existing) return c.json(jsonFail("Template tidak ditemukan"), 404);
+
+    // Try to delete from Meta if we have WABA credentials
+    const { data: numberRow } = await supa
+      .from("wa_numbers")
+      .select("*")
+      .eq("org_id", user.org_id)
+      .not("waba_id", "is", null)
+      .not("access_token", "is", null)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (numberRow) {
+      const wabaId = String(numberRow.waba_id ?? "").trim();
+      const accessToken = String(numberRow.access_token ?? "").trim();
+      if (wabaId && accessToken) {
+        try {
+          const deleteUrl = `https://graph.facebook.com/${graphVersion()}/${wabaId}/message_templates?name=${encodeURIComponent(existing.name)}`;
+          const metaRes = await fetch(deleteUrl, {
+            method: "DELETE",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          });
+          const metaJson = await metaRes.json();
+          console.log("Meta delete template response:", metaJson);
+        } catch (metaErr) {
+          console.error("Failed to delete template from Meta:", metaErr);
+        }
+      }
+    }
 
     const { error } = await supa
       .from("wa_templates")
@@ -2710,7 +2828,32 @@ app.post(`${API_PREFIX}/webhooks/meta`, async (c) => {
       const changes = Array.isArray(entry?.changes) ? entry.changes : [];
 
       for (const change of changes) {
+        const field = String(change?.field ?? "");
         const value = change?.value ?? {};
+
+        if (field === "message_template_status_update") {
+          const event = String(value?.event ?? "").toLowerCase(); // "approved", "rejected", etc.
+          const metaTemplateId = String(value?.message_template_id ?? "");
+          const templateName = String(value?.message_template_name ?? "");
+
+          if (metaTemplateId || templateName) {
+            let query = supa.from("wa_templates").update({
+              status: normalizeTemplateStatus(event),
+              updated_at: nowIso(),
+            });
+
+            if (metaTemplateId) {
+              query = query.eq("meta_template_id", metaTemplateId);
+            } else {
+              query = query.eq("name", templateName);
+            }
+
+            const { data: updated, error: tplUpdErr } = await query.select("*");
+            console.log("Webhook template status update:", { event, metaTemplateId, templateName, updated, tplUpdErr });
+          }
+          continue;
+        }
+
         const metadata = value?.metadata ?? {};
         const phoneNumberId = metadata?.phone_number_id ?? null;
 

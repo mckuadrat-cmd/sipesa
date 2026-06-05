@@ -279,7 +279,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
 
   if (loading) {
     return (
-      <div className="min-h-[calc(100vh-4rem)] p-6 md:p-8 bg-slate-50">
+      <div className="min-h-[calc(100vh-4rem)] p-6 md:p-8 bg-white">
         <div className="mx-auto h-full flex items-center justify-center">
           <div className="text-center">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4" />
@@ -291,7 +291,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
   }
 
   return (
-    <div className="min-h-[calc(100vh-4rem)] p-6 md:p-8 bg-slate-50">
+    <div className="min-h-[calc(100vh-4rem)] w-full p-6 md:p-8 bg-white">
       <div className="mx-auto h-full flex flex-col gap-6">
         <div>
           <h1 className="mb-2">Riwayat Broadcast</h1>
@@ -473,15 +473,15 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
             <table className="w-full">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-4 text-left text-gray-600 text-sm">Date &amp; Time</th>
-                  <th className="px-6 py-4 text-left text-gray-600 text-sm">Template</th>
-                  <th className="px-6 py-4 text-left text-gray-600 text-sm">Sender</th>
-                  <th className="px-6 py-4 text-left text-gray-600 text-sm text-center">Recipients</th>
-                  <th className="px-6 py-4 text-left text-gray-600 text-sm text-center">Sent</th>
-                  <th className="px-6 py-4 text-left text-gray-600 text-sm text-center">Failed</th>
-                  <th className="px-6 py-4 text-left text-gray-600 text-sm">Progress</th>
-                  <th className="px-6 py-4 text-left text-gray-600 text-sm">Status</th>
-                  <th className="px-6 py-4 text-left text-gray-600 text-sm">Detail</th>
+                  <th className="px-3 py-3 text-left text-gray-600 text-xs font-semibold">Date &amp; Time</th>
+                  <th className="px-3 py-3 text-left text-gray-600 text-xs font-semibold">Template</th>
+                  <th className="px-3 py-3 text-left text-gray-600 text-xs font-semibold">Sender</th>
+                  <th className="px-3 py-3 text-center text-gray-600 text-xs font-semibold">Recipients</th>
+                  <th className="px-3 py-3 text-center text-gray-600 text-xs font-semibold">Sent</th>
+                  <th className="px-3 py-3 text-center text-gray-600 text-xs font-semibold">Failed</th>
+                  <th className="px-3 py-3 text-left text-gray-600 text-xs font-semibold">Progress</th>
+                  <th className="px-3 py-3 text-left text-gray-600 text-xs font-semibold">Status</th>
+                  <th className="px-3 py-3 text-right text-gray-600 text-xs font-semibold">Detail</th>
                 </tr>
               </thead>
 
@@ -507,13 +507,13 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
 
                   return (
                     <tr key={log.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 text-gray-600 text-sm">
+                      <td className="px-3 py-3 text-gray-600 text-xs">
                         <div className="font-medium text-slate-800">
                           {date} {time}
                         </div>
                         <div className="mt-1">
                           <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] ${
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs ${
                               whenLabel === "Scheduled"
                                 ? "bg-amber-100 text-amber-800"
                                 : "bg-slate-100 text-slate-700"
@@ -524,7 +524,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                         </div>
                       </td>
 
-                      <td className="px-6 py-4 text-gray-600 text-sm">
+                      <td className="px-3 py-3 text-gray-600 text-xs">
                         <div className="font-medium text-slate-800">
                           {log.templateName || log.title || "-"}
                         </div>
@@ -533,22 +533,22 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                         </div>
                       </td>
 
-                      <td className="px-6 py-4 text-gray-600 text-sm">{log.numberName}</td>
+                      <td className="px-3 py-3 text-gray-600 text-xs">{log.numberName}</td>
 
-                      <td className="px-6 py-4 text-gray-900 text-sm text-center">
+                      <td className="px-3 py-3 text-gray-900 text-xs text-center">
                         {log.totalRecipients.toLocaleString()}
                       </td>
 
-                      <td className="px-6 py-4 text-green-700 text-sm text-center">
+                      <td className="px-3 py-3 text-green-700 text-xs text-center">
                         {log.sent.toLocaleString()}
                       </td>
 
-                      <td className="px-6 py-4 text-red-600 text-sm text-center">
+                      <td className="px-3 py-3 text-red-600 text-xs text-center">
                         {log.failed.toLocaleString()}
                       </td>
 
-                      <td className="px-6 py-4 text-sm">
-                        <div className="min-w-[320px]">
+                      <td className="px-3 py-3 text-xs">
+                        <div className="min-w-[140px]">
                           <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
                             <span>
                               {sent}/{total}
@@ -562,19 +562,19 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                             <div className="h-full flex-1 bg-gray-300/60" />
                           </div>
 
-                          <div className="mt-1 text-[11px] text-slate-500">
+                          <div className="mt-1 text-xs text-slate-500">
                             Pending {pending}
                           </div>
                         </div>
                       </td>
 
-                      <td className="px-6 py-4">{getPhaseBadge(log.status)}</td>
+                      <td className="px-3 py-3">{getPhaseBadge(log.status)}</td>
 
-                      <td className="px-6 py-4">
+                      <td className="px-3 py-3 text-right">
                         <button
                           type="button"
                           onClick={() => onViewDetail(log.id)}
-                          className="text-sm text-[#25D366] hover:text-[#128C7E] underline inline-flex items-center gap-1"
+                          className="text-xs text-[#25D366] hover:text-[#128C7E] underline inline-flex items-center gap-1"
                         >
                           <Eye className="w-4 h-4" />
                           Detail

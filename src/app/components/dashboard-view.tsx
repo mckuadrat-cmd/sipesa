@@ -245,11 +245,11 @@ export function DashboardView({
   }, [broadcastHistory]);
 
   return (
-    <div className="p-6 md:p-8 bg-white min-h-screen">
+    <div className="w-full p-6 md:p-8 bg-white min-h-screen">
       {/* Dashboard Title Header */}
       <div className="mb-6 flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-extrabold text-slate-900 leading-tight">Dashboard</h1>
+          <h1 className="text-2xl font-extrabold text-slate-900 leading-tight">Dashboard</h1>
           <p className="text-sm text-slate-500 mt-1">Kelola WABA Meta untuk sekolah Anda</p>
         </div>
 
@@ -260,7 +260,7 @@ export function DashboardView({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_1.8fr_1.1fr] gap-8">
+      <div className="grid grid-cols-1 xl:grid-cols-[0.9fr_1.8fr_1.3fr] gap-8">
         {/* LEFT COLUMN: Welcome Profile & Illustration */}
         <div className="flex flex-col gap-6">
           {/* Welcome Profile Card */}
@@ -317,11 +317,11 @@ export function DashboardView({
                       className="transition-all duration-500"
                     />
                   </svg>
-                  <span className="absolute text-[11px] font-bold text-slate-700">{Math.round(usagePercent)}%</span>
+                  <span className="absolute text-xs font-bold text-slate-700">{Math.round(usagePercent)}%</span>
                 </div>
                 <div>
                   <p className="text-xs font-bold text-slate-700">Token Ready</p>
-                  <p className="text-[10px] text-slate-400">Sistem Kuota Aman</p>
+                  <p className="text-xs text-slate-400">Sistem Kuota Aman</p>
                 </div>
               </div>
 
@@ -365,7 +365,7 @@ export function DashboardView({
                   </div>
                   <div>
                     <h3 className="text-2xl font-bold text-slate-800 leading-none">{card.value}</h3>
-                    <p className="text-[11px] text-slate-400 mt-1.5 truncate">{card.subtext}</p>
+                    <p className="text-xs text-slate-400 mt-1.5 truncate">{card.subtext}</p>
                   </div>
                 </Card>
               );
@@ -429,7 +429,7 @@ export function DashboardView({
                       const date = new Date(p.label);
                       const labelStr = date.toLocaleDateString("id-ID", { day: "2-digit", month: "2-digit" });
                       return (
-                        <span key={idx} className="text-[10px] font-semibold text-slate-400">
+                        <span key={idx} className="text-xs font-semibold text-slate-400">
                           {labelStr}
                         </span>
                       );
@@ -441,11 +441,11 @@ export function DashboardView({
 
             <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-50 mt-4">
               <div>
-                <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Total Biaya</p>
+                <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Total Biaya</p>
                 <p className="text-base font-bold text-slate-700">Rp {(tokensUsed * 1500).toLocaleString("id-ID")}</p>
               </div>
               <div>
-                <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Rata-rata Harian</p>
+                <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Rata-rata Harian</p>
                 <p className="text-base font-bold text-slate-700">{Math.round(tokensUsed / 7).toLocaleString("id-ID")} token</p>
               </div>
             </div>
@@ -478,7 +478,7 @@ export function DashboardView({
             {/* Days of Week header */}
             <div className="grid grid-cols-7 gap-y-2 text-center mb-2">
               {["M", "S", "S", "R", "K", "J", "S"].map((d, i) => (
-                <span key={i} className="text-[10px] font-bold text-slate-400">
+                <span key={i} className="text-xs font-bold text-slate-400">
                   {d}
                 </span>
               ))}
@@ -524,7 +524,7 @@ export function DashboardView({
               {onViewChange && (
                 <button
                   onClick={() => onViewChange("history")}
-                  className="text-[11px] font-bold text-primary hover:underline"
+                  className="text-xs font-bold text-primary hover:underline"
                 >
                   Lihat Semua
                 </button>
@@ -561,7 +561,7 @@ export function DashboardView({
                           <p className="text-xs font-bold text-slate-700 truncate">
                             {item.title || "Broadcast Pesan"}
                           </p>
-                          <p className="text-[10px] text-slate-400 mt-0.5">
+                          <p className="text-xs text-slate-400 mt-0.5">
                             {dateStr} | {timeStr} • {item.totalRecipients} Kontak
                           </p>
                         </div>
