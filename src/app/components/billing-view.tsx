@@ -203,7 +203,7 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
   };
 
   return (
-    <div className="p-8">
+    <div className="w-full p-6 md:p-8 bg-white">
       <div className="mb-8">
         <h1 className="mb-2">Billing & Token</h1>
         <p className="text-muted-foreground">Kelola saldo token dan riwayat transaksi Anda</p>

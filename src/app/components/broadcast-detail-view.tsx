@@ -186,7 +186,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
   }
 
   return (
-    <div className="min-h-[calc(100vh-4rem)] p-6 md:p-8 bg-slate-50">
+    <div className="min-h-[calc(100vh-4rem)] w-full p-6 md:p-8 bg-white">
       <div className="w-full flex flex-col gap-6">
 
         {/* Header */}

@@ -13,7 +13,9 @@ import { BroadcastDetailView } from "./components/broadcast-detail-view";
 import { LoginView } from "./components/login-view";
 import { ContactListView } from "./components/contact-list-view";
 import { SuperadminDashboardView } from "./components/superadmin-dashboard-view";
+import { RulesView } from "./components/rules-view";
 import { api } from "./lib/api";
+import { toast } from "sonner";
 
 type DashboardStats = {
   totalMessages: number;
@@ -115,6 +117,21 @@ export default function App() {
     };
 
     initializeApp();
+  }, []);
+
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      setIsAuthenticated(false);
+      setUser(null);
+      setSelectedNumber(null);
+      setSelectedBroadcast(null);
+      setActiveView("dashboard");
+      window.location.hash = "";
+      toast.error("Sesi Anda telah berakhir. Silakan masuk kembali.");
+    };
+
+    window.addEventListener("sipesa-unauthorized", handleUnauthorized);
+    return () => window.removeEventListener("sipesa-unauthorized", handleUnauthorized);
   }, []);
 
   useEffect(() => {
@@ -496,8 +513,12 @@ export default function App() {
             }}
           />
         );
-
-
+      case "rules":
+        return (
+          <RulesView
+            onBack={() => setActiveView(user?.email?.toLowerCase() === "mckuadratid@gmail.com" ? "superadmin" : "dashboard")}
+          />
+        );
 
       default:
         return <DashboardView stats={dashboardStats} />;

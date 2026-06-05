@@ -15,6 +15,7 @@ import {
   ChevronDown,
   Building,
   Users,
+  Scale,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import logoFull from "/logo-sipesa.png";
@@ -112,7 +113,10 @@ export function HeaderNav({
   const isSuperadmin = user?.email?.toLowerCase() === "mckuadratid@gmail.com";
 
   const navItems = isSuperadmin
-    ? [{ id: "superadmin", label: "Manajemen User", icon: LayoutDashboard }]
+    ? [
+        { id: "superadmin", label: "Manajemen User", icon: LayoutDashboard },
+        { id: "rules", label: "Peraturan", icon: Scale },
+      ]
     : [
       { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
       { id: "contacts", label: "Daftar Kontak", icon: Users },
@@ -121,6 +125,7 @@ export function HeaderNav({
       { id: "inbox", label: "Kotak Masuk", icon: MessageSquare },
       { id: "history", label: "Riwayat Broadcast", icon: History },
       { id: "billing", label: "Billing & Token", icon: CreditCard },
+      { id: "rules", label: "Peraturan", icon: Scale },
     ];
 
   // Formatting date for notification items
@@ -376,8 +381,8 @@ export function HeaderNav({
                 </div>
 
                 {/* Profile actions */}
-                {!isSuperadmin && (
-                  <div className="mt-1 space-y-0.5">
+                <div className="mt-1 space-y-0.5">
+                  {!isSuperadmin && (
                     <button
                       onClick={() => {
                         onViewChange("settings");
@@ -388,7 +393,20 @@ export function HeaderNav({
                       <Settings className="w-4 h-4 text-slate-400" />
                       Pengaturan Akun
                     </button>
+                  )}
 
+                  <button
+                    onClick={() => {
+                      onViewChange("rules");
+                      setShowProfileDropdown(false);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors"
+                  >
+                    <Scale className="w-4 h-4 text-slate-400" />
+                    Peraturan Penggunaan
+                  </button>
+
+                  {!isSuperadmin && (
                     <button
                       onClick={() => {
                         onViewChange("add-number");
@@ -399,8 +417,8 @@ export function HeaderNav({
                       <Plus className="w-4 h-4 text-slate-400" />
                       Tambah Nomor WA
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
 
                 <div className="mt-1 pt-1 border-t border-slate-50">
                   {onLogout && (

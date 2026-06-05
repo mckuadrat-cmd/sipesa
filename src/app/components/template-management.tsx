@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
+import { AppModal } from "./AppModal";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -144,27 +145,6 @@ function guessVariableExample(text: string, idx: number) {
     ? normalized.slice(Math.max(0, tokenIndex - 60), Math.min(normalized.length, tokenIndex + 60))
     : normalized;
 
-  if (/(ayah|bunda|orang tua|wali|yth|kepada|nama|siswa|peserta)/i.test(area)) {
-    return "Bapak/Ibu Fulan";
-  }
-  if (/(link|tautan|lampiran|dokumen|file|pdf|unduh|download)/i.test(area)) {
-    return "https://app.mckuadrat.com/file/contoh";
-  }
-  if (/(kelas|rombel)/i.test(area)) {
-    return "X-A";
-  }
-  if (/(tanggal|tgl|hari|jadwal)/i.test(area)) {
-    return "7 Maret 2026";
-  }
-  if (/(sekolah|yayasan|instansi)/i.test(area)) {
-    return "Sekolah Pesat Bogor";
-  }
-  if (/(nomor|telepon|kontak|wa|whatsapp)/i.test(area)) {
-    return "087870001999";
-  }
-  if (/(uang|biaya|tagihan|pembayaran|nominal|rp)/i.test(area)) {
-    return "Rp450.000";
-  }
   return `Contoh ${idx}`;
 }
 
@@ -581,6 +561,8 @@ export function TemplateManagement() {
   const [searchQuery, setSearchQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [templateIdToDelete, setTemplateIdToDelete] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     name: "",
@@ -798,8 +780,8 @@ export function TemplateManagement() {
       formData.headerType === "text"
         ? validateHeaderText(formData.headerText)
         : ["image", "video", "document"].includes(formData.headerType) && !formData.mediaSampleHandle
-        ? "File media contoh wajib diunggah sebelum menyimpan."
-        : null;
+          ? "File media contoh wajib diunggah sebelum menyimpan."
+          : null;
     const nextBodyError = validateBody(formData.body);
     const nextFooterError = validateFooterText(formData.footerText);
     const nextButtonError =
@@ -862,17 +844,24 @@ export function TemplateManagement() {
     }
   };
 
-  const handleDelete = async (templateId: string) => {
-    if (!confirm("Apakah Anda yakin ingin menghapus template ini?")) return;
+  const handleDelete = (templateId: string) => {
+    setTemplateIdToDelete(templateId);
+    setDeleteModalOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!templateIdToDelete) return;
 
     try {
-      const result = await api.deleteBroadcastTemplate(templateId);
+      const result = await api.deleteBroadcastTemplate(templateIdToDelete);
       if ("error" in result) {
         toast.error("Gagal menghapus template: " + result.error);
         return;
       }
 
       toast.success("Template berhasil dihapus!");
+      setDeleteModalOpen(false);
+      setTemplateIdToDelete(null);
       await loadTemplates();
     } catch (error) {
       console.error("Error deleting template:", error);
@@ -979,7 +968,7 @@ export function TemplateManagement() {
   const selectedVars = extractVariables(selectedTemplateBody);
 
   return (
-    <div className="p-6 md:p-8 bg-slate-50 h-full flex flex-col overflow-hidden">
+    <div className="w-full p-6 md:p-8 bg-white h-full flex flex-col overflow-hidden">
       <div className="mb-6 flex items-center justify-between gap-3 flex-wrap flex-shrink-0">
         <div>
           <h1 className="mb-2">Template Pesan</h1>
@@ -1006,7 +995,7 @@ export function TemplateManagement() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.25fr_0.75fr] gap-6 flex-1 min-h-0 overflow-hidden">
-        <div className="overflow-hidden rounded-lg shadow-sm bg-white border flex flex-col h-full min-h-0">
+        <div className="overflow-hidden rounded-lg shadow-sm bg-white flex flex-col h-full min-h-0">
           <div className="px-6 py-4 border-b bg-white">
             <div className="flex items-center justify-between gap-4 flex-wrap">
               <div className="flex flex-1 items-center gap-3 min-w-[280px] max-w-xl">
@@ -1093,7 +1082,6 @@ export function TemplateManagement() {
                     <th className="px-5 py-3.5">Bahasa</th>
                     <th className="px-5 py-3.5">Status</th>
                     <th className="px-5 py-3.5 text-center">Pesan Terkirim</th>
-                    <th className="px-5 py-3.5">Last Edit</th>
                     <th className="px-5 py-3.5 text-right">Action</th>
                   </tr>
                 </thead>
@@ -1120,20 +1108,17 @@ export function TemplateManagement() {
                           </Badge>
                         </td>
                         <td className="px-5 py-3 text-sm text-slate-600">
-                          <Badge variant="secondary" className="uppercase text-[10px] font-medium">
+                          <Badge variant="secondary" className="uppercase text-xs font-medium">
                             {template.language}
                           </Badge>
                         </td>
                         <td className="px-5 py-3 text-sm">
-                          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getStatusColor(template.status)}`}>
+                          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${getStatusColor(template.status)}`}>
                             {getStatusLabel(template.status)}
                           </span>
                         </td>
                         <td className="px-5 py-3 text-sm text-slate-700 text-center font-medium">
                           {sentCount.toLocaleString("id-ID")}
-                        </td>
-                        <td className="px-5 py-3 text-sm text-slate-500 whitespace-nowrap">
-                          {formatTemplateDate(template.updatedAt || template.createdAt)}
                         </td>
                         <td className="px-5 py-3 text-sm text-right" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-2">
@@ -1177,7 +1162,7 @@ export function TemplateManagement() {
           )}
         </div>
 
-        <div className="p-6 bg-white rounded-lg shadow-sm border flex flex-col h-full min-h-0 overflow-hidden">
+        <div className="p-6 bg-white rounded-lg shadow-sm flex flex-col h-full min-h-0 overflow-hidden">
           <div className="flex items-center gap-2 mb-4 flex-shrink-0">
             <Eye className="w-4 h-4" />
             <h3>Preview Template</h3>
@@ -1559,6 +1544,38 @@ export function TemplateManagement() {
           </div>
         </div>
       )}
+      {/* Delete Template Confirmation Modal */}
+      <AppModal
+        open={deleteModalOpen}
+        title="Konfirmasi Hapus Template"
+        onClose={() => {
+          setDeleteModalOpen(false);
+          setTemplateIdToDelete(null);
+        }}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteModalOpen(false);
+                setTemplateIdToDelete(null);
+              }}
+            >
+              Batal
+            </Button>
+            <Button
+              className="bg-red-500 hover:bg-red-600 text-white"
+              onClick={handleConfirmDelete}
+            >
+              Hapus
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-slate-600">
+          Apakah Anda yakin ingin menghapus template ini? Tindakan ini tidak dapat dibatalkan.
+        </p>
+      </AppModal>
     </div>
   );
 }

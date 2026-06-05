@@ -102,6 +102,8 @@ export function SuperadminDashboardView() {
   const [rejectNotes, setRejectNotes] = useState("");
   const [submittingProcess, setSubmittingProcess] = useState(false);
   const [receiptZoom, setReceiptZoom] = useState<string | null>(null);
+  const [approveModalOpen, setApproveModalOpen] = useState(false);
+  const [requestToApprove, setRequestToApprove] = useState<any | null>(null);
 
   // Org detail stats states
   const [detailModalOpen, setDetailModalOpen] = useState(false);
@@ -257,15 +259,20 @@ export function SuperadminDashboardView() {
     reader.readAsDataURL(file);
   };
 
-  const handleApproveRequest = async (req: any) => {
-    if (!confirm(`Setujui pengajuan top-up sebesar ${req.amount_tokens} token untuk ${req.org_name}?`)) {
-      return;
-    }
+  const handleApproveRequest = (req: any) => {
+    setRequestToApprove(req);
+    setApproveModalOpen(true);
+  };
+
+  const handleConfirmApprove = async () => {
+    if (!requestToApprove) return;
     setSubmittingProcess(true);
     try {
-      const res = await api.approveManualRequest(req.id);
+      const res = await api.approveManualRequest(requestToApprove.id);
       if (res.success) {
-        toast.success(`Pembayaran disetujui. Saldo token ${req.org_name} bertambah.`);
+        toast.success(`Pembayaran disetujui. Saldo token ${requestToApprove.org_name} bertambah.`);
+        setApproveModalOpen(false);
+        setRequestToApprove(null);
         loadSuperadminRequests();
         loadOrgs(); // refresh org list to show updated token balance
       } else {
@@ -1661,6 +1668,47 @@ export function SuperadminDashboardView() {
             </div>
           </div>
         )}
+      </AppModal>
+
+      {/* Approve Request Confirmation Modal */}
+      <AppModal
+        open={approveModalOpen}
+        title="Konfirmasi Persetujuan Top-Up"
+        onClose={() => {
+          if (submittingProcess) return;
+          setApproveModalOpen(false);
+          setRequestToApprove(null);
+        }}
+        closeDisabled={submittingProcess}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              disabled={submittingProcess}
+              onClick={() => {
+                setApproveModalOpen(false);
+                setRequestToApprove(null);
+              }}
+            >
+              Batal
+            </Button>
+            <Button
+              className="bg-primary hover:bg-primary/95 text-white"
+              disabled={submittingProcess}
+              onClick={handleConfirmApprove}
+            >
+              {submittingProcess ? "Memproses..." : "Setujui"}
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-slate-600">
+          Apakah Anda yakin ingin menyetujui pengajuan top-up sebesar{" "}
+          <strong className="text-slate-800 font-bold">
+            {requestToApprove?.amount_tokens?.toLocaleString("id-ID")} token
+          </strong>{" "}
+          untuk <strong className="text-slate-800 font-bold">{requestToApprove?.org_name}</strong>?
+        </p>
       </AppModal>
     </div>
   );

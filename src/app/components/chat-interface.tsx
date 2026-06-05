@@ -264,9 +264,9 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   const currentContact = contacts.find((c) => c.id === selectedContact);
 
   return (
-    <div style={{ display: "flex", height: "calc(100vh - 64px)", overflow: "hidden" }} className="bg-gray-50 text-gray-800">
+    <div style={{ display: "flex", height: "calc(100vh - 64px)", overflow: "hidden" }} className="bg-white text-gray-800">
       {/* Sidebar */}
-      <div style={{ width: "288px", flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }} className="border-r border-gray-200 bg-white">
+      <div style={{ width: "360px", flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }} className="border-r border-gray-200 bg-white">
         <div className="p-4 border-b border-gray-100 flex-shrink-0">
           {/* Back Button */}
           <Button
@@ -376,7 +376,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
       </div>
 
       {/* Main Chat Pane */}
-      <div className="flex-1 flex flex-col bg-[#efeae2] relative overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col bg-[#efeae2] relative overflow-hidden">
         {/* Background Overlay to mimic whatsapp doodle */}
         <div className="absolute inset-0 opacity-[0.04] pointer-events-none bg-[radial-gradient(#1e3a2f_1px,transparent_1px)] [background-size:16px_16px]"></div>
 
@@ -410,7 +410,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
             </div>
 
             {/* Chat Area */}
-            <ScrollArea className="flex-1 p-6 z-10">
+            <ScrollArea className="flex-1 min-h-0 p-6 z-10">
               {loading ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600" />

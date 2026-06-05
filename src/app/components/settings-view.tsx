@@ -304,7 +304,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
   }
 
   return (
-    <div className="p-8 space-y-6 w-full">
+    <div className="w-full p-6 md:p-8 bg-white space-y-6">
       <div>
         <h1 className="text-3xl font-extrabold text-slate-900 leading-tight">Pengaturan</h1>
         <p className="text-sm text-slate-500 mt-1">

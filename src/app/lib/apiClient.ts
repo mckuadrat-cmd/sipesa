@@ -93,6 +93,10 @@ export async function apiFetch<T = any>(path: string, init?: RequestInit): Promi
   }
 
   if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      clearAuthToken();
+      window.dispatchEvent(new Event("sipesa-unauthorized"));
+    }
     return {
       success: false,
       error: normalizeError(data, res.status),
