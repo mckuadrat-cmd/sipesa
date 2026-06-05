@@ -833,6 +833,7 @@ app.get(`${API_PREFIX}/media/:mediaId`, requireAuth, async (c) => {
     const fileRes = await fetch(downloadUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
+        "User-Agent": "curl/7.64.1",
       },
     });
 
@@ -3182,6 +3183,81 @@ app.get(`${API_PREFIX}/superadmin/orgs`, requireAuth, requireSuperadmin, async (
   }
 });
 
+app.get(`${API_PREFIX}/superadmin/orgs/:orgId/stats`, requireAuth, requireSuperadmin, async (c) => {
+  try {
+    const orgId = c.req.param("orgId");
+    const supa = sb();
+
+    const { count: totalBroadcasts, error: bErr } = await supa
+      .from("wa_broadcasts")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId);
+
+    if (bErr) return c.json(jsonFail(bErr.message), 500);
+
+    const { count: messagesSent, error: mOutErr } = await supa
+      .from("wa_messages")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId)
+      .eq("direction", "out");
+
+    if (mOutErr) return c.json(jsonFail(mOutErr.message), 500);
+
+    const { count: messagesReceived, error: mInErr } = await supa
+      .from("wa_messages")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId)
+      .eq("direction", "in");
+
+    if (mInErr) return c.json(jsonFail(mInErr.message), 500);
+
+    const { count: totalContacts, error: cErr } = await supa
+      .from("wa_contacts")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId);
+
+    if (cErr) return c.json(jsonFail(cErr.message), 500);
+
+    const { data: requestRows, error: reqErr } = await supa
+      .from("billing_info")
+      .select("key, value")
+      .like("key", `payment_request:${orgId}:%`);
+
+    if (reqErr) return c.json(jsonFail(reqErr.message), 500);
+    const requests = (requestRows ?? []).map((row: any) => row.value);
+    requests.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    const { data: transactionRows, error: txErr } = await supa
+      .from("billing_transactions")
+      .select("*")
+      .eq("org_id", orgId)
+      .order("created_at", { ascending: false })
+      .limit(15);
+
+    if (txErr) return c.json(jsonFail(txErr.message), 500);
+
+    return c.json(
+      jsonOk({
+        totalBroadcasts: totalBroadcasts ?? 0,
+        messagesSent: messagesSent ?? 0,
+        messagesReceived: messagesReceived ?? 0,
+        totalContacts: totalContacts ?? 0,
+        manualRequests: requests,
+        recentTransactions: (transactionRows ?? []).map((r: any) => ({
+          id: r.id,
+          type: r.type,
+          tokensDelta: r.tokens_delta ?? 0,
+          amountIdr: r.amount_idr ?? 0,
+          description: r.description ?? "",
+          createdAt: r.created_at,
+        })),
+      })
+    );
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
 app.post(`${API_PREFIX}/superadmin/orgs/:orgId/tokens`, requireAuth, requireSuperadmin, async (c) => {
   try {
     const orgId = c.req.param("orgId");
@@ -3479,6 +3555,279 @@ app.post(`${API_PREFIX}/superadmin/users/:userId/resend-verification`, requireAu
     if (resendErr) return c.json(jsonFail(resendErr.message), 500);
 
     return c.json(jsonOk({ message: `Email verifikasi berhasil dikirim ulang ke ${userProfile.email}` }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+// ===== MANUAL BILLING ENDPOINTS =====
+app.get(`${API_PREFIX}/billing/payment-settings`, requireAuth, async (c) => {
+  try {
+    const supa = sb();
+    const { data, error } = await supa
+      .from("billing_info")
+      .select("value")
+      .eq("key", "payment_settings")
+      .maybeSingle();
+
+    if (error) return c.json(jsonFail(error.message), 500);
+    return c.json(jsonOk(data?.value || { bank_transfer: "", gopay: "", qris_url: "" }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.get(`${API_PREFIX}/billing/manual-requests`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const supa = sb();
+    const prefix = `payment_request:${user.org_id}:`;
+    const { data, error } = await supa
+      .from("billing_info")
+      .select("key, value")
+      .like("key", prefix + "%");
+
+    if (error) return c.json(jsonFail(error.message), 500);
+
+    const requests = (data ?? []).map((row: any) => row.value);
+    requests.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    return c.json(jsonOk(requests));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/billing/manual-requests`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const { tokens, receipt_data, amount_idr } = await c.req.json();
+
+    if (!tokens || tokens <= 0) {
+      return c.json(jsonFail("Jumlah token tidak valid"), 400);
+    }
+    if (!receipt_data) {
+      return c.json(jsonFail("Bukti transfer wajib diunggah"), 400);
+    }
+
+    const supa = sb();
+
+    const { data: orgRow, error: orgErr } = await supa
+      .from("orgs")
+      .select("name")
+      .eq("id", user.org_id)
+      .maybeSingle();
+
+    if (orgErr) return c.json(jsonFail(orgErr.message), 500);
+    const orgName = orgRow?.name || "Instansi Tanpa Nama";
+
+    const { data: balance, error: balErr } = await supa
+      .from("billing_balance")
+      .select("token_price_idr")
+      .eq("org_id", user.org_id)
+      .maybeSingle();
+
+    if (balErr) return c.json(jsonFail(balErr.message), 500);
+    const price = Number(balance?.token_price_idr ?? 1500);
+
+    let finalAmount = amount_idr;
+    if (!finalAmount) {
+      const referralCode = Math.floor(Math.random() * 900) + 100;
+      finalAmount = (tokens * price) + referralCode;
+    }
+
+    const requestId = crypto.randomUUID();
+    const requestObj = {
+      id: requestId,
+      org_id: user.org_id,
+      org_name: orgName,
+      amount_tokens: tokens,
+      amount_idr: finalAmount,
+      status: "pending",
+      receipt_url: receipt_data,
+      created_by_email: user.email,
+      created_at: nowIso(),
+      approved_at: null,
+      approved_by: null,
+      notes: null,
+    };
+
+    const key = `payment_request:${user.org_id}:${requestId}`;
+    const { error: saveErr } = await supa
+      .from("billing_info")
+      .upsert({ key, value: requestObj });
+
+    if (saveErr) return c.json(jsonFail(saveErr.message), 500);
+
+    return c.json(jsonOk(requestObj));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.get(`${API_PREFIX}/superadmin/payment-settings`, requireAuth, requireSuperadmin, async (c) => {
+  try {
+    const supa = sb();
+    const { data, error } = await supa
+      .from("billing_info")
+      .select("value")
+      .eq("key", "payment_settings")
+      .maybeSingle();
+
+    if (error) return c.json(jsonFail(error.message), 500);
+    return c.json(jsonOk(data?.value || { bank_transfer: "", gopay: "", qris_url: "" }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.put(`${API_PREFIX}/superadmin/payment-settings`, requireAuth, requireSuperadmin, async (c) => {
+  try {
+    const settings = await c.req.json();
+    const supa = sb();
+
+    const { error } = await supa
+      .from("billing_info")
+      .upsert({ key: "payment_settings", value: settings });
+
+    if (error) return c.json(jsonFail(error.message), 500);
+    return c.json(jsonOk(settings));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.get(`${API_PREFIX}/superadmin/manual-requests`, requireAuth, requireSuperadmin, async (c) => {
+  try {
+    const supa = sb();
+    const { data, error } = await supa
+      .from("billing_info")
+      .select("key, value")
+      .like("key", "payment_request:%");
+
+    if (error) return c.json(jsonFail(error.message), 500);
+
+    const requests = (data ?? []).map((row: any) => row.value);
+    requests.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    return c.json(jsonOk(requests));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/superadmin/manual-requests/:id/approve`, requireAuth, requireSuperadmin, async (c) => {
+  try {
+    const requestId = c.req.param("id");
+    const supa = sb();
+
+    const { data: searchRows, error: searchErr } = await supa
+      .from("billing_info")
+      .select("key, value")
+      .like("key", `%:${requestId}`)
+      .limit(1);
+
+    if (searchErr) return c.json(jsonFail(searchErr.message), 500);
+    if (!searchRows || searchRows.length === 0) {
+      return c.json(jsonFail("Permintaan pembayaran tidak ditemukan"), 404);
+    }
+
+    const { key, value: requestObj } = searchRows[0];
+
+    if (requestObj.status !== "pending") {
+      return c.json(jsonFail("Permintaan pembayaran ini sudah diproses sebelumnya"), 400);
+    }
+
+    const adminUser = c.get("authUser");
+
+    const { data: balance, error: balErr } = await supa
+      .from("billing_balance")
+      .select("tokens_balance")
+      .eq("org_id", requestObj.org_id)
+      .maybeSingle();
+
+    if (balErr) return c.json(jsonFail(balErr.message), 500);
+
+    const currentBalance = balance ? Number(balance.tokens_balance ?? 0) : 0;
+    const newBalance = currentBalance + Number(requestObj.amount_tokens);
+
+    const { error: upsertErr } = await supa
+      .from("billing_balance")
+      .upsert({
+        org_id: requestObj.org_id,
+        tokens_balance: newBalance,
+        updated_at: nowIso(),
+      }, { onConflict: "org_id" });
+
+    if (upsertErr) return c.json(jsonFail(upsertErr.message), 500);
+
+    const { error: txErr } = await supa
+      .from("billing_transactions")
+      .insert({
+        org_id: requestObj.org_id,
+        type: "topup",
+        tokens_delta: Number(requestObj.amount_tokens),
+        amount_idr: Number(requestObj.amount_idr),
+        description: `Top-up manual disetujui (${requestObj.amount_tokens} token)`,
+        created_by: adminUser.id,
+      });
+
+    if (txErr) {
+      console.warn("Failed to insert billing transaction record for manual topup approval:", txErr);
+    }
+
+    requestObj.status = "approved";
+    requestObj.approved_at = nowIso();
+    requestObj.approved_by = adminUser.email;
+
+    const { error: saveErr } = await supa
+      .from("billing_info")
+      .upsert({ key, value: requestObj });
+
+    if (saveErr) return c.json(jsonFail(saveErr.message), 500);
+
+    return c.json(jsonOk(requestObj));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/superadmin/manual-requests/:id/reject`, requireAuth, requireSuperadmin, async (c) => {
+  try {
+    const requestId = c.req.param("id");
+    const { notes } = await c.req.json();
+    const adminUser = c.get("authUser");
+    const supa = sb();
+
+    const { data: searchRows, error: searchErr } = await supa
+      .from("billing_info")
+      .select("key, value")
+      .like("key", `%:${requestId}`)
+      .limit(1);
+
+    if (searchErr) return c.json(jsonFail(searchErr.message), 500);
+    if (!searchRows || searchRows.length === 0) {
+      return c.json(jsonFail("Permintaan pembayaran tidak ditemukan"), 404);
+    }
+
+    const { key, value: requestObj } = searchRows[0];
+
+    if (requestObj.status !== "pending") {
+      return c.json(jsonFail("Permintaan pembayaran ini sudah diproses sebelumnya"), 400);
+    }
+
+    requestObj.status = "rejected";
+    requestObj.approved_at = nowIso();
+    requestObj.approved_by = adminUser.email;
+    requestObj.notes = notes || "Ditolak oleh admin";
+
+    const { error: saveErr } = await supa
+      .from("billing_info")
+      .upsert({ key, value: requestObj });
+
+    if (saveErr) return c.json(jsonFail(saveErr.message), 500);
+
+    return c.json(jsonOk(requestObj));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }

@@ -67,6 +67,7 @@ export function DashboardView({
   user,
   onViewChange,
 }: DashboardViewProps) {
+  const addressKey = user?.org_id ? `sipesa_address_${user.org_id}` : "sipesa_address";
   const totalMessages = safeNum(stats?.totalMessages);
   const totalContacts = safeNum(stats?.totalContacts);
   const tokensRemaining = safeNum(stats?.tokensRemaining);
@@ -292,7 +293,7 @@ export function DashboardView({
                 </div>
                 <div className="flex items-center gap-2 text-xs text-slate-600">
                   <MapPin className="w-4 h-4 text-slate-400" />
-                  <span className="truncate">{localStorage.getItem("sipesa_address") || "Jl. Raya Sekolah No. 123, Jakarta"}</span>
+                  <span className="truncate">{localStorage.getItem(addressKey) || "Jl. Raya Sekolah No. 123, Jakarta"}</span>
                 </div>
               </div>
             </div>

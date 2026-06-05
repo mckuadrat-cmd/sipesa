@@ -187,7 +187,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
   return (
     <div className="min-h-[calc(100vh-4rem)] p-6 md:p-8 bg-slate-50">
-      <div className="mx-auto max-w-6xl flex flex-col gap-6">
+      <div className="w-full flex flex-col gap-6">
 
         {/* Header */}
         <div className="flex justify-between items-center">
@@ -318,7 +318,6 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
                   <th className="p-3 text-left text-slate-600 font-semibold">Nomor</th>
                   <th className="p-3 text-left text-slate-600 font-semibold">Nama</th>
                   <th className="p-3 text-left text-slate-600 font-semibold">Status</th>
-                  <th className="p-3 text-left text-slate-600 font-semibold">Waktu</th>
                   <th className="p-3 text-left text-slate-600 font-semibold">Info</th>
                 </tr>
               </thead>
@@ -338,11 +337,8 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
                           <span>{st.label}</span>
                         </div>
                       </td>
-                      <td className="p-3 text-slate-500">
-                        {formatDate(r.timestamp)}
-                      </td>
-                      <td className="p-3 text-slate-500 max-w-[200px] truncate" title={r.errorMessage || ""}>
-                        {translateError(r.errorMessage)}
+                      <td className="p-3 text-slate-500 max-w-[300px] truncate" title={r.status === "failed" ? (r.errorMessage || "") : formatDate(r.timestamp)}>
+                        {r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp)}
                       </td>
                     </tr>
                   );
@@ -350,7 +346,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
                 {filteredRecipients.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="p-8 text-center text-slate-400 text-sm font-medium">
+                    <td colSpan={5} className="p-8 text-center text-slate-400 text-sm font-medium">
                       Tidak ada data penerima ditemukan
                     </td>
                   </tr>

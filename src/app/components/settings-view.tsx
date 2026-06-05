@@ -30,6 +30,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [profile, setProfile] = useState({
+    id: "",
     fullName: "",
     username: "",
     email: "",
@@ -37,6 +38,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
   });
 
   const [org, setOrg] = useState({
+    id: "",
     name: "",
     supportEmail: "",
     autoReplyEnabled: false,
@@ -71,14 +73,18 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
         return;
       }
 
+      const userId = result.data.profile?.id ?? "";
       setProfile({
+        id: userId,
         fullName: result.data.profile?.fullName ?? "",
         username: result.data.profile?.username ?? "",
         email: result.data.profile?.email ?? "",
         role: result.data.profile?.role ?? "",
       });
 
+      const orgId = result.data.org?.id ?? "";
       setOrg({
+        id: orgId,
         name: result.data.org?.name ?? "",
         supportEmail: result.data.org?.supportEmail ?? "",
         autoReplyEnabled: !!result.data.org?.autoReplyEnabled,
@@ -93,8 +99,29 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
         setRegisteredWaNumber(formattedNumbers);
       }
 
-      setAvatar(localStorage.getItem("sipesa_avatar"));
-      setAddress(localStorage.getItem("sipesa_address") || "");
+      if (userId) {
+        let avatarVal = localStorage.getItem(`sipesa_avatar_${userId}`);
+        if (!avatarVal) {
+          const oldAvatar = localStorage.getItem("sipesa_avatar");
+          if (oldAvatar) {
+            localStorage.setItem(`sipesa_avatar_${userId}`, oldAvatar);
+            avatarVal = oldAvatar;
+          }
+        }
+        setAvatar(avatarVal);
+      } else {
+        setAvatar(null);
+      }
+      const addressKey = orgId ? `sipesa_address_${orgId}` : "sipesa_address";
+      let addressVal = localStorage.getItem(addressKey);
+      if (!addressVal && orgId) {
+        const oldAddress = localStorage.getItem("sipesa_address");
+        if (oldAddress) {
+          localStorage.setItem(addressKey, oldAddress);
+          addressVal = oldAddress;
+        }
+      }
+      setAddress(addressVal || "");
     } catch (error) {
       console.error(error);
       toast.error("Gagal memuat settings");
@@ -145,7 +172,8 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
         return;
       }
 
-      localStorage.setItem("sipesa_address", address);
+      const addressKey = org.id ? `sipesa_address_${org.id}` : "sipesa_address";
+      localStorage.setItem(addressKey, address);
       toast.success("Profil dan data instansi berhasil disimpan");
       
       if (onUpdateUser) {
@@ -239,7 +267,12 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = reader.result as string;
-      localStorage.setItem("sipesa_avatar", base64);
+      if (!profile.id) {
+        toast.error("Gagal memperbarui foto profil: ID pengguna tidak tersedia.");
+        return;
+      }
+      const avatarKey = `sipesa_avatar_${profile.id}`;
+      localStorage.setItem(avatarKey, base64);
       setAvatar(base64);
       window.dispatchEvent(new Event("sipesa-avatar-updated"));
       toast.success("Foto profil berhasil diperbarui");
@@ -251,7 +284,9 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
   };
 
   const handleAvatarDelete = () => {
-    localStorage.removeItem("sipesa_avatar");
+    if (!profile.id) return;
+    const avatarKey = `sipesa_avatar_${profile.id}`;
+    localStorage.removeItem(avatarKey);
     setAvatar(null);
     window.dispatchEvent(new Event("sipesa-avatar-updated"));
     toast.success("Foto profil berhasil dihapus");
