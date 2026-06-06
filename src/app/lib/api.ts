@@ -514,6 +514,21 @@ export const api = {
     return ok(res.data);
   },
 
+  async getRules(): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/rules`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async updateRules(rules: any): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/rules`, {
+      method: "PUT",
+      body: JSON.stringify(rules),
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
   async getBroadcastHistory(): Promise<AppResult<BroadcastHistoryItem[]>> {
     const res = await apiFetch<any>(`${API_PREFIX}/broadcasts`, { method: "GET" });
     if (isApiFail(res)) return fail(res.error);

@@ -78,14 +78,7 @@ export function HeaderNav({
         return;
       }
       const avatarKey = `sipesa_avatar_${user.id}`;
-      let avatarVal = localStorage.getItem(avatarKey);
-      if (!avatarVal) {
-        const oldAvatar = localStorage.getItem("sipesa_avatar");
-        if (oldAvatar) {
-          localStorage.setItem(avatarKey, oldAvatar);
-          avatarVal = oldAvatar;
-        }
-      }
+      const avatarVal = localStorage.getItem(avatarKey);
       setAvatar(avatarVal);
     };
     loadAvatar();

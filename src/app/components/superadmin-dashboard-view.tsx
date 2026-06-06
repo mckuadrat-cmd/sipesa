@@ -24,6 +24,7 @@ import {
   Trash2,
   Eye,
   Upload,
+  Scale,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { toast } from "sonner";
@@ -80,6 +81,43 @@ interface SignupItem {
   } | null;
 }
 
+export function BankBrandLogo({ name }: { name: string }) {
+  const normalized = name.toUpperCase();
+  if (normalized === "BCA") {
+    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-blue-600 text-white tracking-wider shadow-sm select-none">BCA</span>;
+  }
+  if (normalized === "MANDIRI") {
+    return <span className="inline-flex items-center justify-center w-14 h-6 rounded text-[9px] font-bold bg-[#003D7C] text-[#F2A900] shadow-sm select-none">mandiri</span>;
+  }
+  if (normalized === "BRI") {
+    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-[#00529C] text-white shadow-sm select-none">BRI</span>;
+  }
+  if (normalized === "BNI") {
+    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-[#E05B26] text-teal-950 shadow-sm select-none">BNI</span>;
+  }
+  if (normalized === "BSI") {
+    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-teal-600 text-white shadow-sm select-none">BSI</span>;
+  }
+  return <span className="inline-flex items-center justify-center px-2 h-6 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 shadow-sm select-none">{name}</span>;
+}
+
+export function EWalletBrandLogo({ name }: { name: string }) {
+  const normalized = name.toUpperCase();
+  if (normalized === "GOPAY") {
+    return <span className="inline-flex items-center justify-center w-14 h-6 rounded text-[9px] font-extrabold bg-sky-500 text-white shadow-sm select-none">go pay</span>;
+  }
+  if (normalized === "OVO") {
+    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-purple-700 text-white shadow-sm select-none">ovo</span>;
+  }
+  if (normalized === "DANA") {
+    return <span className="inline-flex items-center justify-center w-12 h-6 rounded text-[10px] font-extrabold bg-blue-600 text-white shadow-sm select-none">DANA</span>;
+  }
+  if (normalized === "LINKAJA") {
+    return <span className="inline-flex items-center justify-center w-14 h-6 rounded text-[9px] font-extrabold bg-red-600 text-white shadow-sm select-none">LinkAja!</span>;
+  }
+  return <span className="inline-flex items-center justify-center px-2 h-6 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 shadow-sm select-none">{name}</span>;
+}
+
 export function SuperadminDashboardView() {
   const [activeTab, setActiveTab] = useState<"orgs" | "signups" | "payments" | "settings">("orgs");
   const [orgs, setOrgs] = useState<OrgItem[]>([]);
@@ -96,6 +134,19 @@ export function SuperadminDashboardView() {
   const [qrisBase64, setQrisBase64] = useState<string | null>(null);
   const [qrisFileName, setQrisFileName] = useState("");
   const [submittingSettings, setSubmittingSettings] = useState(false);
+
+  // Structured Payment Settings State
+  const [bankEnabled, setBankEnabled] = useState(false);
+  const [bankName, setBankName] = useState("BCA");
+  const [bankAccountNumber, setBankAccountNumber] = useState("");
+  const [bankAccountName, setBankAccountName] = useState("");
+
+  const [ewalletEnabled, setEwalletEnabled] = useState(false);
+  const [ewalletProvider, setEwalletProvider] = useState("GoPay");
+  const [ewalletPhoneNumber, setEwalletPhoneNumber] = useState("");
+  const [ewalletAccountName, setEwalletAccountName] = useState("");
+
+  const [qrisEnabled, setQrisEnabled] = useState(false);
 
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<any | null>(null);
@@ -210,10 +261,23 @@ export function SuperadminDashboardView() {
     try {
       const res = await api.getSuperadminPaymentSettings();
       if (res.success && res.data) {
-        setBankTransferText(res.data.bank_transfer || "");
-        setGopayText(res.data.gopay || "");
-        setQrisBase64(res.data.qris_url || null);
-        setQrisFileName(res.data.qris_url ? "QRIS_Barcode.png" : "");
+        const d = res.data;
+        setBankTransferText(d.bank_transfer || "");
+        setGopayText(d.gopay || "");
+        setQrisBase64(d.qris_url || null);
+        setQrisFileName(d.qris_url ? "QRIS_Barcode.png" : "");
+
+        setBankEnabled(!!d.bank?.enabled);
+        setBankName(d.bank?.bank_name || "BCA");
+        setBankAccountNumber(d.bank?.account_number || "");
+        setBankAccountName(d.bank?.account_name || "");
+
+        setEwalletEnabled(!!d.ewallet?.enabled);
+        setEwalletProvider(d.ewallet?.provider || "GoPay");
+        setEwalletPhoneNumber(d.ewallet?.phone_number || "");
+        setEwalletAccountName(d.ewallet?.account_name || "");
+
+        setQrisEnabled(!!d.qris?.enabled);
       }
     } catch (err) {
       console.error(err);
@@ -223,13 +287,39 @@ export function SuperadminDashboardView() {
   const handleSaveSettings = async () => {
     setSubmittingSettings(true);
     try {
+      const legacyBankText = bankEnabled
+        ? `Bank ${bankName}\nNo Rek: ${bankAccountNumber}\na/n ${bankAccountName}`
+        : "";
+      const legacyGopayText = ewalletEnabled
+        ? `${ewalletProvider} - ${ewalletPhoneNumber} (a/n ${ewalletAccountName})`
+        : "";
+
       const res = await api.updateSuperadminPaymentSettings({
-        bank_transfer: bankTransferText,
-        gopay: gopayText,
-        qris_url: qrisBase64,
+        bank: {
+          enabled: bankEnabled,
+          bank_name: bankName,
+          account_number: bankAccountNumber,
+          account_name: bankAccountName,
+        },
+        ewallet: {
+          enabled: ewalletEnabled,
+          provider: ewalletProvider,
+          phone_number: ewalletPhoneNumber,
+          account_name: ewalletAccountName,
+        },
+        qris: {
+          enabled: qrisEnabled,
+          qris_url: qrisEnabled ? qrisBase64 : null,
+        },
+        bank_transfer: legacyBankText,
+        gopay: legacyGopayText,
+        qris_url: qrisEnabled ? qrisBase64 : null,
       });
+
       if (res.success) {
         toast.success("Pengaturan pembayaran manual berhasil disimpan.");
+        setBankTransferText(legacyBankText);
+        setGopayText(legacyGopayText);
       } else {
         const errorMsg = "error" in res ? res.error : "Gagal menyimpan";
         toast.error("Gagal menyimpan pengaturan: " + errorMsg);
@@ -1069,81 +1159,216 @@ export function SuperadminDashboardView() {
         </Card>
       )}
 
-      {/* Tab Contents: Manual Payment Settings */}
       {activeTab === "settings" && (
         <Card className="p-6 max-w-2xl space-y-6">
           <div>
             <h3 className="text-lg font-bold text-slate-800 mb-1">Pengaturan Akun Transfer Pembayaran</h3>
-            <p className="text-xs text-slate-400">Atur bank transfer, nomor gopay, dan QRIS yang akan ditampilkan kepada pengguna di halaman billing.</p>
+            <p className="text-xs text-slate-400">Atur metode pembayaran, bank transfer, e-wallet, dan QRIS yang akan ditampilkan kepada pengguna di halaman billing.</p>
           </div>
 
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="bank-transfer" className="text-sm font-semibold text-slate-700">Info Rekening Bank Transfer</Label>
-              <textarea
-                id="bank-transfer"
-                rows={3}
-                placeholder="Contoh:&#10;Bank Mandiri&#10;No Rek: 123-456-7890&#10;a/n PT MCKUADRAT"
-                value={bankTransferText}
-                onChange={(e) => setBankTransferText(e.target.value)}
-                className="w-full text-sm p-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary whitespace-pre-line bg-white"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="gopay" className="text-sm font-semibold text-slate-700">Nomor Gopay / E-Wallet</Label>
-              <Input
-                id="gopay"
-                placeholder="Contoh: 081234567890 (a/n PT MCKUADRAT)"
-                value={gopayText}
-                onChange={(e) => setGopayText(e.target.value)}
-                className="h-10 text-sm"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-sm font-semibold text-slate-700">Barcode QRIS Pembayaran (Gambar)</Label>
-              <div className="flex flex-col gap-3">
-                <label className="border-2 border-dashed border-slate-200 hover:border-primary/50 transition-colors rounded-lg p-6 flex flex-col items-center justify-center cursor-pointer bg-slate-50/50 hover:bg-slate-50 group">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleQrisUpload}
-                    className="hidden"
-                  />
-                  <Upload className="w-8 h-8 text-slate-400 group-hover:text-primary transition-colors mb-2" />
-                  <span className="text-sm font-semibold text-slate-600 group-hover:text-primary transition-colors">
-                    {qrisFileName || "Pilih gambar barcode QRIS"}
+          <div className="space-y-6">
+            {/* 1. BANK TRANSFER METHOD */}
+            <div className="p-5 border rounded-2xl bg-slate-50/30 space-y-4 hover:border-slate-300 transition-colors">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="p-2 bg-blue-50 text-blue-600 rounded-lg">
+                    <Building className="w-4 h-4" />
                   </span>
-                  <span className="text-xs text-slate-400 mt-1">Format gambar (PNG, JPG), maks. 2MB</span>
-                </label>
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-800">1. Transfer Bank Resmi</h4>
+                    <p className="text-[11px] text-slate-400">Terima pembayaran via transfer antar bank</p>
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={bankEnabled}
+                  onChange={(e) => setBankEnabled(e.target.checked)}
+                  className="w-4 h-4 rounded text-primary focus:ring-primary cursor-pointer animate-pulse-once"
+                />
+              </div>
 
-                {qrisBase64 && (
-                  <div className="border rounded-lg p-3 bg-white flex flex-col gap-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-slate-500">Preview QRIS:</span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setQrisBase64(null);
-                          setQrisFileName("");
-                        }}
-                        className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 h-7 text-xs"
-                      >
-                        Hapus QRIS
-                      </Button>
+              {bankEnabled && (
+                <div className="space-y-4 pt-3 border-t border-slate-100">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="bank-select" className="text-xs font-semibold text-slate-600">Pilih Bank</Label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          id="bank-select"
+                          value={bankName}
+                          onChange={(e) => setBankName(e.target.value)}
+                          className="flex-1 h-10 px-3 border rounded-lg text-sm bg-white font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        >
+                          <option value="BCA">BCA (Bank Central Asia)</option>
+                          <option value="Mandiri">Bank Mandiri</option>
+                          <option value="BRI">BRI (Bank Rakyat Indonesia)</option>
+                          <option value="BNI">BNI (Bank Negara Indonesia)</option>
+                          <option value="BSI">BSI (Bank Syariah Indonesia)</option>
+                        </select>
+                        <div className="flex-shrink-0">
+                          <BankBrandLogo name={bankName} />
+                        </div>
+                      </div>
                     </div>
-                    <img
-                      src={qrisBase64}
-                      alt="QRIS Preview"
-                      className="max-w-[200px] h-auto object-contain border rounded p-1 mx-auto bg-white"
+                    <div className="space-y-2">
+                      <Label htmlFor="bank-norek" className="text-xs font-semibold text-slate-600">Nomor Rekening</Label>
+                      <Input
+                        id="bank-norek"
+                        placeholder="Contoh: 1234567890"
+                        value={bankAccountNumber}
+                        onChange={(e) => setBankAccountNumber(e.target.value)}
+                        className="h-10 text-sm font-mono"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="bank-an" className="text-xs font-semibold text-slate-600">Atas Nama (A/N) Pemilik Rekening</Label>
+                    <Input
+                      id="bank-an"
+                      placeholder="Contoh: PT MCKUADRAT"
+                      value={bankAccountName}
+                      onChange={(e) => setBankAccountName(e.target.value)}
+                      className="h-10 text-sm"
                     />
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
 
+            {/* 2. E-WALLET METHOD */}
+            <div className="p-5 border rounded-2xl bg-slate-50/30 space-y-4 hover:border-slate-300 transition-colors">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="p-2 bg-purple-50 text-purple-600 rounded-lg">
+                    <Coins className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-800">2. E-Wallet / QR Payment</h4>
+                    <p className="text-[11px] text-slate-400">Terima pembayaran via OVO, GoPay, Dana, dll</p>
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={ewalletEnabled}
+                  onChange={(e) => setEwalletEnabled(e.target.checked)}
+                  className="w-4 h-4 rounded text-primary focus:ring-primary cursor-pointer"
+                />
+              </div>
+
+              {ewalletEnabled && (
+                <div className="space-y-4 pt-3 border-t border-slate-100">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="ewallet-provider" className="text-xs font-semibold text-slate-600">Provider E-Wallet</Label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          id="ewallet-provider"
+                          value={ewalletProvider}
+                          onChange={(e) => setEwalletProvider(e.target.value)}
+                          className="flex-1 h-10 px-3 border rounded-lg text-sm bg-white font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        >
+                          <option value="GoPay">GoPay</option>
+                          <option value="OVO">OVO</option>
+                          <option value="Dana">Dana</option>
+                          <option value="LinkAja">LinkAja</option>
+                        </select>
+                        <div className="flex-shrink-0">
+                          <EWalletBrandLogo name={ewalletProvider} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="ewallet-phone" className="text-xs font-semibold text-slate-600">Nomor Handphone / Akun</Label>
+                      <Input
+                        id="ewallet-phone"
+                        placeholder="Contoh: 081234567890"
+                        value={ewalletPhoneNumber}
+                        onChange={(e) => setEwalletPhoneNumber(e.target.value)}
+                        className="h-10 text-sm font-mono"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ewallet-an" className="text-xs font-semibold text-slate-600">Atas Nama (A/N) Akun</Label>
+                    <Input
+                      id="ewallet-an"
+                      placeholder="Contoh: PT MCKUADRAT"
+                      value={ewalletAccountName}
+                      onChange={(e) => setEwalletAccountName(e.target.value)}
+                      className="h-10 text-sm"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 3. QRIS METHOD */}
+            <div className="p-5 border rounded-2xl bg-slate-50/30 space-y-4 hover:border-slate-300 transition-colors">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="p-2 bg-red-50 text-red-600 rounded-lg">
+                    <Scale className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-800">3. Kode QRIS Pembayaran</h4>
+                    <p className="text-[11px] text-slate-400">Scan QR Code untuk pembayaran langsung</p>
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={qrisEnabled}
+                  onChange={(e) => setQrisEnabled(e.target.checked)}
+                  className="w-4 h-4 rounded text-primary focus:ring-primary cursor-pointer"
+                />
+              </div>
+
+              {qrisEnabled && (
+                <div className="space-y-4 pt-3 border-t border-slate-100">
+                  <Label className="text-xs font-semibold text-slate-600">Barcode QRIS Pembayaran (Gambar)</Label>
+                  <div className="flex flex-col gap-3">
+                    <label className="border-2 border-dashed border-slate-200 hover:border-primary/50 transition-colors rounded-lg p-6 flex flex-col items-center justify-center cursor-pointer bg-slate-50/50 hover:bg-slate-50 group">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleQrisUpload}
+                        className="hidden"
+                      />
+                      <Upload className="w-8 h-8 text-slate-400 group-hover:text-primary transition-colors mb-2" />
+                      <span className="text-sm font-semibold text-slate-600 group-hover:text-primary transition-colors">
+                        {qrisFileName || "Pilih gambar barcode QRIS"}
+                      </span>
+                      <span className="text-xs text-slate-400 mt-1">Format gambar (PNG, JPG), maks. 2MB</span>
+                    </label>
+
+                    {qrisBase64 && (
+                      <div className="border rounded-lg p-3 bg-white flex flex-col gap-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-slate-500">Preview QRIS:</span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setQrisBase64(null);
+                              setQrisFileName("");
+                            }}
+                            className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 h-7 text-xs"
+                          >
+                            Hapus QRIS
+                          </Button>
+                        </div>
+                        <img
+                          src={qrisBase64}
+                          alt="QRIS Preview"
+                          className="max-w-[200px] h-auto object-contain border rounded p-1 mx-auto bg-white"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Save Button */}
             <div className="pt-2 flex justify-end">
               <Button
                 onClick={handleSaveSettings}
@@ -1514,6 +1739,7 @@ export function SuperadminDashboardView() {
         open={detailModalOpen && !!selectedDetailOrg}
         title="Detail & Statistik Instansi"
         onClose={() => setDetailModalOpen(false)}
+        maxWidthClassName="max-w-4xl"
         footer={
           <div className="flex justify-end">
             <Button onClick={() => setDetailModalOpen(false)}>Tutup</Button>

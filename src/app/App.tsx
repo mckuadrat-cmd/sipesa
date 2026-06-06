@@ -430,7 +430,7 @@ export default function App() {
   }
 
   const renderView = () => {
-    if (user?.email?.toLowerCase() === "mckuadratid@gmail.com") {
+    if (user?.email?.toLowerCase() === "mckuadratid@gmail.com" && activeView !== "rules") {
       return <SuperadminDashboardView />;
     }
 
@@ -542,6 +542,7 @@ export default function App() {
       case "rules":
         return (
           <RulesView
+            user={user}
             onBack={() => setActiveView(user?.email?.toLowerCase() === "mckuadratid@gmail.com" ? "superadmin" : "dashboard")}
           />
         );
