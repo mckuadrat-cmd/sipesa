@@ -388,11 +388,10 @@ async function requireAuth(c: any, next: any) {
     let role = user.role;
 
     if (email === "mckuadratid@gmail.com") {
-      org_id = "fc798b16-025e-4246-acef-9e9fed1c422b";
       role = "owner";
     }
 
-    c.set("authUser", {
+    const authUserObj: any = {
       id: user.id,
       org_id,
       email,
@@ -401,7 +400,14 @@ async function requireAuth(c: any, next: any) {
       role,
       status: user.is_active ? "active" : "inactive",
       is_active: user.is_active,
-    });
+    };
+
+    if (email?.toLowerCase() === "mckuadratid@gmail.com") {
+      authUserObj.orgName = "Superadmin Portal";
+      authUserObj.org_name = "Superadmin Portal";
+    }
+
+    c.set("authUser", authUserObj);
 
     c.set("sessionToken", token);
     await next();
@@ -514,8 +520,15 @@ app.post(`${API_PREFIX}/auth/login`, async (c) => {
       .eq("id", userProfile.org_id)
       .maybeSingle();
 
+    let finalOrgId = userProfile.org_id;
+    let finalOrgName = org?.name ?? null;
+
+    if (userProfile.email?.toLowerCase() === "mckuadratid@gmail.com") {
+      finalOrgName = "Superadmin Portal";
+    }
+
     await supa.from("app_activity").insert({
-      org_id: userProfile.org_id,
+      org_id: finalOrgId,
       actor_user_id: userProfile.id,
       type: "login",
       message: "User login",
@@ -529,13 +542,13 @@ app.post(`${API_PREFIX}/auth/login`, async (c) => {
       jsonOk({
         user: {
           id: userProfile.id,
-          org_id: userProfile.org_id,
+          org_id: finalOrgId,
           email: userProfile.email,
           username: userProfile.username,
           name: userProfile.full_name,
           role: userProfile.role,
           status: userProfile.is_active ? "active" : "inactive",
-          orgName: org?.name ?? null,
+          orgName: finalOrgName,
         },
         token: sessionToken,
       }),
@@ -3012,6 +3025,8 @@ app.get(`${API_PREFIX}/dev/check-columns`, async (c) => {
   }
 });
 
+
+
 // ===== SETTINGS =====
 app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
   try {
@@ -3372,10 +3387,13 @@ app.get(`${API_PREFIX}/superadmin/orgs`, requireAuth, requireSuperadmin, async (
 
     if (usersErr) return c.json(jsonFail(usersErr.message), 500);
 
-    const mapped = (orgs ?? []).map((org: any) => {
-      const balance = (balances ?? []).find((b: any) => b.org_id === org.id);
-      const orgNumbers = (numbers ?? []).filter((n: any) => n.org_id === org.id);
-      const orgUsers = (users ?? []).filter((u: any) => u.org_id === org.id);
+    const adminUser = c.get("authUser");
+    const mapped = (orgs ?? [])
+      .filter((org: any) => org.id !== adminUser.org_id)
+      .map((org: any) => {
+        const balance = (balances ?? []).find((b: any) => b.org_id === org.id);
+        const orgNumbers = (numbers ?? []).filter((n: any) => n.org_id === org.id);
+        const orgUsers = (users ?? []).filter((u: any) => u.org_id === org.id && u.email?.toLowerCase() !== "mckuadratid@gmail.com");
 
       return {
         id: org.id,
@@ -3685,6 +3703,7 @@ app.get(`${API_PREFIX}/superadmin/signups`, requireAuth, requireSuperadmin, asyn
     const signups: any[] = [];
 
     for (const u of users ?? []) {
+      if (u.email?.toLowerCase() === "mckuadratid@gmail.com") continue;
       const authUser = authUsers.find((au) => au.id === u.id);
       const isEmailConfirmed = authUser ? !!authUser.email_confirmed_at : false;
 
@@ -3892,6 +3911,38 @@ app.post(`${API_PREFIX}/billing/manual-requests`, requireAuth, async (c) => {
     if (saveErr) return c.json(jsonFail(saveErr.message), 500);
 
     return c.json(jsonOk(requestObj));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.get(`${API_PREFIX}/rules`, requireAuth, async (c) => {
+  try {
+    const supa = sb();
+    const { data, error } = await supa
+      .from("key_info")
+      .select("value")
+      .eq("key", "rules_content")
+      .maybeSingle();
+
+    if (error) return c.json(jsonFail(error.message), 500);
+    return c.json(jsonOk(data?.value || null));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.put(`${API_PREFIX}/rules`, requireAuth, requireSuperadmin, async (c) => {
+  try {
+    const rulesContent = await c.req.json();
+    const supa = sb();
+
+    const { error } = await supa
+      .from("key_info")
+      .upsert({ key: "rules_content", value: rulesContent });
+
+    if (error) return c.json(jsonFail(error.message), 500);
+    return c.json(jsonOk(rulesContent));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }

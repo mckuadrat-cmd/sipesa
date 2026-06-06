@@ -2,10 +2,48 @@ import { useState, useEffect, useMemo } from "react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Coins, CreditCard, ArrowUpCircle, History, AlertCircle, Upload, Eye, Image } from "lucide-react";
+import { Coins, CreditCard, ArrowUpCircle, History, AlertCircle, Upload, Eye, Image, Copy } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { api } from "../lib/api";
 import { AppModal } from "./AppModal";
+import { toast } from "sonner";
+
+export function BankBrandLogo({ name }: { name: string }) {
+  const normalized = name.toUpperCase();
+  if (normalized === "BCA") {
+    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-blue-600 text-white tracking-wider shadow-sm select-none">BCA</span>;
+  }
+  if (normalized === "MANDIRI") {
+    return <span className="inline-flex items-center justify-center w-14 h-6 rounded text-[9px] font-bold bg-[#003D7C] text-[#F2A900] shadow-sm select-none">mandiri</span>;
+  }
+  if (normalized === "BRI") {
+    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-[#00529C] text-white shadow-sm select-none">BRI</span>;
+  }
+  if (normalized === "BNI") {
+    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-[#E05B26] text-teal-950 shadow-sm select-none">BNI</span>;
+  }
+  if (normalized === "BSI") {
+    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-teal-600 text-white shadow-sm select-none">BSI</span>;
+  }
+  return <span className="inline-flex items-center justify-center px-2 h-6 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 shadow-sm select-none">{name}</span>;
+}
+
+export function EWalletBrandLogo({ name }: { name: string }) {
+  const normalized = name.toUpperCase();
+  if (normalized === "GOPAY") {
+    return <span className="inline-flex items-center justify-center w-14 h-6 rounded text-[9px] font-extrabold bg-sky-500 text-white shadow-sm select-none">go pay</span>;
+  }
+  if (normalized === "OVO") {
+    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-purple-700 text-white shadow-sm select-none">ovo</span>;
+  }
+  if (normalized === "DANA") {
+    return <span className="inline-flex items-center justify-center w-12 h-6 rounded text-[10px] font-extrabold bg-blue-600 text-white shadow-sm select-none">DANA</span>;
+  }
+  if (normalized === "LINKAJA") {
+    return <span className="inline-flex items-center justify-center w-14 h-6 rounded text-[9px] font-extrabold bg-red-600 text-white shadow-sm select-none">LinkAja!</span>;
+  }
+  return <span className="inline-flex items-center justify-center px-2 h-6 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 shadow-sm select-none">{name}</span>;
+}
 
 type BillingData = {
   currentTokens?: number;
@@ -31,6 +69,11 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
   const [topupAmount, setTopupAmount] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    toast.success(`${label} berhasil disalin ke clipboard.`);
+  };
+
   const safe = useMemo(() => {
     const currentTokens = Number(billingData?.currentTokens ?? 0);
     const totalSpent = Number(billingData?.totalSpent ?? 0);
@@ -39,11 +82,7 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
   }, [billingData]);
 
   // Manual payment states
-  const [paymentSettings, setPaymentSettings] = useState<{
-    bank_transfer?: string;
-    gopay?: string;
-    qris_url?: string;
-  } | null>(null);
+  const [paymentSettings, setPaymentSettings] = useState<any | null>(null);
   const [manualRequests, setManualRequests] = useState<any[]>([]);
   const [isTopupModalOpen, setIsTopupModalOpen] = useState(false);
   const [referralCode, setReferralCode] = useState(0);
@@ -511,39 +550,133 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
           <div className="space-y-4">
             <h4 className="font-semibold text-slate-800 border-b pb-1">Tujuan Transfer</h4>
             
-            {paymentSettings?.bank_transfer && (
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground uppercase font-bold">Transfer Bank</p>
-                <p className="text-sm font-medium whitespace-pre-line bg-white p-3 border rounded-lg">
-                  {paymentSettings.bank_transfer}
-                </p>
-              </div>
+            {/* Structured Payment Methods */}
+            {paymentSettings && (paymentSettings.bank || paymentSettings.ewallet || paymentSettings.qris) ? (
+              <>
+                {paymentSettings.bank?.enabled && (
+                  <div className="border rounded-xl p-4 bg-slate-50/50 flex flex-col gap-3 hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <BankBrandLogo name={paymentSettings.bank.bank_name} />
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Transfer Bank</span>
+                      </div>
+                      <span className="text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">Proses Cepat</span>
+                    </div>
+                    <div className="space-y-2 border-t pt-3 border-slate-100">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <span className="text-[10px] text-slate-400 block uppercase font-medium">Nomor Rekening</span>
+                          <span className="text-sm font-mono font-bold text-slate-800">{paymentSettings.bank.account_number}</span>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => copyToClipboard(paymentSettings.bank.account_number, "Nomor rekening")}
+                          className="h-7 text-[10px] px-2 flex items-center gap-1 font-semibold hover:bg-slate-100"
+                        >
+                          <Copy className="w-3 h-3" />
+                          Salin
+                        </Button>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-400 block uppercase font-medium">Nama Penerima (A/N)</span>
+                        <span className="text-sm font-bold text-slate-800">{paymentSettings.bank.account_name}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {paymentSettings.ewallet?.enabled && (
+                  <div className="border rounded-xl p-4 bg-slate-50/50 flex flex-col gap-3 hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <EWalletBrandLogo name={paymentSettings.ewallet.provider} />
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">E-Wallet</span>
+                      </div>
+                      <span className="text-[11px] font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">Instant</span>
+                    </div>
+                    <div className="space-y-2 border-t pt-3 border-slate-100">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <span className="text-[10px] text-slate-400 block uppercase font-medium">Nomor E-Wallet</span>
+                          <span className="text-sm font-mono font-bold text-slate-800">{paymentSettings.ewallet.phone_number}</span>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => copyToClipboard(paymentSettings.ewallet.phone_number, "Nomor e-wallet")}
+                          className="h-7 text-[10px] px-2 flex items-center gap-1 font-semibold hover:bg-slate-100"
+                        >
+                          <Copy className="w-3 h-3" />
+                          Salin
+                        </Button>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-400 block uppercase font-medium">Nama Akun (A/N)</span>
+                        <span className="text-sm font-bold text-slate-800">{paymentSettings.ewallet.account_name}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {paymentSettings.qris?.enabled && paymentSettings.qris.qris_url && (
+                  <div className="border rounded-xl p-4 bg-slate-50/50 flex flex-col gap-3 items-center hover:bg-slate-50 transition-colors">
+                    <div className="w-full flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center justify-center px-2 py-0.5 bg-red-600 text-white rounded text-[10px] font-extrabold tracking-wider">QRIS</span>
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Bayar Instan</span>
+                      </div>
+                      <span className="text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">Scan & Pay</span>
+                    </div>
+                    <div className="bg-white p-3 border rounded-xl shadow-sm text-center w-full">
+                      <img
+                        src={paymentSettings.qris.qris_url}
+                        alt="QRIS Barcode"
+                        className="max-w-[200px] h-auto object-contain mx-auto"
+                      />
+                      <p className="text-[10px] text-slate-400 mt-2 font-medium">Pindai QRIS di atas menggunakan aplikasi E-Wallet atau Bank Anda</p>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              // Legacy fallback string rendering
+              <>
+                {paymentSettings?.bank_transfer && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground uppercase font-bold">Transfer Bank</p>
+                    <p className="text-sm font-medium whitespace-pre-line bg-white p-3 border rounded-lg">
+                      {paymentSettings.bank_transfer}
+                    </p>
+                  </div>
+                )}
+
+                {paymentSettings?.gopay && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground uppercase font-bold">Gopay / E-Wallet</p>
+                    <p className="text-sm font-medium bg-white p-3 border rounded-lg">
+                      {paymentSettings.gopay}
+                    </p>
+                  </div>
+                )}
+
+                {paymentSettings?.qris_url && (
+                  <div className="space-y-1 text-center">
+                    <p className="text-xs text-muted-foreground uppercase font-bold text-left">QRIS Pembayaran</p>
+                    <div className="inline-block bg-white p-3 border rounded-lg mt-1 mx-auto">
+                      <img
+                        src={paymentSettings.qris_url}
+                        alt="QRIS Barcode"
+                        className="max-w-[200px] h-auto mx-auto object-contain"
+                      />
+                      <p className="text-[10px] text-muted-foreground mt-1">Pindai kode QRIS di atas untuk membayar</p>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
-            {paymentSettings?.gopay && (
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground uppercase font-bold">Gopay / E-Wallet</p>
-                <p className="text-sm font-medium bg-white p-3 border rounded-lg">
-                  {paymentSettings.gopay}
-                </p>
-              </div>
-            )}
-
-            {paymentSettings?.qris_url && (
-              <div className="space-y-1 text-center">
-                <p className="text-xs text-muted-foreground uppercase font-bold text-left">QRIS Pembayaran</p>
-                <div className="inline-block bg-white p-3 border rounded-lg mt-1 mx-auto">
-                  <img
-                    src={paymentSettings.qris_url}
-                    alt="QRIS Barcode"
-                    className="max-w-[200px] h-auto mx-auto object-contain"
-                  />
-                  <p className="text-[10px] text-muted-foreground mt-1">Pindai kode QRIS di atas untuk membayar</p>
-                </div>
-              </div>
-            )}
-
-            {(!paymentSettings?.bank_transfer && !paymentSettings?.gopay && !paymentSettings?.qris_url) && (
+            {(!paymentSettings?.bank_transfer && !paymentSettings?.gopay && !paymentSettings?.qris_url && !paymentSettings?.bank?.enabled && !paymentSettings?.ewallet?.enabled && !paymentSettings?.qris?.enabled) && (
               <p className="text-sm text-yellow-600 bg-yellow-50 p-3 rounded-lg border border-yellow-200">
                 Peringatan: Admin belum mengkonfigurasi rekening transfer di pengaturan. Silakan hubungi admin secara langsung.
               </p>
