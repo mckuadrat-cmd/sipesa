@@ -264,7 +264,7 @@ export const api = {
     return ok(res.data);
   },
 
-  async updateProfile(payload: { fullName: string; username: string; email: string }) {
+  async updateProfile(payload: { fullName: string; username: string; email: string; avatar?: string | null }) {
     const res = await apiFetch<any>(`${API_PREFIX}/settings/profile`, {
       method: "PUT",
       body: JSON.stringify(payload),
@@ -274,7 +274,7 @@ export const api = {
     return ok(res.data);
   },
 
-  async updateOrgSettings(payload: { name: string; supportEmail: string }) {
+  async updateOrgSettings(payload: { name: string; supportEmail: string; address?: string }) {
     const res = await apiFetch<any>(`${API_PREFIX}/settings/org`, {
       method: "PUT",
       body: JSON.stringify(payload),
@@ -282,6 +282,23 @@ export const api = {
 
     if (isApiFail(res)) return fail(res.error);
     return ok(res.data);
+  },
+
+  async getContactLabels(): Promise<AppResult<Record<string, string>>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/settings/contact-labels`, {
+      method: "GET",
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data || {});
+  },
+
+  async updateContactLabels(labels: Record<string, string>): Promise<AppResult<Record<string, string>>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/settings/contact-labels`, {
+      method: "PUT",
+      body: JSON.stringify({ labels }),
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data || {});
   },
 
   async updateMessagingSettings(payload: {

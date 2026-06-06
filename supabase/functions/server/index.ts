@@ -3018,7 +3018,12 @@ app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
     const user = c.get("authUser");
     const supa = sb();
 
-    const [{ data: org, error: orgErr }, { data: me, error: userErr }] = await Promise.all([
+    const [
+      { data: org, error: orgErr },
+      { data: me, error: userErr },
+      { data: avatarRow },
+      { data: addressRow }
+    ] = await Promise.all([
       supa
         .from("orgs")
         .select("id, name, slug, support_email, auto_reply_enabled, auto_reply_message, fallback_template_name, send_delay_ms, throttle_per_min")
@@ -3028,6 +3033,16 @@ app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
         .from("app_users")
         .select("id, email, username, full_name, role")
         .eq("id", user.id)
+        .maybeSingle(),
+      supa
+        .from("key_info")
+        .select("value")
+        .eq("key", `avatar:${user.id}`)
+        .maybeSingle(),
+      supa
+        .from("key_info")
+        .select("value")
+        .eq("key", `address:${user.org_id}`)
         .maybeSingle(),
     ]);
 
@@ -3050,6 +3065,7 @@ app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
           fallbackTemplateName: org?.fallback_template_name ?? "",
           sendDelayMs: Number(org?.send_delay_ms ?? 2000),
           throttlePerMin: Number(org?.throttle_per_min ?? 30),
+          address: addressRow?.value?.address ?? "",
         },
         profile: {
           id: me?.id ?? null,
@@ -3057,6 +3073,7 @@ app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
           username: me?.username ?? "",
           email: me?.email ?? "",
           role: me?.role ?? "",
+          avatar: avatarRow?.value?.avatar ?? null,
         },
         webhook: {
           url: webhookUrl,
@@ -3109,6 +3126,21 @@ app.put(`${API_PREFIX}/settings/profile`, requireAuth, async (c) => {
 
     if (error) return c.json(jsonFail(error.message), 500);
 
+    // Sync avatar if passed
+    let avatar = undefined;
+    if ("avatar" in body) {
+      avatar = body.avatar; // can be base64 string or null/empty to delete
+      const avatarKey = `avatar:${user.id}`;
+      if (avatar) {
+        await supa.from("key_info").upsert({
+          key: avatarKey,
+          value: { avatar }
+        });
+      } else {
+        await supa.from("key_info").delete().eq("key", avatarKey);
+      }
+    }
+
     return c.json(
       jsonOk({
         id: data.id,
@@ -3116,6 +3148,7 @@ app.put(`${API_PREFIX}/settings/profile`, requireAuth, async (c) => {
         username: data.username,
         email: data.email,
         role: data.role,
+        ...(avatar !== undefined ? { avatar } : {}),
       }),
     );
   } catch (e) {
@@ -3146,13 +3179,69 @@ app.put(`${API_PREFIX}/settings/org`, requireAuth, async (c) => {
 
     if (error) return c.json(jsonFail(error.message), 500);
 
+    // Sync address if passed
+    let address = undefined;
+    if ("address" in body) {
+      address = String(body.address ?? "").trim();
+      const addressKey = `address:${user.org_id}`;
+      if (address) {
+        await supa.from("key_info").upsert({
+          key: addressKey,
+          value: { address }
+        });
+      } else {
+        await supa.from("key_info").delete().eq("key", addressKey);
+      }
+    }
+
     return c.json(
       jsonOk({
         id: data.id,
         name: data.name,
         supportEmail: data.support_email ?? "",
+        ...(address !== undefined ? { address } : {}),
       }),
     );
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.get(`${API_PREFIX}/settings/contact-labels`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const supa = sb();
+
+    const { data, error } = await supa
+      .from("key_info")
+      .select("value")
+      .eq("key", `contact_labels:${user.org_id}`)
+      .maybeSingle();
+
+    if (error) return c.json(jsonFail(error.message), 500);
+    return c.json(jsonOk(data?.value?.labels || {}));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.put(`${API_PREFIX}/settings/contact-labels`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const supa = sb();
+    const body = await c.req.json();
+
+    const labels = body.labels || {};
+
+    const { error } = await supa
+      .from("key_info")
+      .upsert({
+        key: `contact_labels:${user.org_id}`,
+        value: { labels }
+      });
+
+    if (error) return c.json(jsonFail(error.message), 500);
+    return c.json(jsonOk(labels));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -3362,7 +3451,7 @@ app.get(`${API_PREFIX}/superadmin/orgs/:orgId/stats`, requireAuth, requireSupera
     if (cErr) return c.json(jsonFail(cErr.message), 500);
 
     const { data: requestRows, error: reqErr } = await supa
-      .from("billing_info")
+      .from("key_info")
       .select("key, value")
       .like("key", `payment_request:${orgId}:%`);
 
@@ -3708,7 +3797,7 @@ app.get(`${API_PREFIX}/billing/payment-settings`, requireAuth, async (c) => {
   try {
     const supa = sb();
     const { data, error } = await supa
-      .from("billing_info")
+      .from("key_info")
       .select("value")
       .eq("key", "payment_settings")
       .maybeSingle();
@@ -3726,7 +3815,7 @@ app.get(`${API_PREFIX}/billing/manual-requests`, requireAuth, async (c) => {
     const supa = sb();
     const prefix = `payment_request:${user.org_id}:`;
     const { data, error } = await supa
-      .from("billing_info")
+      .from("key_info")
       .select("key, value")
       .like("key", prefix + "%");
 
@@ -3797,7 +3886,7 @@ app.post(`${API_PREFIX}/billing/manual-requests`, requireAuth, async (c) => {
 
     const key = `payment_request:${user.org_id}:${requestId}`;
     const { error: saveErr } = await supa
-      .from("billing_info")
+      .from("key_info")
       .upsert({ key, value: requestObj });
 
     if (saveErr) return c.json(jsonFail(saveErr.message), 500);
@@ -3812,7 +3901,7 @@ app.get(`${API_PREFIX}/superadmin/payment-settings`, requireAuth, requireSuperad
   try {
     const supa = sb();
     const { data, error } = await supa
-      .from("billing_info")
+      .from("key_info")
       .select("value")
       .eq("key", "payment_settings")
       .maybeSingle();
@@ -3830,7 +3919,7 @@ app.put(`${API_PREFIX}/superadmin/payment-settings`, requireAuth, requireSuperad
     const supa = sb();
 
     const { error } = await supa
-      .from("billing_info")
+      .from("key_info")
       .upsert({ key: "payment_settings", value: settings });
 
     if (error) return c.json(jsonFail(error.message), 500);
@@ -3844,7 +3933,7 @@ app.get(`${API_PREFIX}/superadmin/manual-requests`, requireAuth, requireSuperadm
   try {
     const supa = sb();
     const { data, error } = await supa
-      .from("billing_info")
+      .from("key_info")
       .select("key, value")
       .like("key", "payment_request:%");
 
@@ -3865,7 +3954,7 @@ app.post(`${API_PREFIX}/superadmin/manual-requests/:id/approve`, requireAuth, re
     const supa = sb();
 
     const { data: searchRows, error: searchErr } = await supa
-      .from("billing_info")
+      .from("key_info")
       .select("key, value")
       .like("key", `%:${requestId}`)
       .limit(1);
@@ -3924,7 +4013,7 @@ app.post(`${API_PREFIX}/superadmin/manual-requests/:id/approve`, requireAuth, re
     requestObj.approved_by = adminUser.email;
 
     const { error: saveErr } = await supa
-      .from("billing_info")
+      .from("key_info")
       .upsert({ key, value: requestObj });
 
     if (saveErr) return c.json(jsonFail(saveErr.message), 500);
@@ -3943,7 +4032,7 @@ app.post(`${API_PREFIX}/superadmin/manual-requests/:id/reject`, requireAuth, req
     const supa = sb();
 
     const { data: searchRows, error: searchErr } = await supa
-      .from("billing_info")
+      .from("key_info")
       .select("key, value")
       .like("key", `%:${requestId}`)
       .limit(1);
@@ -3965,7 +4054,7 @@ app.post(`${API_PREFIX}/superadmin/manual-requests/:id/reject`, requireAuth, req
     requestObj.notes = notes || "Ditolak oleh admin";
 
     const { error: saveErr } = await supa
-      .from("billing_info")
+      .from("key_info")
       .upsert({ key, value: requestObj });
 
     if (saveErr) return c.json(jsonFail(saveErr.message), 500);
