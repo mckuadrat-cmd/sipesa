@@ -139,7 +139,7 @@ export const api = {
     return ok(res.data);
   },
 
-  async signup(email: string, password: string, name: string, orgName: string, username: string) {
+  async signup(email: string, password: string, name: string, orgName: string, username: string, waNumber: string) {
     try {
       const { data, error } = await supabase.auth.signUp({
         email,
@@ -149,6 +149,7 @@ export const api = {
             full_name: name,
             org_name: orgName,
             username,
+            wa_number: waNumber,
           },
         },
       });

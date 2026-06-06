@@ -218,9 +218,10 @@ export default function App() {
     password: string,
     name: string,
     orgName: string,
-    username: string
+    username: string,
+    waNumber: string
   ) => {
-    const result = await api.signup(email, password, name, orgName, username);
+    const result = await api.signup(email, password, name, orgName, username, waNumber);
 
     if ("error" in result) {
       throw new Error(result.error || "Registrasi gagal");

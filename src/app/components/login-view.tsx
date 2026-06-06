@@ -3,7 +3,8 @@ import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
-import { Lock, Mail, Eye, EyeOff, AlertCircle, Building2, UserRound } from "lucide-react";
+import { Lock, Mail, Eye, EyeOff, AlertCircle, Building2, UserRound, Phone } from "lucide-react";
+import { AppModal } from "./AppModal";
 
 interface LoginViewProps {
   onLogin: (identifier: string, password: string) => Promise<void>;
@@ -12,7 +13,8 @@ interface LoginViewProps {
     password: string,
     name: string,
     orgName: string,
-    username: string
+    username: string,
+    waNumber: string
   ) => Promise<{ emailVerificationRequired: boolean } | void>;
 }
 
@@ -62,6 +64,7 @@ export function LoginView({ onLogin, onSignup }: LoginViewProps) {
   const [orgName, setOrgName] = useState("");
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
+  const [waNumber, setWaNumber] = useState("");
 
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -71,6 +74,9 @@ export function LoginView({ onLogin, onSignup }: LoginViewProps) {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const [showRulesModal, setShowRulesModal] = useState(false);
+  const [agreed, setAgreed] = useState(false);
 
   const handleNameChange = (value: string) => {
     setName(value);
@@ -116,6 +122,11 @@ export function LoginView({ onLogin, onSignup }: LoginViewProps) {
         return;
       }
 
+      if (!waNumber.trim()) {
+        setError("No. WhatsApp wajib diisi");
+        return;
+      }
+
       if (!identifier.trim()) {
         setError("Email wajib diisi");
         return;
@@ -135,24 +146,37 @@ export function LoginView({ onLogin, onSignup }: LoginViewProps) {
         setError("Konfirmasi password tidak sama");
         return;
       }
+
+      setAgreed(false);
+      setShowRulesModal(true);
+      return;
     }
 
     setLoading(true);
 
     try {
-      if (isLogin) {
-        await onLogin(identifier.trim(), password);
-      } else {
-        const res = await onSignup(
-          identifier.trim(),
-          password,
-          name.trim(),
-          orgName.trim(),
-          normalizeUsername(username)
-        );
-        if (res?.emailVerificationRequired) {
-          setIsRegistered(true);
-        }
+      await onLogin(identifier.trim(), password);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConfirmSignup = async () => {
+    setShowRulesModal(false);
+    setLoading(true);
+    try {
+      const res = await onSignup(
+        identifier.trim(),
+        password,
+        name.trim(),
+        orgName.trim(),
+        normalizeUsername(username),
+        waNumber.trim()
+      );
+      if (res?.emailVerificationRequired) {
+        setIsRegistered(true);
       }
     } catch (err) {
       setError(getErrorMessage(err));
@@ -183,7 +207,7 @@ export function LoginView({ onLogin, onSignup }: LoginViewProps) {
           <div className="rounded-2xl bg-white/10 p-4">
             Siap terkoneksi dengan WhatsApp Business API Meta
           </div>
-        </div> 
+        </div>
       </div>
 
       <div className="h-full flex items-center justify-center p-4 md:p-8 overflow-hidden">
@@ -205,6 +229,7 @@ export function LoginView({ onLogin, onSignup }: LoginViewProps) {
                 setIsLogin(true);
                 setPassword("");
                 setConfirmPassword("");
+                setWaNumber("");
               }}
               className="w-full h-11 rounded-xl"
               style={{ backgroundColor: "#DF7A5E" }}
@@ -239,124 +264,111 @@ export function LoginView({ onLogin, onSignup }: LoginViewProps) {
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto flex-1 min-h-0 pr-1">
-              {!isLogin && (
-                <>
-                  <div>
-                    <Label>Instansi / Sekolah *</Label>
-                    <div className="relative mt-2">
-                      <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        type="text"
-                        placeholder="Contoh: SMP Mulia Berbagi"
-                        value={orgName}
-                        onChange={(e) => {
-                          setOrgName(e.target.value);
-                          resetFormError();
-                        }}
-                        className="pl-10"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <Label>Nama Lengkap *</Label>
-                    <div className="relative mt-2">
-                      <UserRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        type="text"
-                        placeholder="Masukkan nama lengkap"
-                        value={name}
-                        onChange={(e) => {
-                          handleNameChange(e.target.value);
-                          resetFormError();
-                        }}
-                        className="pl-10"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <Label>Username *</Label>
-                    <div className="relative mt-2">
-                      <UserRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        type="text"
-                        placeholder="contoh: smp_muliaberbagi"
-                        value={username}
-                        onChange={(e) => {
-                          setUsername(normalizeUsername(e.target.value));
-                          resetFormError();
-                        }}
-                        className="pl-10"
-                      />
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Hanya huruf kecil, angka, dan underscore
-                    </p>
-                  </div>
-                </>
-              )}
-
-              <div>
-                <Label>{isLogin ? "Email / Username" : "Email *"}</Label>
-                <div className="relative mt-2">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <Input
-                    type={isLogin ? "text" : "email"}
-                    placeholder={isLogin ? "Masukkan email/username anda" : "email@example.com"}
-                    value={identifier}
-                    onChange={(e) => {
-                      setIdentifier(e.target.value);
-                      resetFormError();
-                    }}
-                    required
-                    className="pl-10"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <Label>Password *</Label>
-                <div className="relative mt-2">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <Input
-                    type={showPassword ? "text" : "password"}
-                    placeholder="••••••••"
-                    value={password}
-                    onChange={(e) => {
-                      setPassword(e.target.value);
-                      resetFormError();
-                    }}
-                    required
-                    className="pl-10 pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
+            <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0 space-y-4 overflow-hidden">
+              <div className="space-y-4 overflow-y-auto flex-1 pr-1 pb-2">
                 {!isLogin && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Minimal 8 karakter
-                  </p>
-                )}
-              </div>
+                  <>
+                    <div>
+                      <Label>Instansi / Sekolah *</Label>
+                      <div className="relative mt-2">
+                        <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <Input
+                          type="text"
+                          placeholder="Contoh: SMP Mulia Berbagi"
+                          value={orgName}
+                          onChange={(e) => {
+                            setOrgName(e.target.value);
+                            resetFormError();
+                          }}
+                          className="pl-10"
+                        />
+                      </div>
+                    </div>
 
-              {!isLogin && (
+                    <div>
+                      <Label>Nama Lengkap *</Label>
+                      <div className="relative mt-2">
+                        <UserRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <Input
+                          type="text"
+                          placeholder="Masukkan nama lengkap"
+                          value={name}
+                          onChange={(e) => {
+                            handleNameChange(e.target.value);
+                            resetFormError();
+                          }}
+                          className="pl-10"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <Label>Username *</Label>
+                      <div className="relative mt-2">
+                        <UserRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <Input
+                          type="text"
+                          placeholder="contoh: smp_muliaberbagi"
+                          value={username}
+                          onChange={(e) => {
+                            setUsername(normalizeUsername(e.target.value));
+                            resetFormError();
+                          }}
+                          className="pl-10"
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Hanya huruf kecil, angka, dan underscore
+                      </p>
+                    </div>
+
+                    <div>
+                      <Label>No. WhatsApp *</Label>
+                      <div className="relative mt-2">
+                        <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <Input
+                          type="text"
+                          placeholder="Contoh: 08123456789"
+                          value={waNumber}
+                          onChange={(e) => {
+                            setWaNumber(e.target.value);
+                            resetFormError();
+                          }}
+                          className="pl-10"
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
+
                 <div>
-                  <Label>Konfirmasi Password *</Label>
+                  <Label>{isLogin ? "Email / Username" : "Email *"}</Label>
+                  <div className="relative mt-2">
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      type={isLogin ? "text" : "email"}
+                      placeholder={isLogin ? "Masukkan email/username anda" : "email@example.com"}
+                      value={identifier}
+                      onChange={(e) => {
+                        setIdentifier(e.target.value);
+                        resetFormError();
+                      }}
+                      required
+                      className="pl-10"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <Label>Password *</Label>
                   <div className="relative mt-2">
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
-                      type={showConfirmPassword ? "text" : "password"}
+                      type={showPassword ? "text" : "password"}
                       placeholder="••••••••"
-                      value={confirmPassword}
+                      value={password}
                       onChange={(e) => {
-                        setConfirmPassword(e.target.value);
+                        setPassword(e.target.value);
                         resetFormError();
                       }}
                       required
@@ -364,23 +376,57 @@ export function LoginView({ onLogin, onSignup }: LoginViewProps) {
                     />
                     <button
                       type="button"
-                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                      onClick={() => setShowPassword(!showPassword)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     >
-                      {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
+                  {!isLogin && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Minimal 8 karakter
+                    </p>
+                  )}
                 </div>
-              )}
 
-              <Button
-                type="submit"
-                disabled={loading}
-                className="w-full h-11 rounded-xl mt-4"
-                style={{ backgroundColor: "#DF7A5E" }}
-              >
-                {loading ? "Memproses..." : isLogin ? "Masuk" : "Daftar Sekarang"}
-              </Button>
+                {!isLogin && (
+                  <div>
+                    <Label>Konfirmasi Password *</Label>
+                    <div className="relative mt-2">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <Input
+                        type={showConfirmPassword ? "text" : "password"}
+                        placeholder="••••••••"
+                        value={confirmPassword}
+                        onChange={(e) => {
+                          setConfirmPassword(e.target.value);
+                          resetFormError();
+                        }}
+                        required
+                        className="pl-10 pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      >
+                        {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-shrink-0 pt-2">
+                <Button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full h-11 rounded-xl"
+                  style={{ backgroundColor: "#DF7A5E" }}
+                >
+                  {loading ? "Memproses..." : isLogin ? "Masuk" : "Daftar Sekarang"}
+                </Button>
+              </div>
             </form>
 
             <div className="text-center mt-4 flex-shrink-0">
@@ -393,6 +439,7 @@ export function LoginView({ onLogin, onSignup }: LoginViewProps) {
                     setError("");
                     setPassword("");
                     setConfirmPassword("");
+                    setWaNumber("");
                   }}
                   className="font-medium hover:underline"
                   style={{ color: "#DF7A5E" }}
@@ -404,6 +451,50 @@ export function LoginView({ onLogin, onSignup }: LoginViewProps) {
           </Card>
         )}
       </div>
+
+      <AppModal
+        open={showRulesModal}
+        title="Pernyataan Kepatuhan Layanan"
+        onClose={() => setShowRulesModal(false)}
+        maxWidthClassName="max-w-lg"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600 leading-relaxed">
+            Sebelum menyelesaikan pendaftaran, Anda wajib menyetujui pernyataan komitmen penggunaan platform di bawah ini:
+          </p>
+
+          <label className="flex gap-3 items-start p-3 bg-slate-50 rounded-xl border border-slate-100 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={agreed}
+              onChange={(e) => setAgreed(e.target.checked)}
+              className="mt-1 rounded border-slate-300 text-primary focus:ring-primary w-4 h-4 cursor-pointer"
+            />
+            <span className="text-sm text-slate-700 leading-normal font-medium">
+              Saya menyatakan bahwa seluruh penerima pesan merupakan pelanggan, anggota, peserta, atau kontak yang relevan dengan bisnis/organisasi saya. Saya tidak akan menggunakan platform ini untuk spam, pembelian database nomor, atau pengiriman pesan yang melanggar kebijakan Meta dan peraturan yang berlaku.
+            </span>
+          </label>
+
+          <div className="flex gap-3 pt-2">
+            <Button
+              onClick={handleConfirmSignup}
+              disabled={!agreed || loading}
+              className="flex-1 text-white font-medium rounded-xl h-11 transition-all"
+              style={{ backgroundColor: agreed ? "#DF7A5E" : "#cbd5e1", cursor: agreed ? "pointer" : "not-allowed" }}
+            >
+              {loading ? "Mendaftar..." : "Saya Setuju & Daftar"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowRulesModal(false)}
+              className="flex-1 border-slate-200 text-slate-700 hover:bg-slate-50 font-medium rounded-xl h-11"
+            >
+              Batal
+            </Button>
+          </div>
+        </div>
+      </AppModal>
     </div>
   );
 }
