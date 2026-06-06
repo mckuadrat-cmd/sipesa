@@ -351,13 +351,38 @@ export default function App() {
 
       const settingsRes = await api.getSettings();
       if (!("error" in settingsRes)) {
+        const profile = settingsRes.data.profile;
+        const org = settingsRes.data.org;
+        const userId = profile?.id;
+        const orgId = org?.id;
+
+        if (userId) {
+          const avatarKey = `sipesa_avatar_${userId}`;
+          if (profile?.avatar) {
+            localStorage.setItem(avatarKey, profile.avatar);
+            window.dispatchEvent(new Event("sipesa-avatar-updated"));
+          } else if (profile?.avatar === null) {
+            localStorage.removeItem(avatarKey);
+            window.dispatchEvent(new Event("sipesa-avatar-updated"));
+          }
+        }
+
+        if (orgId) {
+          const addressKey = `sipesa_address_${orgId}`;
+          if (org?.address) {
+            localStorage.setItem(addressKey, org.address);
+          } else if (org?.address === null || org?.address === "") {
+            localStorage.removeItem(addressKey);
+          }
+        }
+
         setUser((prev: any) => {
           if (!prev) return prev;
           return {
             ...prev,
-            name: settingsRes.data.profile?.fullName || prev.name,
-            orgName: settingsRes.data.org?.name || prev.orgName || prev.org_name,
-            org_name: settingsRes.data.org?.name || prev.org_name || prev.orgName,
+            name: profile?.fullName || prev.name,
+            orgName: org?.name || prev.orgName || prev.org_name,
+            org_name: org?.name || prev.org_name || prev.orgName,
           };
         });
       }

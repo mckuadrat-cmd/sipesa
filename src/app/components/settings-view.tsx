@@ -102,10 +102,15 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       if (userId) {
         let avatarVal = localStorage.getItem(`sipesa_avatar_${userId}`);
         if (!avatarVal) {
-          const oldAvatar = localStorage.getItem("sipesa_avatar");
-          if (oldAvatar) {
-            localStorage.setItem(`sipesa_avatar_${userId}`, oldAvatar);
-            avatarVal = oldAvatar;
+          avatarVal = result.data.profile?.avatar || null;
+          if (!avatarVal) {
+            const oldAvatar = localStorage.getItem("sipesa_avatar");
+            if (oldAvatar) {
+              localStorage.setItem(`sipesa_avatar_${userId}`, oldAvatar);
+              avatarVal = oldAvatar;
+            }
+          } else {
+            localStorage.setItem(`sipesa_avatar_${userId}`, avatarVal);
           }
         }
         setAvatar(avatarVal);
@@ -115,10 +120,15 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       const addressKey = orgId ? `sipesa_address_${orgId}` : "sipesa_address";
       let addressVal = localStorage.getItem(addressKey);
       if (!addressVal && orgId) {
-        const oldAddress = localStorage.getItem("sipesa_address");
-        if (oldAddress) {
-          localStorage.setItem(addressKey, oldAddress);
-          addressVal = oldAddress;
+        addressVal = result.data.org?.address || "";
+        if (!addressVal) {
+          const oldAddress = localStorage.getItem("sipesa_address");
+          if (oldAddress) {
+            localStorage.setItem(addressKey, oldAddress);
+            addressVal = oldAddress;
+          }
+        } else {
+          localStorage.setItem(addressKey, addressVal);
         }
       }
       setAddress(addressVal || "");
@@ -159,6 +169,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
         api.updateOrgSettings({
           name: org.name,
           supportEmail: org.supportEmail,
+          address: address,
         })
       ]);
 
@@ -265,7 +276,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
     }
 
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const base64 = reader.result as string;
       if (!profile.id) {
         toast.error("Gagal memperbarui foto profil: ID pengguna tidak tersedia.");
@@ -275,6 +286,18 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       localStorage.setItem(avatarKey, base64);
       setAvatar(base64);
       window.dispatchEvent(new Event("sipesa-avatar-updated"));
+      
+      try {
+        await api.updateProfile({
+          fullName: profile.fullName,
+          username: profile.username,
+          email: profile.email,
+          avatar: base64,
+        });
+      } catch (err) {
+        console.warn("Gagal sinkronisasi foto profil ke database:", err);
+      }
+
       toast.success("Foto profil berhasil diperbarui");
     };
     reader.onerror = () => {
@@ -283,12 +306,24 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
     reader.readAsDataURL(file);
   };
 
-  const handleAvatarDelete = () => {
+  const handleAvatarDelete = async () => {
     if (!profile.id) return;
     const avatarKey = `sipesa_avatar_${profile.id}`;
     localStorage.removeItem(avatarKey);
     setAvatar(null);
     window.dispatchEvent(new Event("sipesa-avatar-updated"));
+
+    try {
+      await api.updateProfile({
+        fullName: profile.fullName,
+        username: profile.username,
+        email: profile.email,
+        avatar: null,
+      });
+    } catch (err) {
+      console.warn("Gagal menghapus foto profil di database:", err);
+    }
+
     toast.success("Foto profil berhasil dihapus");
   };
 

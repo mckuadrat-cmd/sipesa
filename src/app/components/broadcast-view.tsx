@@ -720,8 +720,17 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
             labelsStr = oldLabels;
           }
         }
-        const labels = JSON.parse(labelsStr || "{}");
-        setContactLabels(labels);
+        if (labelsStr) {
+          try {
+            setContactLabels(JSON.parse(labelsStr));
+          } catch {}
+        }
+
+        const res = await api.getContactLabels();
+        if (res.success) {
+          setContactLabels(res.data);
+          localStorage.setItem(labelsKey, JSON.stringify(res.data));
+        }
       } catch (e) {
         console.error(e);
       }
@@ -1089,6 +1098,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
           }
 
           localStorage.setItem(labelsKey, JSON.stringify(savedLabels));
+          api.updateContactLabels(savedLabels).catch((e) =>
+            console.warn("Gagal sinkronisasi label ke database:", e)
+          );
         } catch (err) {
           console.error("Failed to automatically save contacts during broadcast:", err);
         }

@@ -71,7 +71,7 @@ export function ContactListView({ user }: { user?: any }) {
   const [importing, setImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const loadContactLabels = () => {
+  const loadContactLabels = async () => {
     try {
       let labelsStr = localStorage.getItem(labelsKey);
       if (!labelsStr) {
@@ -81,8 +81,17 @@ export function ContactListView({ user }: { user?: any }) {
           labelsStr = oldLabels;
         }
       }
-      const labels = JSON.parse(labelsStr || "{}");
-      setContactLabels(labels);
+      if (labelsStr) {
+        try {
+          setContactLabels(JSON.parse(labelsStr));
+        } catch {}
+      }
+
+      const res = await api.getContactLabels();
+      if (res.success) {
+        setContactLabels(res.data);
+        localStorage.setItem(labelsKey, JSON.stringify(res.data));
+      }
     } catch (e) {
       console.error(e);
     }
@@ -159,6 +168,9 @@ export function ContactListView({ user }: { user?: any }) {
         newLabels[savedPhone] = label;
         localStorage.setItem(labelsKey, JSON.stringify(newLabels));
         setContactLabels(newLabels);
+        api.updateContactLabels(newLabels).catch((e) =>
+          console.warn("Gagal sinkronisasi label ke database:", e)
+        );
 
         toast.success(editingContact ? "Kontak berhasil diperbarui" : "Kontak berhasil ditambahkan");
         setShowFormModal(false);
@@ -318,6 +330,9 @@ export function ContactListView({ user }: { user?: any }) {
 
       localStorage.setItem(labelsKey, JSON.stringify(newLabels));
       setContactLabels(newLabels);
+      api.updateContactLabels(newLabels).catch((e) =>
+        console.warn("Gagal sinkronisasi label ke database:", e)
+      );
 
       toast.success(`Berhasil mengimport ${successCount} kontak. Gagal: ${failCount}`);
       setShowImportModal(false);
@@ -359,6 +374,9 @@ export function ContactListView({ user }: { user?: any }) {
 
       localStorage.setItem(labelsKey, JSON.stringify(newLabels));
       setContactLabels(newLabels);
+      api.updateContactLabels(newLabels).catch((e) =>
+        console.warn("Gagal sinkronisasi label ke database:", e)
+      );
       setSelectedContactIds([]);
       toast.success(`Berhasil menghapus ${successCount} kontak.${failCount > 0 ? ` Gagal: ${failCount}` : ""}`);
       await loadContacts();
@@ -945,6 +963,9 @@ export function ContactListView({ user }: { user?: any }) {
                     });
                     localStorage.setItem(labelsKey, JSON.stringify(savedLabels));
                     setContactLabels(savedLabels);
+                    api.updateContactLabels(savedLabels).catch((e) =>
+                      console.warn("Gagal sinkronisasi label ke database:", e)
+                    );
                     toast.success(`Berhasil memperbarui label untuk ${selectedContactIds.length} kontak`);
                     setShowBulkLabelModal(false);
                     setBulkLabelText("");
