@@ -37,6 +37,21 @@ function translateError(err?: string | null) {
   return err;
 }
 
+const InfoTooltip = ({ text }: { text: string }) => {
+  if (!text || text === "-") return <span className="text-slate-400">-</span>;
+  return (
+    <div className="relative group inline-block max-w-full cursor-help">
+      <div className="truncate text-slate-500 max-w-[280px]">
+        {text}
+      </div>
+      <div className="absolute right-full top-1/2 -translate-y-1/2 mr-2 hidden group-hover:block bg-slate-900 text-white text-xs rounded-lg px-3 py-2 z-[999] whitespace-normal w-64 shadow-xl pointer-events-none">
+        {text}
+        <div className="absolute left-full top-1/2 -translate-y-1/2 border-4 border-transparent border-l-slate-900"></div>
+      </div>
+    </div>
+  );
+};
+
 type RecipientRow = {
   id: string;
   recipient_name?: string | null;
@@ -53,6 +68,7 @@ interface BroadcastProgressModalProps {
   broadcastId: string | null;
   onClose: () => void;
   onCancelled?: () => void;
+  onComplete?: (broadcastId: string) => void;
 }
 
 function normalizeRecipientStatus(status?: string | null) {
@@ -137,6 +153,7 @@ export function BroadcastProgressModal({
   broadcastId,
   onClose,
   onCancelled,
+  onComplete,
 }: BroadcastProgressModalProps) {
   const [stats, setStats] = useState<any | null>(null);
   const [rows, setRows] = useState<RecipientRow[]>([]);
@@ -145,6 +162,7 @@ export function BroadcastProgressModal({
   const [tick, setTick] = useState(0);
   const [isCancelling, setIsCancelling] = useState(false);
   const isProcessingRef = useRef(false);
+  const hasTriggeredComplete = useRef(false);
 
   const fetchBroadcastData = async () => {
     if (!broadcastId) return;
@@ -277,6 +295,12 @@ export function BroadcastProgressModal({
     };
   }, [open, broadcastId]);
 
+  useEffect(() => {
+    if (!open) {
+      hasTriggeredComplete.current = false;
+    }
+  }, [open]);
+
   const summary = useMemo(() => {
     const sent = rows.filter((r) => normalizeRecipientStatus(r.status) === "sent").length;
     const delivered = rows.filter((r) => normalizeRecipientStatus(r.status) === "delivered").length;
@@ -312,6 +336,15 @@ export function BroadcastProgressModal({
     stats?.status === "cancelled" ||
     (summary.total > 0 && summary.pending === 0 && summary.processing === 0);
 
+  useEffect(() => {
+    if (isDone && open && broadcastId && !hasTriggeredComplete.current) {
+      hasTriggeredComplete.current = true;
+      if (onComplete) {
+        onComplete(broadcastId);
+      }
+    }
+  }, [isDone, open, broadcastId, onComplete]);
+
   return (
     <AppModal
       open={open}
@@ -321,7 +354,7 @@ export function BroadcastProgressModal({
       closeOnBackdrop={isDone}
       closeDisabled={!isDone}
       closeOnContentClick={isDone}
-      maxWidthClassName="max-w-5xl"
+      maxWidthClassName="max-w-3xl"
       footer={
         <div className="flex justify-between items-center">
           <Button
@@ -375,12 +408,12 @@ export function BroadcastProgressModal({
             e.stopPropagation();
           }}
         >
-          <table className="min-w-full text-xs">
+          <table className="min-w-full text-xs table-fixed">
             <thead className="sticky top-0 bg-slate-50 z-10 border-b">
               <tr>
-                <th className="px-3 py-2 text-center font-semibold text-slate-600">No</th>
-                <th className="px-3 py-2 text-left font-semibold text-slate-600">Penerima</th>
-                <th className="px-3 py-2 text-center font-semibold text-slate-600">Status</th>
+                <th className="px-3 py-2 text-center font-semibold text-slate-600 w-12">No</th>
+                <th className="px-3 py-2 text-left font-semibold text-slate-600 w-40">Penerima</th>
+                <th className="px-3 py-2 text-center font-semibold text-slate-600 w-28">Status</th>
                 <th className="px-3 py-2 text-left font-semibold text-slate-600">Info</th>
               </tr>
             </thead>
@@ -411,8 +444,8 @@ export function BroadcastProgressModal({
                       {row.phone_e164 || "-"}
                     </td>
                     <td className="px-3 py-2 text-center">{renderStatusBadge(row.status)}</td>
-                    <td className="px-3 py-2 text-slate-600">
-                      {row.error ? translateError(row.error) : row.sent_at || row.updated_at || row.created_at || "-"}
+                    <td className="px-3 py-2 text-slate-600 overflow-visible">
+                      <InfoTooltip text={row.error ? translateError(row.error) : row.sent_at || row.updated_at || row.created_at || "-"} />
                     </td>
                   </tr>
                 );

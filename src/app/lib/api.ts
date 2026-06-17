@@ -755,6 +755,7 @@ export const api = {
 
   async importFromGoogleSheet(
     sheetUrl: string,
+    sheetName?: string,
   ): Promise<
     AppResult<
       Array<{
@@ -774,10 +775,15 @@ export const api = {
       const match = normalized.match(/\/d\/([a-zA-Z0-9-_]+)/);
       if (!match) return fail("URL Google Sheet tidak valid");
 
-      const gidMatch = normalized.match(/[?&]gid=([0-9]+)/);
-      const gid = gidMatch?.[1] || "0";
-
-      const csvUrl = `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv&gid=${gid}`;
+      let csvUrl = "";
+      const trimmedSheetName = String(sheetName ?? "").trim();
+      if (trimmedSheetName) {
+        csvUrl = `https://docs.google.com/spreadsheets/d/${match[1]}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(trimmedSheetName)}`;
+      } else {
+        const gidMatch = normalized.match(/[?&]gid=([0-9]+)/);
+        const gid = gidMatch?.[1] || "0";
+        csvUrl = `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv&gid=${gid}`;
+      }
 
       const res = await fetch(csvUrl);
       if (!res.ok) return fail("Gagal mengambil data Google Sheet");

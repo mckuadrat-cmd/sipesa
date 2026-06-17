@@ -4,6 +4,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { ArrowLeft, CheckCircle, Clock, XCircle, Search, Download } from "lucide-react";
 import { api } from "../lib/api";
+import { AppModal } from "./AppModal";
 
 interface RecipientStatus {
   id: string;
@@ -69,6 +70,21 @@ function translateError(err?: string) {
   }
   return err;
 }
+
+const InfoTooltip = ({ text }: { text: string }) => {
+  if (!text || text === "-") return <span className="text-slate-400">-</span>;
+  return (
+    <div className="relative group inline-block max-w-full cursor-help">
+      <div className="truncate text-slate-500 max-w-[280px]">
+        {text}
+      </div>
+      <div className="absolute right-full top-1/2 -translate-y-1/2 mr-2 hidden group-hover:block bg-slate-900 text-white text-xs rounded-lg px-3 py-2 z-[999] whitespace-normal w-64 shadow-xl pointer-events-none">
+        {text}
+        <div className="absolute left-full top-1/2 -translate-y-1/2 border-4 border-transparent border-l-slate-900"></div>
+      </div>
+    </div>
+  );
+};
 
 export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailViewProps) {
   const [broadcast, setBroadcast] = useState<BroadcastDetail | null>(null);
@@ -150,11 +166,11 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
     const header = ["Nama", "Nomor", "Status", "Waktu", "Error"];
 
-    const rows = broadcast.recipients.map((r) => [
+    const rows = filteredRecipients.map((r) => [
       r.contactName,
       r.contactPhone,
       r.status,
-      r.timestamp,
+      r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp),
       r.errorMessage || "",
     ]);
 
@@ -186,21 +202,14 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
   }
 
   return (
-    <div className="min-h-[calc(100vh-4rem)] w-full p-6 md:p-8 bg-white">
-      <div className="w-full flex flex-col gap-6">
-
-        {/* Header */}
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-lg font-semibold text-slate-900">Detail Broadcast</h1>
-            <p className="text-sm text-slate-500">Status pengiriman per nomor</p>
-          </div>
-
-          <Button variant="outline" onClick={onBack} className="rounded-xl border-slate-200">
-            <ArrowLeft size={16} className="mr-2" />
-            Kembali
-          </Button>
-        </div>
+    <AppModal
+      open={true}
+      title="Detail Broadcast"
+      description="Status pengiriman per nomor"
+      onClose={onBack}
+      maxWidthClassName="max-w-4xl"
+    >
+      <div className="w-full flex flex-col gap-4 max-h-[75vh] overflow-y-auto pr-1">
 
         {error && (
           <Card className="p-4 bg-red-50 border-red-200 text-red-700">
@@ -311,13 +320,13 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
         {/* Table */}
         <Card className="overflow-hidden border border-gray-200 shadow-sm">
           <div className="overflow-auto max-h-[60vh]">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 sticky top-0 border-b border-gray-200">
+            <table className="w-full text-sm table-fixed">
+              <thead className="bg-slate-50 sticky top-0 border-b border-gray-200 z-10">
                 <tr>
                   <th className="p-3 text-left text-slate-600 font-semibold w-16">No</th>
-                  <th className="p-3 text-left text-slate-600 font-semibold">Nomor</th>
-                  <th className="p-3 text-left text-slate-600 font-semibold">Nama</th>
-                  <th className="p-3 text-left text-slate-600 font-semibold">Status</th>
+                  <th className="p-3 text-left text-slate-600 font-semibold w-40">Nomor</th>
+                  <th className="p-3 text-left text-slate-600 font-semibold w-48">Nama</th>
+                  <th className="p-3 text-left text-slate-600 font-semibold w-32">Status</th>
                   <th className="p-3 text-left text-slate-600 font-semibold">Info</th>
                 </tr>
               </thead>
@@ -337,8 +346,8 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
                           <span>{st.label}</span>
                         </div>
                       </td>
-                      <td className="p-3 text-slate-500 max-w-[300px] truncate" title={r.status === "failed" ? (r.errorMessage || "") : formatDate(r.timestamp)}>
-                        {r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp)}
+                      <td className="p-3 text-slate-500 overflow-visible">
+                        <InfoTooltip text={r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp)} />
                       </td>
                     </tr>
                   );
@@ -357,6 +366,6 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
         </Card>
 
       </div>
-    </div>
+    </AppModal>
   );
 }

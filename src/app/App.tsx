@@ -436,26 +436,25 @@ export default function App() {
 
     // ChatInterface now handles WABA dropdown directly
 
-    if (selectedBroadcast && activeView === "broadcast-detail") {
+    if (activeView === "history" || (activeView === "broadcast-detail" && selectedBroadcast)) {
       return (
-        <BroadcastDetailView
-          broadcastId={selectedBroadcast}
-          onBack={() => {
-            setSelectedBroadcast(null);
-            setActiveView("history");
-          }}
-        />
-      );
-    }
-
-    if (activeView === "history") {
-      return (
-        <BroadcastHistory
-          onViewDetail={(broadcastId) => {
-            setSelectedBroadcast(broadcastId);
-            setActiveView("broadcast-detail");
-          }}
-        />
+        <>
+          <BroadcastHistory
+            onViewDetail={(broadcastId) => {
+              setSelectedBroadcast(broadcastId);
+              setActiveView("broadcast-detail");
+            }}
+          />
+          {activeView === "broadcast-detail" && selectedBroadcast && (
+            <BroadcastDetailView
+              broadcastId={selectedBroadcast}
+              onBack={() => {
+                setSelectedBroadcast(null);
+                setActiveView("history");
+              }}
+            />
+          )}
+        </>
       );
     }
 
