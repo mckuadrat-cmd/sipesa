@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
@@ -2808,6 +2809,36 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
   }
 });
 
+async function recalculateBroadcastStats(supa: any, broadcastId: string) {
+  try {
+    const { data: statsRows, error: statsErr } = await supa
+      .from("wa_broadcast_recipients")
+      .select("status")
+      .eq("broadcast_id", broadcastId);
+
+    if (statsErr || !statsRows) return;
+
+    const totalSent = statsRows.filter((x: any) => x.status === "sent" || x.status === "delivered" || x.status === "read").length;
+    const totalFailed = statsRows.filter((x: any) => x.status === "failed").length;
+    const totalPending = statsRows.filter((x: any) => x.status === "pending" || x.status === "processing").length;
+
+    const nextStatus = totalPending === 0 ? "completed" : "sending";
+
+    await supa
+      .from("wa_broadcasts")
+      .update({
+        status: nextStatus,
+        total_sent: totalSent,
+        total_failed: totalFailed,
+        finished_at: totalPending === 0 ? nowIso() : null,
+        updated_at: nowIso(),
+      })
+      .eq("id", broadcastId);
+  } catch (err) {
+    console.error("Error recalculating stats:", err);
+  }
+}
+
 // ===== WEBHOOK VERIFY =====
 app.get(`${API_PREFIX}/webhooks/meta`, async (c) => {
   try {
@@ -2927,10 +2958,25 @@ app.post(`${API_PREFIX}/webhooks/meta`, async (c) => {
             if (patch.status && ["pending", "processing", "sent", "failed"].includes(patch.status)) {
               recipientPatch.status = patch.status;
             }
-            await supa
+            const { data: updatedRecs } = await supa
               .from("wa_broadcast_recipients")
               .update(recipientPatch)
-              .eq("wa_message_id", msg.id);
+              .eq("wa_message_id", msg.id)
+              .select("broadcast_id");
+
+            let broadcastId = updatedRecs?.[0]?.broadcast_id;
+            if (!broadcastId && typeof msg.payload === "object" && msg.payload) {
+              broadcastId = msg.payload.broadcast_id;
+            } else if (!broadcastId && typeof msg.payload === "string" && msg.payload) {
+              try {
+                const parsed = JSON.parse(msg.payload);
+                broadcastId = parsed.broadcast_id;
+              } catch {}
+            }
+
+            if (broadcastId) {
+              await recalculateBroadcastStats(supa, broadcastId);
+            }
           }
         }
 

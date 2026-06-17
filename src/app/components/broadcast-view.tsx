@@ -487,6 +487,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [uploadMethod, setUploadMethod] = useState<UploadMethod>("csv");
   const [sheetUrl, setSheetUrl] = useState("");
+  const [sheetName, setSheetName] = useState("");
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleDate, setScheduleDate] = useState("");
   const [scheduleTime, setScheduleTime] = useState("");
@@ -516,11 +517,13 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     type: "success" | "error" | "info";
     title: string;
     message: string;
+    broadcastId?: string | null;
   }>({
     open: false,
     type: "info",
     title: "",
     message: "",
+    broadcastId: null,
   });
 
   const [duplicateCheckModal, setDuplicateCheckModal] = useState<{
@@ -581,8 +584,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     type: "success" | "error" | "info",
     title: string,
     message: string,
+    broadcastId?: string | null,
   ) => {
-    setResultModal({ open: true, type, title, message });
+    setResultModal({ open: true, type, title, message, broadcastId });
   };
 
   const closeResultModal = () => {
@@ -591,6 +595,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       type: "info",
       title: "",
       message: "",
+      broadcastId: null,
     });
   };
 
@@ -802,7 +807,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
 
     try {
       setLoading(true);
-      const result = await api.importFromGoogleSheet(sheetUrl);
+      const result = await api.importFromGoogleSheet(sheetUrl, sheetName);
 
       if ("error" in result) {
         setUploadStatus("error");
@@ -1304,6 +1309,15 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                     onChange={(e) => setSheetUrl(e.target.value)}
                     className="mt-2"
                   />
+                </div>
+                <div>
+                  <Label>Nama Sheet / Tab (Opsional)</Label>
+                  <Input
+                    placeholder="Contoh: Sheet1 (kosongkan untuk sheet/tab pertama)"
+                    value={sheetName}
+                    onChange={(e) => setSheetName(e.target.value)}
+                    className="mt-2"
+                  />
                   <p className="text-xs text-muted-foreground mt-2">
                     Pastikan Google Sheet sudah di-share dengan "Anyone with the link can view"
                   </p>
@@ -1548,9 +1562,19 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
 
             {uploadStatus === "success" && (
               <div className="bg-green-50 border border-green-200 rounded-lg p-4 mt-4">
-                <div className="flex items-center gap-2 text-green-700">
-                  <CheckCircle className="w-5 h-5" />
-                  <p className="font-medium">{contacts.length} kontak berhasil dimuat</p>
+                <div className="flex items-center justify-between text-green-700">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle className="w-5 h-5" />
+                    <p className="font-medium">{contacts.length} kontak berhasil dimuat</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetImportedContacts}
+                    className="w-7 h-7 rounded-full flex items-center justify-center text-green-700 hover:bg-green-100 transition-colors"
+                    title="Batalkan / Hapus Penerima"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
             )}
@@ -1755,8 +1779,24 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         title={resultModal.title}
         onClose={closeResultModal}
         footer={
-          <div className="flex justify-end">
-            <Button onClick={closeResultModal}>Oke</Button>
+          <div className="flex justify-end gap-2">
+            {resultModal.broadcastId && (
+              <Button
+                onClick={() => {
+                  const bcId = resultModal.broadcastId;
+                  closeResultModal();
+                  if (bcId) {
+                    window.location.hash = `#/broadcast-detail?broadcastId=${bcId}`;
+                  }
+                }}
+                className="bg-primary text-white"
+              >
+                Lihat Laporan
+              </Button>
+            )}
+            <Button variant="outline" onClick={closeResultModal}>
+              Tutup
+            </Button>
           </div>
         }
       >
@@ -1813,6 +1853,15 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         onCancelled={() => {
           loadInitialData();
           onBroadcastSent?.();
+        }}
+        onComplete={(bcId) => {
+          setProgressModalOpen(false);
+          openResultModal(
+            "success",
+            "Broadcast Selesai",
+            "Pesan broadcast Anda telah selesai dikirim. Silakan lihat laporan detail untuk melihat rincian pengiriman.",
+            bcId,
+          );
         }}
       />
     </div>
