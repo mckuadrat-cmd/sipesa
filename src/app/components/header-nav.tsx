@@ -52,6 +52,8 @@ export function HeaderNav({
   const profileRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
   const mailRef = useRef<HTMLDivElement>(null);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+  const burgerBtnRef = useRef<HTMLButtonElement>(null);
 
   const totalUnread = numbers.reduce((acc, curr) => acc + (curr.unreadCount || 0), 0);
 
@@ -101,6 +103,14 @@ export function HeaderNav({
       if (mailRef.current && !mailRef.current.contains(event.target as Node)) {
         setShowMailDropdown(false);
       }
+      if (
+        mobileMenuRef.current &&
+        !mobileMenuRef.current.contains(event.target as Node) &&
+        burgerBtnRef.current &&
+        !burgerBtnRef.current.contains(event.target as Node)
+      ) {
+        setShowMobileMenu(false);
+      }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -110,9 +120,9 @@ export function HeaderNav({
 
   const navItems = isSuperadmin
     ? [
-        { id: "superadmin", label: "Manajemen User", icon: LayoutDashboard },
-        { id: "rules", label: "Peraturan", icon: Scale },
-      ]
+      { id: "superadmin", label: "Manajemen User", icon: LayoutDashboard },
+      { id: "rules", label: "Peraturan", icon: Scale },
+    ]
     : [
       { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
       { id: "contacts", label: "Daftar Kontak", icon: Users },
@@ -161,6 +171,7 @@ export function HeaderNav({
         {/* Brand Logo and Hamburger Toggle */}
         <div className="flex items-center gap-3">
           <button
+            ref={burgerBtnRef}
             onClick={() => setShowMobileMenu(!showMobileMenu)}
             className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-lg xl:hidden transition-colors"
           >
@@ -221,7 +232,7 @@ export function HeaderNav({
 
           {/* Mail Dropdown (Inbox shortcuts) */}
           {!isSuperadmin && (
-            <div className="relative" ref={mailRef}>
+            <div className="md:relative" ref={mailRef}>
               <button
                 onClick={() => {
                   setShowMailDropdown(!showMailDropdown);
@@ -241,7 +252,7 @@ export function HeaderNav({
               </button>
 
               {showMailDropdown && (
-                <div className="absolute right-0 mt-2 w-80 rounded-xl border border-slate-100 bg-white p-2 shadow-xl ring-1 ring-black/5 animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="absolute left-4 right-4 md:left-auto md:right-0 mx-auto md:mx-0 max-w-sm md:max-w-none mt-2 md:w-80 rounded-xl border border-slate-100 bg-white p-2 shadow-xl ring-1 ring-black/5 animate-in fade-in slide-in-from-top-2 duration-200">
                   <div className="px-3 py-2 border-b border-slate-50 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                     Kotak Masuk WhatsApp
                   </div>
@@ -291,7 +302,7 @@ export function HeaderNav({
 
           {/* Notifications Dropdown */}
           {!isSuperadmin && (
-            <div className="relative" ref={notifRef}>
+            <div className="md:relative" ref={notifRef}>
               <button
                 onClick={() => {
                   setShowNotifDropdown(!showNotifDropdown);
@@ -311,7 +322,7 @@ export function HeaderNav({
               </button>
 
               {showNotifDropdown && (
-                <div className="absolute right-0 mt-2 w-80 rounded-xl border border-slate-100 bg-white p-2 shadow-xl ring-1 ring-black/5 animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="absolute left-4 right-4 md:left-auto md:right-0 mx-auto md:mx-0 max-w-sm md:max-w-none mt-2 md:w-80 rounded-xl border border-slate-100 bg-white p-2 shadow-xl ring-1 ring-black/5 animate-in fade-in slide-in-from-top-2 duration-200">
                   <div className="px-3 py-2 border-b border-slate-50 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                     Notifikasi Aktivitas
                   </div>
@@ -346,7 +357,7 @@ export function HeaderNav({
           )}
 
           {/* User Profile Menu */}
-          <div className="relative" ref={profileRef}>
+          <div className="md:relative" ref={profileRef}>
             <button
               onClick={() => {
                 setShowProfileDropdown(!showProfileDropdown);
@@ -371,7 +382,7 @@ export function HeaderNav({
             </button>
 
             {showProfileDropdown && (
-              <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-100 bg-white p-2 shadow-xl ring-1 ring-black/5 animate-in fade-in slide-in-from-top-2 duration-200">
+              <div className="absolute left-4 right-4 md:left-auto md:right-0 mx-auto md:mx-0 max-w-xs md:max-w-none mt-2 md:w-64 rounded-xl border border-slate-100 bg-white p-2 shadow-xl ring-1 ring-black/5 animate-in fade-in slide-in-from-top-2 duration-200">
                 {/* Profile brief summary */}
                 <div className="px-3 py-2.5 border-b border-slate-50">
                   <div className="text-sm font-semibold text-slate-800">{user?.name || "Nama Pengguna"}</div>
@@ -435,7 +446,7 @@ export function HeaderNav({
 
       {/* Mobile Dropdown Menu (Floating Card) */}
       {showMobileMenu && (
-        <div className="absolute top-14 left-6 w-72 bg-white border border-slate-100 shadow-2xl rounded-2xl xl:hidden flex flex-col p-3 z-50 space-y-1 max-h-[calc(100vh-5rem)] overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
+        <div ref={mobileMenuRef} className="absolute top-14 left-6 w-72 bg-white border border-slate-100 shadow-2xl rounded-2xl xl:hidden flex flex-col p-3 z-50 space-y-1 max-h-[calc(100vh-5rem)] overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeView === item.id || (item.id === "history" && activeView === "broadcast-detail");
@@ -446,11 +457,10 @@ export function HeaderNav({
                   onViewChange(item.id);
                   setShowMobileMenu(false);
                 }}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                  isActive
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${isActive
                     ? "bg-slate-100 text-slate-900"
                     : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                }`}
+                  }`}
               >
                 <Icon className={`w-4 h-4 ${isActive ? "text-primary" : "text-slate-400"}`} />
                 <span>{item.label}</span>
