@@ -2531,10 +2531,15 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
       if (startErr) return c.json(jsonFail(startErr.message), 500);
     }
 
-    const effectiveThrottle = Math.max(
-      1,
-      Math.min(Number(broadcast.throttle_per_min ?? orgThrottlePerMin), 100),
-    );
+    // Support limit query parameter for sequential/real-time processing
+    const limitQuery = c.req.query("limit");
+    const overrideLimit = limitQuery ? Number(limitQuery) : null;
+    const effectiveThrottle = overrideLimit !== null && !isNaN(overrideLimit)
+      ? Math.max(1, overrideLimit)
+      : Math.max(
+          1,
+          Math.min(Number(broadcast.throttle_per_min ?? orgThrottlePerMin), 100),
+        );
 
     const effectiveDelayMs = orgDelayMs;
 

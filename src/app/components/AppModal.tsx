@@ -37,14 +37,14 @@ export function AppModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-[100] flex items-start sm:items-center justify-center bg-black/50 p-2 sm:p-4 overflow-y-auto"
       onMouseDown={() => {
         if (!closeOnBackdrop || closeDisabled) return;
         onClose?.();
       }}
     >
       <div
-        className={`w-full ${maxWidthClassName} rounded-2xl bg-white shadow-2xl overflow-hidden`}
+        className={`w-full ${maxWidthClassName} rounded-2xl bg-white shadow-2xl overflow-hidden my-4 sm:my-0`}
         onMouseDown={(e) => {
           if (closeOnContentClick && closeOnBackdrop && !closeDisabled) {
             onClose?.();

@@ -24,6 +24,9 @@ interface Contact {
   lastMessage: string;
   timestamp: string;
   unread: boolean;
+  avatarUrl?: string;
+  avatar_url?: string;
+  avatar?: string;
 }
 
 interface ChatInterfaceProps {
@@ -32,11 +35,40 @@ interface ChatInterfaceProps {
   onBack: () => void;
 }
 
-const EMOJIS = [
-  "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🤩", "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😣", "😖", "😫", "😩", "🥺", "😢", "😭", "😤", "😠", "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥", "😓", "🤗", "🤔", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄", "😯", "😦", "😧", "😮", "😲", "🥱", "😴", "🤤", "😪", "😵", "🤐", "🥴",
-  "👍", "👎", "👌", "✌️", "🤞", "🤟", "🤘", "🤙", "👈", "👉", "👆", "🖕", "👇", "☝️", "✋", "🤚", "🖐", "🖖", "👋", "✍️", "👏", "🙌", "👐", "🙏", "🤝",
-  "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "❣️", "💕", "💞", "💓", "💗", "💖", "💘", "💝"
+const EMOJI_CATEGORIES = [
+  {
+    name: "Wajah & Orang",
+    emojis: [
+      "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🤩", "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😣", "😖", "😫", "😩", "🥺", "😢", "😭", "😤", "😠", "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥", "😓", "🤗", "🤔", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄", "😯", "😦", "😧", "😮", "😲", "🥱", "😴", "🤤", "😪", "😵", "🤐", "🥴", "🤢", "🤮", "🤧", "😷", "🤒", "🤕", "🤑", "🤠", "😈", "👿", "👹", "👺", "🤡", "💩", "👻", "💀", "☠️", "👽", "👾", "🤖", "🎃", "😺", "😸", "😹", "😻", "😼", "😽", "🙀", "😿", "😾"
+    ]
+  },
+  {
+    name: "Gestur & Tangan",
+    emojis: [
+      "👋", "🤚", "🖐", "✋", "🖖", "👌", "🤌", "🤏", "✌️", "🤞", "🤟", "🤘", "🤙", "👈", "👉", "👆", "🖕", "👇", "☝️", "👍", "👎", "✊", "👊", "🤛", "🤜", "👏", "🙌", "👐", "🤲", "🤝", "🙏", "✍️", "💅", "🤳", "💪", "🦾", "🦵", "🦿", "👣", "👂", "🦻", "👃", "🧠", "🫀", "🫁", "🦷", "🦴", "👀", "👁", "👅", "👄", "💋"
+    ]
+  },
+  {
+    name: "Hewan & Alam",
+    emojis: [
+      "🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷", "🐽", "🐸", "🐵", "🙈", "🙉", "🙊", "🐒", "🐔", "🐧", "🐦", "🐤", "🐣", "🐥", "🦆", "🦢", "🦉", "🦜", "🐊", "🐢", "🦎", "🐍", "🐲", "🐉", "🦕", "🦖", "🐳", "🐋", "🐬", "🦭", "🐟", "🐠", "🐡", "🦈", "🐙", "🐚", "🐌", "🦋", "🐛", "🐜", "🐝", "🪲", "🐞", "🦗", "🕷", "🕸", "🦂", "🦟", "💐", "🌸", "💮", "🏵", "🌹", "🥀", "🌺", "🌻", "🌼", "🌷", "🌱", "🪴", "🌲", "🌳", "🌴", "🌵", "🌾", "🌿", "🍀", "🍁", "🍂", "🍃"
+    ]
+  },
+  {
+    name: "Makanan & Minuman",
+    emojis: [
+      "🍏", "🍎", "🍐", "🍊", "🍋", "🍌", "🍉", "🍇", "🍓", "🫐", "🍈", "🍒", "🍑", "🥭", "🍍", "🥥", "🥝", "🍅", "🍆", "🥑", "🥦", "🥬", "🥒", "🌶", "🫑", "🌽", "🥕", "🫒", "🧄", "🧅", "🍄", "🍞", "🥐", "🥖", "🥨", "🥯", "🥞", "🧇", "🧀", "🍖", "🍗", "🥩", "🥓", "🍔", "🍟", "🍕", "🌭", "🥪", "🌮", "🌯", "🥚", "🍳", "🥘", "🍲", "🥣", "🥗", "🍿", "🧈", "🧂", "🍱", "🍘", "🍙", "🍚", "🍛", "🍜", "🍝", "🍣", "🍤", "🍥", "🍡", "🥟", "🥠", "🍦", "🍧", "🍨", "🍩", "🍪", "🎂", "🍰", "🧁", "🥧", "🍫", "🍬", "🍭", "🍮", "🍯", "🥛", "☕", "🍵", "🍶", "🍾", "🍷", "🍸", "🍹", "🍺", "🍻", "🥂", "🥃", "🥤", "🧋", "🧃", "🧊"
+    ]
+  },
+  {
+    name: "Hati & Simbol",
+    emojis: [
+      "💘", "💝", "💖", "💗", "💓", "💞", "💕", "💟", "❣️", "💔", "❤️‍🔥", "❤️‍🩹", "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💯", "💢", "💥", "💫", "💦", "💨", "🕳", "💣", "💬", "🗨", "🗯", "💭", "💤", "🌐", "🔆", "⚠️", "🚫", "✅", "❌", "❓", "❗", "⭕"
+    ]
+  }
 ];
+
+const EMOJIS = EMOJI_CATEGORIES.flatMap((c) => c.emojis);
 
 function formatMessageTime(isoString: string) {
   try {
@@ -266,7 +298,11 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   return (
     <div style={{ display: "flex", height: "calc(100vh - 64px)", overflow: "hidden" }} className="bg-white text-gray-800">
       {/* Sidebar */}
-      <div style={{ width: "360px", flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }} className="border-r border-gray-200 bg-white">
+      <div
+        className={`border-r border-gray-200 bg-white flex flex-col overflow-hidden w-full md:w-[360px] shrink-0 ${
+          selectedContact ? "hidden md:flex" : "flex"
+        }`}
+      >
         <div className="p-4 border-b border-gray-100 flex-shrink-0">
           {/* Back Button */}
           <Button
@@ -335,12 +371,18 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                       : "hover:bg-gray-50 border border-transparent"
                   }`}
                 >
-                  <div
-                    className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shrink-0 text-sm shadow-sm ${getAvatarColor(
-                      contact.name
-                    )}`}
-                  >
-                    {getInitials(contact.name)}
+                  <div className="w-10 h-10 rounded-full overflow-hidden shrink-0 shadow-sm">
+                    {contact.avatarUrl || contact.avatar_url || contact.avatar ? (
+                      <img src={contact.avatarUrl || contact.avatar_url || contact.avatar} alt={contact.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <div
+                        className={`w-full h-full flex items-center justify-center text-white font-bold text-sm bg-gradient-to-br from-white/10 to-black/25 ${getAvatarColor(
+                          contact.name
+                        )}`}
+                      >
+                        {getInitials(contact.name)}
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -353,7 +395,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                         {contact.name}
                       </h4>
                       {contact.timestamp && (
-                        <span className="text-[10px] text-gray-400 shrink-0 leading-tight text-right whitespace-nowrap">
+                        <span className="text-xs text-gray-400 shrink-0 leading-tight text-right whitespace-nowrap">
                           {formatContactTime(contact.timestamp)}
                         </span>
                       )}
@@ -376,21 +418,38 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
       </div>
 
       {/* Main Chat Pane */}
-      <div className="flex-1 min-h-0 flex flex-col bg-[#efeae2] relative overflow-hidden">
+      <div
+        className={`flex-1 min-h-0 flex flex-col bg-[#efeae2] relative overflow-hidden ${
+          selectedContact ? "flex" : "hidden md:flex"
+        }`}
+      >
         {/* Background Overlay to mimic whatsapp doodle */}
         <div className="absolute inset-0 opacity-[0.04] pointer-events-none bg-[radial-gradient(#1e3a2f_1px,transparent_1px)] [background-size:16px_16px]"></div>
 
         {selectedContact ? (
           <>
             {/* Header */}
-            <div className="bg-white px-6 py-4 border-b border-gray-200 flex items-center justify-between shadow-sm z-10">
-              <div className="flex items-center gap-3">
-                <div
-                  className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm shadow-sm ${getAvatarColor(
-                    currentContact?.name || ""
-                  )}`}
+            <div className="bg-white px-4 md:px-6 py-3 md:py-4 border-b border-gray-200 flex items-center justify-between shadow-sm z-10">
+              <div className="flex items-center gap-2 md:gap-3 min-w-0">
+                {/* Back button to list on mobile */}
+                <button
+                  onClick={() => setSelectedContact(null)}
+                  className="p-1.5 hover:bg-gray-100 rounded-lg md:hidden text-gray-500 shrink-0"
                 >
-                  {getInitials(currentContact?.name || "")}
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <div className="w-10 h-10 rounded-full overflow-hidden shrink-0 shadow-sm">
+                  {currentContact?.avatarUrl || currentContact?.avatar_url || currentContact?.avatar ? (
+                    <img src={currentContact.avatarUrl || currentContact.avatar_url || currentContact.avatar} alt={currentContact.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <div
+                      className={`w-full h-full flex items-center justify-center text-white font-bold text-sm bg-gradient-to-br from-white/10 to-black/25 ${getAvatarColor(
+                        currentContact?.name || ""
+                      )}`}
+                    >
+                      {getInitials(currentContact?.name || "")}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <h4 className="font-semibold text-gray-900 leading-snug">
@@ -425,10 +484,14 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                       }`}
                     >
                       <div
-                        className={`max-w-[70%] rounded-2xl px-4 py-2.5 shadow-sm ${
-                          message.sender === "user"
-                            ? "bg-[#d9fdd3] text-[#111b21] rounded-tr-none"
-                            : "bg-white text-[#111b21] rounded-tl-none border border-[#e9e5db]"
+                        className={`max-w-[70%] rounded-2xl shadow-sm ${
+                          message.messageType === "sticker"
+                            ? "bg-transparent shadow-none"
+                            : message.messageType === "reaction"
+                            ? "bg-slate-100/90 text-slate-800 border border-slate-200 px-3 py-1 rounded-full"
+                            : message.sender === "user"
+                            ? "bg-[#d9fdd3] text-[#111b21] rounded-tr-none px-4 py-2.5"
+                            : "bg-white text-[#111b21] rounded-tl-none border border-[#e9e5db] px-4 py-2.5"
                         }`}
                       >
                         {(() => {
@@ -442,26 +505,56 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                           const imageId = payloadObj?.image?.id || payloadObj?.id;
                           const imageCaption = payloadObj?.image?.caption || payloadObj?.caption || "";
 
-                          return message.messageType === "image" && imageId ? (
-                            <div className="flex flex-col gap-1.5">
+                          if (message.messageType === "image" && imageId) {
+                            return (
+                              <div className="flex flex-col gap-1.5">
+                                <img
+                                  src={api.getMediaUrl(imageId, numberId)}
+                                  alt="Media"
+                                  className="rounded-lg max-w-full max-h-64 object-contain cursor-pointer hover:opacity-95 transition-opacity"
+                                  onClick={() => window.open(api.getMediaUrl(imageId, numberId), '_blank')}
+                                />
+                                {imageCaption && (
+                                  <p className="text-[14px] leading-relaxed mt-1">{imageCaption}</p>
+                                )}
+                              </div>
+                            );
+                          } else if (message.messageType === "sticker") {
+                            const stickerId = payloadObj?.sticker?.id || payloadObj?.id;
+                            return stickerId ? (
                               <img
-                                src={api.getMediaUrl(imageId, numberId)}
-                                alt="Media"
-                                className="rounded-lg max-w-full max-h-64 object-contain cursor-pointer hover:opacity-95 transition-opacity"
-                                onClick={() => window.open(api.getMediaUrl(imageId, numberId), '_blank')}
+                                src={api.getMediaUrl(stickerId, numberId)}
+                                alt="Sticker"
+                                className="w-28 h-28 object-contain rounded-lg hover:scale-105 transition-transform cursor-pointer"
+                                onClick={() => window.open(api.getMediaUrl(stickerId, numberId), '_blank')}
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                  if (e.currentTarget.parentElement) {
+                                    e.currentTarget.parentElement.innerHTML = '<span class="text-xs text-slate-500 italic">[Stiker]</span>';
+                                  }
+                                }}
                               />
-                              {imageCaption && (
-                                <p className="text-[14px] leading-relaxed mt-1">{imageCaption}</p>
-                              )}
-                            </div>
-                          ) : (
-                            <p className="text-[14px] whitespace-pre-wrap leading-relaxed">
-                              {message.content}
-                            </p>
-                          );
+                            ) : (
+                              <span className="text-slate-500 italic text-xs">[Stiker]</span>
+                            );
+                          } else if (message.messageType === "reaction") {
+                            const emoji = payloadObj?.reaction?.emoji || "❤️";
+                            return (
+                              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-600">
+                                <span>Mereaksi:</span>
+                                <span className="text-base leading-none select-none">{emoji}</span>
+                              </div>
+                            );
+                          } else {
+                            return (
+                              <p className="text-[14px] whitespace-pre-wrap leading-relaxed">
+                                {message.content}
+                              </p>
+                            );
+                          }
                         })()}
                       </div>
-                      <span className="text-[10px] text-gray-500 mt-1.5 px-1 font-medium">
+                      <span className="text-xs text-gray-500 mt-1.5 px-1 font-medium">
                         {formatMessageTime(message.timestamp)}
                       </span>
                     </div>
@@ -484,19 +577,28 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                       Tutup
                     </button>
                   </div>
-                  <ScrollArea className="flex-1">
-                    <div className="grid grid-cols-6 gap-2 text-xl max-h-40 p-1">
-                      {EMOJIS.map((emoji) => (
-                        <button
-                          key={emoji}
-                          onClick={() => handleAddEmoji(emoji)}
-                          className="hover:bg-gray-100 p-1 rounded-lg transition-all text-center active:scale-90"
-                        >
-                          {emoji}
-                        </button>
+                  <div className="flex-1 overflow-y-auto pr-1">
+                    <div className="space-y-4 p-1">
+                      {EMOJI_CATEGORIES.map((cat) => (
+                        <div key={cat.name} className="space-y-1.5">
+                          <span className="text-xs font-bold text-gray-400 uppercase tracking-wider block">
+                            {cat.name}
+                          </span>
+                          <div className="grid grid-cols-6 gap-2 text-xl">
+                            {cat.emojis.map((emoji) => (
+                              <button
+                                key={emoji}
+                                onClick={() => handleAddEmoji(emoji)}
+                                className="hover:bg-gray-100 p-1 rounded-lg transition-all text-center active:scale-90"
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       ))}
                     </div>
-                  </ScrollArea>
+                  </div>
                 </div>
               )}
 
