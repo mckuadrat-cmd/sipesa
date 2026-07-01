@@ -1397,12 +1397,12 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                   </div>
                 ))}
 
-                <div className="flex gap-3">
-                  <Button variant="outline" onClick={addManualRecipient} className="flex-1">
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <Button variant="outline" onClick={addManualRecipient} className="w-full sm:flex-1">
                     <Plus className="w-4 h-4 mr-2" />
                     Tambah Penerima
                   </Button>
-                  <Button onClick={handleApplyManualRecipients} className="flex-1">
+                  <Button onClick={handleApplyManualRecipients} className="w-full sm:flex-1">
                     Gunakan Data Manual
                   </Button>
                 </div>
@@ -1512,11 +1512,11 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-4 pt-2 border-t border-slate-100">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-2 border-t border-slate-100">
                   <span className="text-xs font-bold text-slate-600">
                     {selectedContactIds.length} kontak dipilih
                   </span>
-                  <div className="flex gap-2">
+                  <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                     <Button
                       onClick={() => {
                         const selectedContacts = allOrgContacts.filter(c => selectedContactIds.includes(c.id));
@@ -1532,7 +1532,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                         toast.success(`Berhasil menerapkan ${mapped.length} penerima.`);
                       }}
                       disabled={selectedContactIds.length === 0}
-                      className="bg-primary hover:bg-primary/95 text-white"
+                      className="bg-primary hover:bg-primary/95 text-white w-full sm:w-auto text-center"
                     >
                       Gunakan Kontak Terpilih
                     </Button>
@@ -1542,7 +1542,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                         setSelectedContactIds([]);
                         setSelectedLabels([]);
                       }}
-                      className="border-slate-200 text-slate-500 hover:bg-slate-50"
+                      className="border-slate-200 text-slate-500 hover:bg-slate-50 w-full sm:w-auto"
                     >
                       Reset Pilihan
                     </Button>
