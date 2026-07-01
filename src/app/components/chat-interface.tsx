@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { ScrollArea } from "./ui/scroll-area";
+
 import { ArrowLeft, Send, Search, Phone, Smile } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
@@ -296,7 +296,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   const currentContact = contacts.find((c) => c.id === selectedContact);
 
   return (
-    <div style={{ display: "flex", height: "calc(100vh - 64px)", overflow: "hidden" }} className="bg-white text-gray-800">
+    <div className="h-full w-full flex overflow-hidden bg-white text-gray-800">
       {/* Sidebar */}
       <div
         className={`border-r border-gray-200 bg-white flex flex-col overflow-hidden w-full md:w-[360px] shrink-0 ${
@@ -469,7 +469,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
             </div>
 
             {/* Chat Area */}
-            <ScrollArea className="flex-1 min-h-0 p-6 z-10">
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 z-10">
               {loading ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600" />
@@ -562,7 +562,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                   <div ref={messagesEndRef} />
                 </div>
               )}
-            </ScrollArea>
+            </div>
 
             {/* Input Bar */}
             <div className="bg-white p-4 border-t border-gray-200 relative flex flex-col gap-2 shadow-[0_-2px_10px_rgba(0,0,0,0.02)] z-10">

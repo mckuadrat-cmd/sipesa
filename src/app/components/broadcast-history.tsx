@@ -294,8 +294,10 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
     <div className="min-h-[calc(100vh-4rem)] w-full p-6 md:p-8 bg-white">
       <div className="mx-auto h-full flex flex-col gap-6">
         <div>
-          <h1 className="mb-2">Riwayat Broadcast</h1>
-          <p className="text-muted-foreground">Lihat status dan detail pengiriman broadcast pesan</p>
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight leading-tight">Riwayat Broadcast</h1>
+          <p className="text-sm text-slate-500 mt-1.5 leading-relaxed break-words whitespace-normal max-w-2xl">
+            Lihat status dan laporan pengiriman broadcast pesan.
+          </p>
         </div>
 
         {error && (

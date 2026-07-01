@@ -84,7 +84,7 @@ export function ContactListView({ user }: { user?: any }) {
       if (labelsStr) {
         try {
           setContactLabels(JSON.parse(labelsStr));
-        } catch {}
+        } catch { }
       }
 
       const res = await api.getContactLabels();
@@ -299,7 +299,7 @@ export function ContactListView({ user }: { user?: any }) {
 
     try {
       const newLabels = { ...contactLabels };
-      
+
       const existingContactsMap = new Map<string, string>(); // normPhone -> id
       contacts.forEach(c => {
         const norm = String(c.phone).replace(/\D/g, "");
@@ -448,13 +448,12 @@ export function ContactListView({ user }: { user?: any }) {
 
   return (
     <div className="w-full p-6 md:p-8 bg-white min-h-screen">
-      
-      {/* Header Section */}
+
       <div className="mb-8 flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-3xl font-extrabold text-slate-900 leading-tight">Daftar Kontak</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Kelola daftar kontak penerima broadcast untuk sekolah Anda
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight leading-tight">Daftar Kontak</h1>
+          <p className="text-sm text-slate-500 mt-1.5 leading-relaxed break-words whitespace-normal max-w-2xl">
+            Kelola daftar kontak sekolah Anda.
           </p>
         </div>
 
@@ -490,7 +489,7 @@ export function ContactListView({ user }: { user?: any }) {
 
       {/* Grid container with list/table */}
       <div className="grid grid-cols-1 gap-6">
-        
+
         {/* Contacts card list */}
         <Card className="border border-slate-100 shadow-sm rounded-2xl overflow-hidden bg-white flex flex-col">
           <div className="px-6 py-4 border-b border-slate-50 flex items-center justify-between gap-4 flex-wrap">
@@ -659,10 +658,10 @@ export function ContactListView({ user }: { user?: any }) {
                       <td className="px-6 py-4 whitespace-nowrap text-xs text-slate-400">
                         {contact.createdAt
                           ? new Date(contact.createdAt).toLocaleDateString("id-ID", {
-                              day: "numeric",
-                              month: "long",
-                              year: "numeric",
-                            })
+                            day: "numeric",
+                            month: "long",
+                            year: "numeric",
+                          })
                           : "-"}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">

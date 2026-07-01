@@ -971,9 +971,9 @@ export function TemplateManagement() {
     <div className="w-full p-6 md:p-8 bg-white h-full flex flex-col overflow-hidden">
       <div className="mb-6 flex items-center justify-between gap-3 flex-wrap flex-shrink-0">
         <div>
-          <h1 className="mb-2">Template Pesan</h1>
-          <p className="text-muted-foreground">
-            Kelola template pesan untuk broadcast WhatsApp
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight leading-tight">Template Pesan</h1>
+          <p className="text-sm text-slate-500 mt-1.5 leading-relaxed break-words whitespace-normal max-w-2xl">
+            Kelola template pesan untuk broadcast WhatsApp Anda.
           </p>
         </div>
 

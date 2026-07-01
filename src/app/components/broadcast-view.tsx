@@ -1160,10 +1160,12 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
 
   return (
     <div className="w-full p-6 md:p-8 bg-white">
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-8 flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="mb-2">Kirim Broadcast</h1>
-          <p className="text-muted-foreground">Kirim pesan massal menggunakan template yang sudah disetujui</p>
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight leading-tight">Kirim Broadcast</h1>
+          <p className="text-sm text-slate-500 mt-1.5 leading-relaxed break-words whitespace-normal max-w-2xl">
+            Kirim pesan massal menggunakan template yang sudah disetujui.
+          </p>
         </div>
         <Button onClick={onViewHistory} variant="outline">
           <FileText className="w-4 h-4 mr-2" />
