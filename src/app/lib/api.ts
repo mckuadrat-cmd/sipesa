@@ -363,6 +363,30 @@ export const api = {
     return ok(parsed);
   },
 
+  async readAllMessages(numberId: string, contactIds?: string[]): Promise<AppResult<{ message: string }>> {
+    const res = await apiFetch<any>(
+      `/numbers/${numberId}/read-all`,
+      { 
+        method: "POST",
+        body: JSON.stringify({ contactIds })
+      },
+    );
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async deleteConversations(numberId: string, payload: { contactIds?: string[]; all?: boolean }): Promise<AppResult<{ message: string }>> {
+    const res = await apiFetch<any>(
+      `/numbers/${numberId}/delete-conversations`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload)
+      }
+    );
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
   async sendMessage(
     numberId: string,
     contactId: string,

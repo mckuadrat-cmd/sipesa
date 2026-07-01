@@ -321,22 +321,22 @@ function renderStatusBadge(status?: string | null) {
 
           <Card 
             className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "accepted" ? "border-yellow-600 bg-yellow-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
-            }`} 
-            onClick={() => setFilterStatus("accepted")}
-          >
-            <div className="text-xs font-medium text-yellow-700">Accepted</div>
-            <div className="text-xl font-bold mt-1 text-yellow-700">{stats.accepted}</div>
-          </Card>
-
-          <Card 
-            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
               filterStatus === "sent" ? "border-blue-600 bg-blue-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
             }`} 
             onClick={() => setFilterStatus("sent")}
           >
             <div className="text-xs font-medium text-blue-700">Sent</div>
             <div className="text-xl font-bold mt-1 text-blue-700">{stats.sent}</div>
+          </Card>
+
+          <Card 
+            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
+              filterStatus === "accepted" ? "border-yellow-600 bg-yellow-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+            }`} 
+            onClick={() => setFilterStatus("accepted")}
+          >
+            <div className="text-xs font-medium text-yellow-700">Accepted</div>
+            <div className="text-xl font-bold mt-1 text-yellow-700">{stats.accepted}</div>
           </Card>
 
           <Card 

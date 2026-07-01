@@ -730,12 +730,14 @@ app.get(`${API_PREFIX}/numbers/:numberId/contacts`, requireAuth, async (c) => {
     const numberId = c.req.param("numberId");
     const supa = sb();
 
-    // 1. Fetch unique contact IDs that have messages for this WABA number
+    // 1. Fetch unique contact IDs that have messages for this WABA number (limit to latest 20000 messages)
     const { data: msgContacts, error: msgErr } = await supa
       .from("wa_messages")
       .select("contact_id")
       .eq("org_id", user.org_id)
-      .eq("number_id", numberId);
+      .eq("number_id", numberId)
+      .order("created_at", { ascending: false })
+      .limit(20000);
 
     if (msgErr) return c.json(jsonFail(msgErr.message), 500);
 
@@ -753,13 +755,14 @@ app.get(`${API_PREFIX}/numbers/:numberId/contacts`, requireAuth, async (c) => {
 
     if (contactsErr) return c.json(jsonFail(contactsErr.message), 500);
 
-    // 3. Fetch all messages for this numberId to find last messages and unread statuses
+    // 3. Fetch messages for this numberId to find last messages and unread statuses (limit to latest 20000 messages)
     const { data: allMessages, error: msgsErr } = await supa
       .from("wa_messages")
       .select("id, contact_id, text_body, direction, created_at, status")
       .eq("org_id", user.org_id)
       .eq("number_id", numberId)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(20000);
 
     if (msgsErr) return c.json(jsonFail(msgsErr.message), 500);
 
@@ -1098,6 +1101,68 @@ app.get(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, requireA
     }));
 
     return c.json(jsonOk(mapped));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/numbers/:numberId/read-all`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const numberId = c.req.param("numberId");
+    const body = await c.req.json().catch(() => ({}));
+    const contactIds = Array.isArray(body.contactIds) ? body.contactIds : null;
+    const supa = sb();
+
+    let query = supa
+      .from("wa_messages")
+      .update({ status: "read", read_at: nowIso() })
+      .eq("org_id", user.org_id)
+      .eq("number_id", numberId)
+      .eq("direction", "in")
+      .eq("status", "delivered");
+
+    if (contactIds && contactIds.length > 0) {
+      query = query.in("contact_id", contactIds);
+    }
+
+    const { error } = await query;
+    if (error) return c.json(jsonFail(error.message), 500);
+
+    return c.json(jsonOk({ message: "Pesan telah ditandai sebagai dibaca" }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/numbers/:numberId/delete-conversations`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const numberId = c.req.param("numberId");
+    const body = await c.req.json().catch(() => ({}));
+    const contactIds = Array.isArray(body.contactIds) ? body.contactIds : [];
+    const deleteAll = body.all === true;
+
+    if (contactIds.length === 0 && !deleteAll) {
+      return c.json(jsonFail("contactIds atau all wajib diisi"), 400);
+    }
+
+    const supa = sb();
+
+    let query = supa
+      .from("wa_messages")
+      .delete()
+      .eq("org_id", user.org_id)
+      .eq("number_id", numberId);
+
+    if (!deleteAll) {
+      query = query.in("contact_id", contactIds);
+    }
+
+    const { error } = await query;
+    if (error) return c.json(jsonFail(error.message), 500);
+
+    return c.json(jsonOk({ message: "Percakapan telah berhasil dihapus" }));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -2912,6 +2977,15 @@ const handleWebhookPost = async (c: any) => {
     console.log("Webhook POST payload received:", JSON.stringify(payload));
     const supa = sb();
 
+    // Log payload to app_activity
+    await supa.from("app_activity").insert({
+      org_id: null,
+      actor_user_id: null,
+      type: "webhook_payload",
+      message: `Webhook POST received`,
+      meta: { payload },
+    });
+
     const entries = Array.isArray(payload?.entry) ? payload.entry : [];
 
     for (const entry of entries) {
@@ -2959,17 +3033,38 @@ const handleWebhookPost = async (c: any) => {
             
             if (numErr) {
               console.error("Error querying wa_numbers for phoneNumberId:", numErr.message);
+              await supa.from("app_activity").insert({
+                org_id: null,
+                actor_user_id: null,
+                type: "webhook_error",
+                message: `Error querying wa_numbers: ${numErr.message}`,
+                meta: { phoneNumberId, error: numErr },
+              });
             }
             numberRow = data;
             
             if (!numberRow) {
               const { data: allNums } = await supa.from("wa_numbers").select("phone_number_id, phone_e164");
               console.warn("WABA number NOT found in DB. Received:", phoneNumberId, ". Configured in DB:", allNums);
+              await supa.from("app_activity").insert({
+                org_id: null,
+                actor_user_id: null,
+                type: "webhook_warn",
+                message: `WABA number not found in DB for ID: ${phoneNumberId}`,
+                meta: { phoneNumberId, configuredNumbers: allNums },
+              });
             } else {
               console.log("Matched WABA number in DB:", numberRow.phone_e164);
             }
           } else {
             console.warn("Missing phone_number_id in webhook payload metadata.");
+            await supa.from("app_activity").insert({
+              org_id: null,
+              actor_user_id: null,
+              type: "webhook_warn",
+              message: "Missing phone_number_id in webhook payload metadata.",
+              meta: { value },
+            });
           }
 
           const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
@@ -3050,6 +3145,13 @@ const handleWebhookPost = async (c: any) => {
             const from = normalizePhone(incoming?.from ?? "");
             if (!from || !numberRow) {
               console.warn("Skipping message: from =", from, ", numberRow found =", !!numberRow);
+              await supa.from("app_activity").insert({
+                org_id: numberRow?.org_id || null,
+                actor_user_id: null,
+                type: "webhook_warn",
+                message: `Skipping message: from=${from}, numberRow found=${!!numberRow}`,
+                meta: { incoming },
+              });
               continue;
             }
 
@@ -3081,6 +3183,13 @@ const handleWebhookPost = async (c: any) => {
 
               if (inserted.error) {
                 console.error("Error creating contact:", inserted.error.message);
+                await supa.from("app_activity").insert({
+                  org_id: numberRow.org_id,
+                  actor_user_id: null,
+                  type: "webhook_error",
+                  message: `Error creating contact for ${from}: ${inserted.error.message}`,
+                  meta: { from, displayName, error: inserted.error },
+                });
                 throw inserted.error;
               }
               contact = inserted.data;
@@ -3119,8 +3228,22 @@ const handleWebhookPost = async (c: any) => {
 
             if (insertErr) {
               console.error("Error inserting incoming message into wa_messages:", insertErr.message);
+              await supa.from("app_activity").insert({
+                org_id: numberRow.org_id,
+                actor_user_id: null,
+                type: "webhook_error",
+                message: `Error inserting incoming message from ${from}: ${insertErr.message}`,
+                meta: { from, textBody, error: insertErr },
+              });
             } else {
               console.log("Incoming message inserted successfully!");
+              await supa.from("app_activity").insert({
+                org_id: numberRow.org_id,
+                actor_user_id: null,
+                type: "webhook_success",
+                message: `Incoming message processed successfully from ${from}`,
+                meta: { from, textBody, messageType },
+              });
             }
           }
         }
@@ -3140,25 +3263,7 @@ app.post("/webhooks/meta", handleWebhookPost);
 app.post(`${API_PREFIX}/webhooks/meta`, handleWebhookPost);
 
 app.get(`${API_PREFIX}/dev/check-columns`, async (c) => {
-  try {
-    const supa = sb();
-    const { data: messages, error: msgErr } = await supa
-      .from("wa_messages")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(10);
-    const { data: numbers, error: numErr } = await supa
-      .from("wa_numbers")
-      .select("*");
-    return c.json({
-      messages,
-      msgErr,
-      numbers,
-      numErr
-    });
-  } catch (e) {
-    return c.json({ error: String(e) });
-  }
+  return c.json({ success: true, message: "Diagnostic endpoint active" });
 });
 
 
