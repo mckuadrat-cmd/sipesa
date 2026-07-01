@@ -89,7 +89,6 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
   const [receiptBase64, setReceiptBase64] = useState<string | null>(null);
   const [receiptFileName, setReceiptFileName] = useState("");
   const [submittingRequest, setSubmittingRequest] = useState(false);
-  const [historyTab, setHistoryTab] = useState<"transactions" | "manual">("transactions");
   const [selectedReceipt, setSelectedReceipt] = useState<string | null>(null);
 
   const [notice, setNotice] = useState<{
@@ -134,6 +133,44 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
     loadSettings();
     loadManualRequests();
   }, []);
+
+  const mergedHistory = useMemo(() => {
+    const list: any[] = [];
+
+    // Add transactions
+    (transactions || []).forEach((tx) => {
+      list.push({
+        id: tx.id,
+        itemType: "transaction",
+        type: tx.type,
+        amount: tx.amount,
+        date: tx.date,
+        timestamp: new Date(tx.date).getTime(),
+        description: tx.description,
+      });
+    });
+
+    // Add manual requests
+    (manualRequests || []).forEach((req) => {
+      list.push({
+        id: req.id,
+        itemType: "manual_request",
+        amount_tokens: req.amount_tokens,
+        amount_idr: req.amount_idr,
+        created_by_email: req.created_by_email,
+        receipt_url: req.receipt_url,
+        notes: req.notes,
+        status: req.status,
+        created_at: req.created_at,
+        approved_at: req.approved_at,
+        approved_by: req.approved_by,
+        timestamp: new Date(req.created_at).getTime(),
+      });
+    });
+
+    // Sort by timestamp descending
+    return list.sort((a, b) => b.timestamp - a.timestamp);
+  }, [transactions, manualRequests]);
 
   const handleQuickTopup = (tokens: number) => {
     setTopupAmount(tokens.toString());
@@ -378,134 +415,109 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
               <History className="w-5 h-5 text-primary" />
               <h3 className="text-lg font-bold text-slate-800">Riwayat</h3>
             </div>
-            <div className="flex bg-slate-100 rounded-lg p-0.5 text-xs font-semibold">
-              <button
-                onClick={() => setHistoryTab("transactions")}
-                className={`px-3 py-1.5 rounded-md transition-colors ${
-                  historyTab === "transactions" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"
-                }`}
-              >
-                Transaksi
-              </button>
-              <button
-                onClick={() => setHistoryTab("manual")}
-                className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
-                  historyTab === "manual" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"
-                }`}
-              >
-                Top-up Manual
-                {manualRequests.filter((r) => r.status === "pending").length > 0 && (
-                  <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
-                )}
-              </button>
-            </div>
           </div>
 
           <div className="space-y-3 max-h-[420px] overflow-auto pr-1">
-            {historyTab === "transactions" ? (
-              transactions.length === 0 ? (
-                <div className="text-center py-10 text-muted-foreground">
-                  Belum ada transaksi
-                </div>
-              ) : (
-                transactions.map((tx) => (
-                  <div
-                    key={tx.id}
-                    className="border rounded-lg p-4 flex items-start justify-between gap-4"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <Badge className={getTransactionColor(tx.type)}>
-                          {getTransactionLabel(tx.type)}
-                        </Badge>
-                      </div>
-                      <p className="font-medium">{tx.description}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {formatDate(tx.date)}
-                      </p>
-                    </div>
-
-                    <div className="text-right">
-                      <p className="font-medium">
-                        {tx.type === "usage" ? "-" : "+"}
-                        {Number(tx.amount ?? 0).toLocaleString("id-ID")} token
-                      </p>
-                    </div>
-                  </div>
-                ))
-              )
+            {mergedHistory.length === 0 ? (
+              <div className="text-center py-10 text-muted-foreground text-sm">
+                Belum ada riwayat transaksi atau top-up
+              </div>
             ) : (
-              manualRequests.length === 0 ? (
-                <div className="text-center py-10 text-muted-foreground">
-                  Belum ada pengajuan top-up manual
-                </div>
-              ) : (
-                manualRequests.map((req) => (
-                  <div
-                    key={req.id}
-                    className="border rounded-lg p-4 space-y-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <Badge
-                        className={
-                          req.status === "approved"
-                            ? "bg-green-500 text-white"
-                            : req.status === "rejected"
-                            ? "bg-red-500 text-white"
-                            : "bg-yellow-500 text-black"
-                        }
-                      >
-                        {req.status === "approved"
-                          ? "Disetujui"
-                          : req.status === "rejected"
-                          ? "Ditolak"
-                          : "Menunggu Approval"}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        {formatDate(req.created_at)}
-                      </span>
-                    </div>
-
-                    <div className="flex justify-between items-start">
+              mergedHistory.map((item) => {
+                if (item.itemType === "transaction") {
+                  return (
+                    <div
+                      key={item.id}
+                      className="border rounded-lg p-4 flex items-start justify-between gap-4"
+                    >
                       <div>
-                        <p className="font-bold text-slate-800">
-                          {Number(req.amount_tokens ?? 0).toLocaleString("id-ID")} token
-                        </p>
-                        <p className="text-sm text-slate-600 mt-0.5">
-                          Nominal Transfer: <span className="font-semibold text-slate-900">Rp {Number(req.amount_idr ?? 0).toLocaleString("id-ID")}</span>
-                        </p>
-                        <p className="text-xs text-slate-400 mt-1">
-                          Diajukan oleh: {req.created_by_email}
+                        <div className="flex items-center gap-2 mb-2">
+                          <Badge className={getTransactionColor(item.type)}>
+                            {getTransactionLabel(item.type)}
+                          </Badge>
+                        </div>
+                        <p className="font-medium text-sm">{item.description}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatDate(item.date)}
                         </p>
                       </div>
 
-                      {req.receipt_url && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setSelectedReceipt(req.receipt_url)}
-                          className="flex items-center gap-1.5 text-xs h-8"
+                      <div className="text-right">
+                        <p className="font-semibold text-sm">
+                          {item.type === "usage" ? "-" : "+"}
+                          {Number(item.amount ?? 0).toLocaleString("id-ID")} token
+                        </p>
+                      </div>
+                    </div>
+                  );
+                } else {
+                  return (
+                    <div
+                      key={item.id}
+                      className="border rounded-lg p-4 space-y-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <Badge
+                          className={
+                            item.status === "approved"
+                              ? "bg-green-500 text-white"
+                              : item.status === "rejected"
+                              ? "bg-red-500 text-white"
+                              : "bg-yellow-500 text-black"
+                          }
                         >
-                          <Eye className="w-3.5 h-3.5" />
-                          Bukti
-                        </Button>
+                          Top-up Manual ({item.status === "approved"
+                            ? "Disetujui"
+                            : item.status === "rejected"
+                            ? "Ditolak"
+                            : "Menunggu Approval"})
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">
+                          {formatDate(item.created_at)}
+                        </span>
+                      </div>
+
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="font-bold text-slate-800 text-sm">
+                            +{Number(item.amount_tokens ?? 0).toLocaleString("id-ID")} token
+                          </p>
+                          <p className="text-xs text-slate-600 mt-0.5">
+                            Nominal Transfer: <span className="font-semibold text-slate-900">Rp {Number(item.amount_idr ?? 0).toLocaleString("id-ID")}</span>
+                          </p>
+                          <p className="text-[10px] text-slate-400 mt-1">
+                            Diajukan oleh: {item.created_by_email}
+                          </p>
+                        </div>
+
+                        {item.receipt_url && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setSelectedReceipt(item.receipt_url)}
+                            className="flex items-center gap-1.5 text-xs h-8"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            Bukti
+                          </Button>
+                        )}
+                      </div>
+
+                      {item.notes && (
+                        <div className="bg-slate-50 p-2.5 rounded text-xs text-slate-600 border border-slate-100">
+                          <span className="font-semibold text-slate-700">Catatan Admin:</span> {item.notes}
+                        </div>
+                      )}
+
+                      {item.approved_at && (
+                        <p className="text-[10px] text-slate-400 text-right">
+                          Diproses pada {formatDate(item.approved_at)} oleh {item.approved_by}
+                        </p>
                       )}
                     </div>
-
-                    {req.notes && (
-                      <div className="bg-slate-50 p-2.5 rounded text-xs text-slate-600 border border-slate-100">
-                        <span className="font-semibold text-slate-700">Catatan Admin:</span> {req.notes}
-                      </div>
-                    )}
-
-                    {req.approved_at && (
-                      <p className="text-[10px] text-slate-400 text-right">
-                        Diproses pada {formatDate(req.approved_at)} oleh {req.approved_by}
-                      </p>
-                    )}
-                  </div>
-                ))
-              )
+                  );
+                }
+              })
             )}
           </div>
         </Card>

@@ -307,77 +307,79 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
         )}
 
         {/* Filters */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex relative flex-1 min-w-[260px]">
-              <Search
-                size={18}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <Input
-                placeholder="Cari template / sender / isi pesan..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-10 rounded-xl h-11 border-slate-200 focus-visible:ring-[#25D366]"
-              />
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 sm:p-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap items-center gap-3 w-full">
+              <div className="relative col-span-1 sm:col-span-2 lg:flex-1 lg:min-w-[260px] w-full">
+                <Search
+                  size={18}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                />
+                <Input
+                  placeholder="Cari template / sender / isi pesan..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-10 rounded-xl h-11 border-slate-200 focus-visible:ring-[#25D366] w-full text-sm"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <span className="text-slate-500 text-xs font-semibold uppercase min-w-[32px]">From:</span>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-[#25D366] w-full bg-white h-11"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <span className="text-slate-500 text-xs font-semibold uppercase min-w-[32px]">To:</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-[#25D366] w-full bg-white h-11"
+                />
+              </div>
+
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-[#25D366] bg-white h-11 w-full sm:w-auto min-w-[140px]"
+              >
+                <option value="all">All Status</option>
+                <option value="completed">Completed</option>
+                <option value="sending">Sending</option>
+                <option value="scheduled">Scheduled</option>
+                <option value="failed">Failed</option>
+                <option value="queued">Queued</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+
+              <select
+                value={senderFilter}
+                onChange={(e) => setSenderFilter(e.target.value)}
+                className="px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-[#25D366] bg-white h-11 w-full sm:w-auto min-w-[140px]"
+              >
+                <option value="all">All Sender</option>
+                {senderOptions.map((sender) => (
+                  <option key={sender} value={sender}>
+                    {sender}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={() => loadBroadcasts("refresh")}
+                disabled={loading || refreshing}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 h-11 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors w-full sm:w-auto shrink-0"
+              >
+                <RefreshCcw size={16} className={refreshing ? "animate-spin" : ""} />
+                <span>{refreshing ? "Refreshing..." : "Refresh"}</span>
+              </button>
             </div>
-
-            <div className="flex items-center gap-2">
-              <label className="text-gray-700 text-sm">From:</label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#25D366] focus:border-transparent"
-              />
-            </div>
-
-            <div className="flex items-center gap-2">
-              <label className="text-gray-700 text-sm">To:</label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#25D366] focus:border-transparent"
-              />
-            </div>
-
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#25D366] focus:border-transparent"
-            >
-              <option value="all">All Status</option>
-              <option value="completed">Completed</option>
-              <option value="sending">Sending</option>
-              <option value="scheduled">Scheduled</option>
-              <option value="failed">Failed</option>
-              <option value="queued">Queued</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-
-            <select
-              value={senderFilter}
-              onChange={(e) => setSenderFilter(e.target.value)}
-              className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#25D366] focus:border-transparent"
-            >
-              <option value="all">All Sender</option>
-              {senderOptions.map((sender) => (
-                <option key={sender} value={sender}>
-                  {sender}
-                </option>
-              ))}
-            </select>
-
-            <button
-              type="button"
-              onClick={() => loadBroadcasts("refresh")}
-              disabled={loading || refreshing}
-              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs md:text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              <RefreshCcw size={16} className={refreshing ? "animate-spin" : ""} />
-              <span className="hidden sm:inline">{refreshing ? "Refreshing..." : "Refresh"}</span>
-            </button>
           </div>
         </div>
 
@@ -420,19 +422,19 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
 
         {/* Broadcast Logs Table */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="p-6 border-b border-gray-200 flex items-center justify-between">
-            <h3 className="text-gray-900 font-semibold">Broadcast Logs</h3>
+          <div className="p-4 sm:p-6 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <h3 className="text-gray-900 font-semibold text-base">Broadcast Logs</h3>
 
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-between sm:justify-end gap-3 w-full sm:w-auto">
               <div className="flex items-center gap-2 text-xs text-slate-500">
                 <span>{filteredBroadcasts.length ? `${fromIndex}–${toIndex} dari ${filteredBroadcasts.length}` : "0 data"}</span>
 
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1.5 ml-1">
                   <button
                     type="button"
                     onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                     disabled={currentPage === 1}
-                    className={`px-3 py-1 rounded-full border text-xs ${
+                    className={`w-7 h-7 flex items-center justify-center rounded-full border text-xs transition-colors ${
                       currentPage === 1
                         ? "border-slate-200 text-slate-300 cursor-not-allowed"
                         : "border-slate-300 text-slate-600 hover:bg-slate-50"
@@ -441,7 +443,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                     &lt;
                   </button>
 
-                  <span className="text-slate-500">
+                  <span className="text-slate-600 font-medium px-1">
                     {currentPage}/{totalPages}
                   </span>
 
@@ -449,7 +451,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                     type="button"
                     onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                     disabled={currentPage >= totalPages}
-                    className={`px-3 py-1 rounded-full border text-xs ${
+                    className={`w-7 h-7 flex items-center justify-center rounded-full border text-xs transition-colors ${
                       currentPage >= totalPages
                         ? "border-slate-200 text-slate-300 cursor-not-allowed"
                         : "border-slate-300 text-slate-600 hover:bg-slate-50"
@@ -463,9 +465,9 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
               <button
                 type="button"
                 onClick={handleExportCsv}
-                className="px-4 py-2 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-2 text-gray-700"
+                className="px-3.5 py-1.5 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors flex items-center gap-1.5 text-xs font-semibold text-slate-700 bg-white shadow-sm"
               >
-                <Download size={16} />
+                <Download size={14} />
                 Export CSV
               </button>
             </div>
