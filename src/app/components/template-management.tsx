@@ -968,7 +968,7 @@ export function TemplateManagement() {
   const selectedVars = extractVariables(selectedTemplateBody);
 
   return (
-    <div className="w-full p-6 md:p-8 bg-white h-full flex flex-col overflow-hidden">
+    <div className="w-full p-6 md:p-8 bg-white xl:h-full flex flex-col xl:overflow-hidden">
       <div className="mb-6 flex items-center justify-between gap-3 flex-wrap flex-shrink-0">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight leading-tight">Template Pesan</h1>
@@ -994,44 +994,46 @@ export function TemplateManagement() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.25fr_0.75fr] gap-6 flex-1 min-h-0 overflow-hidden">
-        <div className="overflow-hidden rounded-lg shadow-sm bg-white flex flex-col h-full min-h-0">
+      <div className="grid grid-cols-1 xl:grid-cols-[1.25fr_0.75fr] gap-6 flex-1 min-h-0 xl:overflow-hidden">
+        <div className="overflow-hidden rounded-lg shadow-sm bg-white flex flex-col xl:h-full min-h-0">
           <div className="px-6 py-4 border-b bg-white">
             <div className="flex items-center justify-between gap-4 flex-wrap">
-              <div className="flex flex-1 items-center gap-3 min-w-[280px] max-w-xl">
-                <div className="relative flex-1">
+              <div className="flex flex-col md:flex-row flex-1 md:items-center gap-3 w-full max-w-xl">
+                <div className="relative w-full md:flex-1">
                   <Input
                     type="text"
                     placeholder="Cari nama template..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-8"
+                    className="pl-8 w-full"
                   />
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 </div>
 
-                <select
-                  value={categoryFilter}
-                  onChange={(e) => setCategoryFilter(e.target.value)}
-                  className="px-3 py-2 border rounded-lg bg-white text-sm text-slate-700 min-w-[130px]"
-                >
-                  <option value="all">Semua Kategori</option>
-                  <option value="marketing">Marketing</option>
-                  <option value="utility">Utility</option>
-                  <option value="authentication">Authentication</option>
-                </select>
+                <div className="flex gap-2 w-full md:w-auto">
+                  <select
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                    className="flex-1 md:flex-initial px-3 py-2 border rounded-lg bg-white text-sm text-slate-700 min-w-0 md:min-w-[130px]"
+                  >
+                    <option value="all">Semua Kategori</option>
+                    <option value="marketing">Marketing</option>
+                    <option value="utility">Utility</option>
+                    <option value="authentication">Authentication</option>
+                  </select>
 
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  className="px-3 py-2 border rounded-lg bg-white text-sm text-slate-700 min-w-[130px]"
-                >
-                  <option value="all">Semua Status</option>
-                  <option value="approved">Approved</option>
-                  <option value="pending">Pending</option>
-                  <option value="rejected">Rejected</option>
-                  <option value="draft">Draft</option>
-                </select>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="flex-1 md:flex-initial px-3 py-2 border rounded-lg bg-white text-sm text-slate-700 min-w-0 md:min-w-[130px]"
+                  >
+                    <option value="all">Semua Status</option>
+                    <option value="approved">Approved</option>
+                    <option value="pending">Pending</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="draft">Draft</option>
+                  </select>
+                </div>
               </div>
 
               {sortedTemplates.length > PAGE_SIZE && (
@@ -1078,10 +1080,10 @@ export function TemplateManagement() {
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50/50 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
                     <th className="px-5 py-3.5">Nama template</th>
-                    <th className="px-5 py-3.5">Kategori</th>
-                    <th className="px-5 py-3.5">Bahasa</th>
+                    <th className="px-5 py-3.5 hidden sm:table-cell">Kategori</th>
+                    <th className="px-5 py-3.5 hidden sm:table-cell">Bahasa</th>
                     <th className="px-5 py-3.5">Status</th>
-                    <th className="px-5 py-3.5 text-center">Pesan Terkirim</th>
+                    <th className="px-5 py-3.5 text-center hidden md:table-cell">Pesan Terkirim</th>
                     <th className="px-5 py-3.5 text-right">Action</th>
                   </tr>
                 </thead>
@@ -1102,12 +1104,12 @@ export function TemplateManagement() {
                             {template.name}
                           </span>
                         </td>
-                        <td className="px-5 py-3 text-sm text-slate-600">
+                        <td className="px-5 py-3 text-sm text-slate-600 hidden sm:table-cell">
                           <Badge variant="outline" className="capitalize text-xs font-normal">
                             {template.category}
                           </Badge>
                         </td>
-                        <td className="px-5 py-3 text-sm text-slate-600">
+                        <td className="px-5 py-3 text-sm text-slate-600 hidden sm:table-cell">
                           <Badge variant="secondary" className="uppercase text-xs font-medium">
                             {template.language}
                           </Badge>
@@ -1117,7 +1119,7 @@ export function TemplateManagement() {
                             {getStatusLabel(template.status)}
                           </span>
                         </td>
-                        <td className="px-5 py-3 text-sm text-slate-700 text-center font-medium">
+                        <td className="px-5 py-3 text-sm text-slate-700 text-center font-medium hidden md:table-cell">
                           {sentCount.toLocaleString("id-ID")}
                         </td>
                         <td className="px-5 py-3 text-sm text-right" onClick={(e) => e.stopPropagation()}>
@@ -1130,8 +1132,8 @@ export function TemplateManagement() {
                                 className="h-8 px-2.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 border-emerald-100 hover:border-emerald-200"
                                 disabled={pushingId !== null}
                               >
-                                <CloudUpload className={`w-3.5 h-3.5 mr-1.5 ${pushingId === template.id ? "animate-spin" : ""}`} />
-                                {pushingId === template.id ? "Submitting..." : "Submit"}
+                                <CloudUpload className={`w-3.5 h-3.5 sm:mr-1.5 ${pushingId === template.id ? "animate-spin" : ""}`} />
+                                <span className="hidden sm:inline">{pushingId === template.id ? "Submitting..." : "Submit"}</span>
                               </Button>
                             )}
                             <Button
@@ -1140,8 +1142,8 @@ export function TemplateManagement() {
                               onClick={() => openEditModal(template)}
                               className="h-8 px-2.5"
                             >
-                              <Edit className="w-3.5 h-3.5 mr-1.5" />
-                              Edit
+                              <Edit className="w-3.5 h-3.5 sm:mr-1.5" />
+                              <span className="hidden sm:inline">Edit</span>
                             </Button>
                             <Button
                               variant="outline"
@@ -1162,7 +1164,7 @@ export function TemplateManagement() {
           )}
         </div>
 
-        <div className="p-6 bg-white rounded-lg shadow-sm flex flex-col h-full min-h-0 overflow-hidden">
+        <div className="p-6 bg-white rounded-lg shadow-sm flex flex-col xl:h-full min-h-0 xl:overflow-hidden">
           <div className="flex items-center gap-2 mb-4 flex-shrink-0">
             <Eye className="w-4 h-4" />
             <h3>Preview Template</h3>
