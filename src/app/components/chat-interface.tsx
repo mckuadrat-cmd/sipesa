@@ -2,8 +2,9 @@ import { useState, useEffect, useRef } from "react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { AppModal } from "./AppModal";
 
-import { ArrowLeft, Send, Search, Phone, Smile } from "lucide-react";
+import { ArrowLeft, Send, Search, Phone, Smile, RotateCw, CheckCheck, Trash2, Square, CheckSquare, Edit, X } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 
@@ -155,12 +156,20 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   const [searchQuery, setSearchQuery] = useState("");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set());
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [tokenBalance, setTokenBalance] = useState(0);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setSelectedContact(null);
+    setMessages([]);
+  }, [numberId]);
 
   useEffect(() => {
     loadContacts();
@@ -211,6 +220,101 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
       setContacts(result.data);
     } catch (error) {
       console.error("Error loading contacts:", error);
+    }
+  };
+
+  const handleMarkAllAsRead = async () => {
+    try {
+      const result = await api.readAllMessages(numberId);
+      if (!result.success) {
+        toast.error("Gagal menandai semua pesan sebagai dibaca");
+        return;
+      }
+      toast.success("Semua pesan ditandai sebagai dibaca");
+      loadContacts();
+      if (selectedContact) {
+        loadMessages();
+      }
+    } catch (error) {
+      console.error("Error marking all as read:", error);
+      toast.error("Terjadi kesalahan");
+    }
+  };
+
+  const toggleEditMode = () => {
+    setIsEditMode(!isEditMode);
+    setSelectedContactIds(new Set());
+  };
+
+  const handleToggleContactSelection = (contactId: string) => {
+    setSelectedContactIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(contactId)) {
+        next.delete(contactId);
+      } else {
+        next.add(contactId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    if (selectedContactIds.size === filteredContacts.length) {
+      setSelectedContactIds(new Set());
+    } else {
+      setSelectedContactIds(new Set(filteredContacts.map((c) => c.id)));
+    }
+  };
+
+  const handleMarkSelectedAsRead = async () => {
+    const ids = Array.from(selectedContactIds);
+    if (ids.length === 0) return;
+    try {
+      const result = await api.readAllMessages(numberId, ids);
+      if (!result.success) {
+        toast.error("Gagal menandai pesan sebagai dibaca");
+        return;
+      }
+      toast.success("Pesan terpilih berhasil ditandai sebagai dibaca");
+      setSelectedContactIds(new Set());
+      setIsEditMode(false);
+      loadContacts();
+      if (selectedContact && ids.includes(selectedContact)) {
+        loadMessages();
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error("Terjadi kesalahan");
+    }
+  };
+
+  const handleDeleteSelected = () => {
+    if (selectedContactIds.size === 0) return;
+    setDeleteConfirmOpen(true);
+  };
+
+  const executeDeleteSelected = async () => {
+    const ids = Array.from(selectedContactIds);
+    if (ids.length === 0) return;
+    try {
+      const result = await api.deleteConversations(numberId, { contactIds: ids });
+      if (!result.success) {
+        toast.error("Gagal menghapus percakapan");
+        return;
+      }
+      toast.success("Percakapan terpilih berhasil dihapus");
+      setSelectedContactIds(new Set());
+      setIsEditMode(false);
+      if (selectedContact && ids.includes(selectedContact)) {
+        setSelectedContact(null);
+        setMessages([]);
+      }
+      loadContacts();
+    } catch (error) {
+      console.error(error);
+      toast.error("Terjadi kesalahan");
+    } finally {
+      setDeleteConfirmOpen(false);
     }
   };
 
@@ -318,26 +422,98 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
             {numberName}
           </h3>
 
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-semibold text-gray-500">
-              {filteredContacts.length} percakapan
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                loadContacts();
-                loadTokenBalance();
-                if (selectedContact) {
-                  loadMessages();
-                }
-                toast.success("Pesan diperbarui");
-              }}
-              className="text-xs bg-[#1e3a2f] text-white hover:bg-[#152920] hover:text-white px-3 py-1 h-7 border-none rounded-lg shadow-sm font-semibold transition-all"
-            >
-              Refresh
-            </Button>
-          </div>
+          {isEditMode ? (
+            <div className="flex items-center justify-between mb-3 gap-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100">
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleSelectAll}
+                  className="text-slate-500 hover:text-slate-700 transition-colors"
+                  title={selectedContactIds.size === filteredContacts.length ? "Deselect All" : "Select All"}
+                >
+                  {selectedContactIds.size === filteredContacts.length && filteredContacts.length > 0 ? (
+                    <CheckSquare className="w-5 h-5 text-emerald-600" />
+                  ) : (
+                    <Square className="w-5 h-5 text-slate-400" />
+                  )}
+                </button>
+                <span className="text-xs font-bold text-slate-600">
+                  {selectedContactIds.size} terpilih
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleMarkSelectedAsRead}
+                  disabled={selectedContactIds.size === 0}
+                  className={`p-1.5 rounded-lg transition-all ${
+                    selectedContactIds.size === 0 
+                      ? "text-slate-300 cursor-not-allowed" 
+                      : "text-sky-600 hover:bg-sky-50"
+                  }`}
+                  title="Tandai dibaca"
+                >
+                  <CheckCheck className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={handleDeleteSelected}
+                  disabled={selectedContactIds.size === 0}
+                  className={`p-1.5 rounded-lg transition-all ${
+                    selectedContactIds.size === 0 
+                      ? "text-slate-300 cursor-not-allowed" 
+                      : "text-red-600 hover:bg-red-50"
+                  }`}
+                  title="Hapus terpilih"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={toggleEditMode}
+                  className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-all"
+                  title="Batal"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between mb-3 gap-1.5">
+              <span className="text-xs font-semibold text-gray-500 truncate">
+                {filteredContacts.length} percakapan
+              </span>
+              <div className="flex items-center gap-1">
+                {/* Edit Mode Toggle Button */}
+                <button
+                  onClick={toggleEditMode}
+                  className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-all"
+                  title="Edit Percakapan"
+                >
+                  <Edit className="w-4 h-4" />
+                </button>
+                {/* Mark All as Read Button */}
+                <button
+                  onClick={handleMarkAllAsRead}
+                  className="p-1.5 text-slate-500 hover:text-sky-700 hover:bg-sky-50 rounded-lg transition-all"
+                  title="Tandai semua dibaca"
+                >
+                  <CheckCheck className="w-4 h-4" />
+                </button>
+                {/* Refresh Button */}
+                <button
+                  onClick={() => {
+                    loadContacts();
+                    loadTokenBalance();
+                    if (selectedContact) {
+                      loadMessages();
+                    }
+                    toast.success("Pesan diperbarui");
+                  }}
+                  className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-all"
+                  title="Perbarui pesan"
+                >
+                  <RotateCw className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -360,17 +536,36 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                 <button
                   key={contact.id}
                   onClick={() => {
-                    setSelectedContact(contact.id);
-                    setContacts((prev) =>
-                      prev.map((c) => (c.id === contact.id ? { ...c, unread: false } : c))
-                    );
+                    if (isEditMode) {
+                      handleToggleContactSelection(contact.id);
+                    } else {
+                      setSelectedContact(contact.id);
+                      setContacts((prev) =>
+                        prev.map((c) => (c.id === contact.id ? { ...c, unread: false } : c))
+                      );
+                    }
                   }}
-                  className={`w-full px-3 py-3 rounded-xl text-left transition-all duration-200 flex items-center gap-3 ${
+                  className={`w-full px-3 py-3 rounded-xl text-left transition-all duration-200 flex items-center gap-3 relative ${
                     selectedContact === contact.id
                       ? "bg-emerald-50 border border-emerald-100 shadow-sm"
                       : "hover:bg-gray-50 border border-transparent"
                   }`}
                 >
+                  {isEditMode && (
+                    <div 
+                      className="shrink-0 mr-1"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleContactSelection(contact.id);
+                      }}
+                    >
+                      {selectedContactIds.has(contact.id) ? (
+                        <CheckSquare className="w-5 h-5 text-emerald-600" />
+                      ) : (
+                        <Square className="w-5 h-5 text-slate-400" />
+                      )}
+                    </div>
+                  )}
                   <div className="w-10 h-10 rounded-full overflow-hidden shrink-0 shadow-sm">
                     {contact.avatarUrl || contact.avatar_url || contact.avatar ? (
                       <img src={contact.avatarUrl || contact.avatar_url || contact.avatar} alt={contact.name} className="w-full h-full object-cover" />
@@ -658,6 +853,29 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
           </div>
         )}
       </div>
+
+      <AppModal
+        open={deleteConfirmOpen}
+        title="Hapus Percakapan"
+        description={`Apakah Anda yakin ingin menghapus ${selectedContactIds.size} percakapan terpilih? Tindakan ini tidak dapat dibatalkan.`}
+        onClose={() => setDeleteConfirmOpen(false)}
+      >
+        <div className="flex justify-end gap-2 mt-4">
+          <Button
+            variant="outline"
+            onClick={() => setDeleteConfirmOpen(false)}
+            className="rounded-lg text-sm font-medium border-slate-200"
+          >
+            Batal
+          </Button>
+          <Button
+            onClick={executeDeleteSelected}
+            className="bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium border-none shadow-sm"
+          >
+            Hapus
+          </Button>
+        </div>
+      </AppModal>
     </div>
   );
 }
