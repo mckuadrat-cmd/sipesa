@@ -10,7 +10,7 @@ interface RecipientStatus {
   id: string;
   contactName: string;
   contactPhone: string;
-  status: "sent" | "delivered" | "read" | "failed";
+  status: "pending" | "processing" | "accepted" | "sent" | "delivered" | "read" | "failed" | "cancelled";
   timestamp: string;
   errorMessage?: string;
 }
@@ -123,13 +123,22 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
     const r = broadcast.recipients;
 
+    // Accepted is any message sent to Meta but not yet delivered/read (status: accepted, processing, or sent)
+    const acceptedCount = r.filter((x) => x.status === "accepted" || x.status === "processing" || x.status === "sent").length;
+    const deliveredCount = r.filter((x) => x.status === "delivered").length;
+    const readCount = r.filter((x) => x.status === "read").length;
+    const failedCount = r.filter((x) => x.status === "failed").length;
+
+    // Sent is cumulative sent messages (Accepted + Delivered + Read)
+    const sentCount = acceptedCount + deliveredCount + readCount;
+
     return {
       total: r.length,
-      accepted: r.filter((x) => x.status === "accepted").length,
-      sent: r.filter((x) => x.status === "sent").length,
-      delivered: r.filter((x) => x.status === "delivered").length,
-      read: r.filter((x) => x.status === "read").length,
-      failed: r.filter((x) => x.status === "failed").length,
+      accepted: acceptedCount,
+      sent: sentCount,
+      delivered: deliveredCount,
+      read: readCount,
+      failed: failedCount,
     };
   }, [broadcast]);
 
@@ -141,7 +150,17 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
         (r.contactName || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
         (r.contactPhone || "").includes(searchQuery);
 
-      const filter = filterStatus === "all" || r.status === filterStatus;
+      let filter = false;
+      if (filterStatus === "all") {
+        filter = true;
+      } else if (filterStatus === "accepted") {
+        filter = r.status === "accepted" || r.status === "processing" || r.status === "sent";
+      } else if (filterStatus === "sent") {
+        // Sent filters for all successful messages (accepted + delivered + read)
+        filter = ["accepted", "processing", "sent", "delivered", "read"].includes(r.status);
+      } else {
+        filter = r.status === filterStatus;
+      }
 
       return search && filter;
     });
@@ -168,20 +187,11 @@ function renderStatusBadge(status?: string | null) {
     );
   }
 
-  if (s === "sent" || s === "accepted") {
+  if (s === "accepted" || s === "processing" || s === "sent") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
-        <Send className="w-3 h-3" />
-        Sent
-      </span>
-    );
-  }
-
-  if (s === "processing") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
-        <Loader2 className="w-3 h-3 animate-spin" />
-        Processing
+      <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-semibold text-yellow-700">
+        <Clock3 className="w-3 h-3" />
+        Accepted
       </span>
     );
   }

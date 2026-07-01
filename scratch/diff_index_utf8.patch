@@ -1,0 +1,427 @@
+﻿diff --git a/supabase/functions/server/index.ts b/supabase/functions/server/index.ts
+index ee658fdb..708a365e 100644
+--- a/supabase/functions/server/index.ts
++++ b/supabase/functions/server/index.ts
+@@ -1143,7 +1143,7 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
+       await supa
+         .from("wa_messages")
+         .update({
+-          status: "sent",
++          status: "accepted",
+           meta_message_id: metaMessageId,
+           meta_status_payload: metaRes,
+           sent_at: nowIso(),
+@@ -2386,7 +2386,8 @@ app.get(`${API_PREFIX}/broadcasts/:id/recipients`, requireAuth, async (c) => {
+       .select("*")
+       .eq("org_id", user.org_id)
+       .eq("broadcast_id", id)
+-      .order("created_at", { ascending: true });
++      .order("created_at", { ascending: true })
++      .order("id", { ascending: true });
+ 
+     if (recErr) return c.json(jsonFail(recErr.message), 500);
+ 
+@@ -2550,6 +2551,7 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
+       .eq("broadcast_id", broadcast.id)
+       .eq("status", "pending")
+       .order("created_at", { ascending: true })
++      .order("id", { ascending: true })
+       .limit(effectiveThrottle);
+ 
+     if (rErr) return c.json(jsonFail(rErr.message), 500);
+@@ -2586,6 +2588,14 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
+           })
+           .eq("id", broadcast.id);
+ 
++        await supa.from("app_activity").insert({
++          org_id: user.org_id,
++          actor_user_id: user.id,
++          type: "broadcast_paused",
++          message: `Broadcast dijeda (Token habis): ${broadcast.title}`,
++          meta: { broadcast_id: broadcast.id },
++        });
++
+         return c.json(
+           jsonOk({
+             broadcastId: broadcast.id,
+@@ -2691,7 +2701,7 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
+         await supa
+           .from("wa_messages")
+           .update({
+-            status: "sent",
++            status: "accepted",
+             meta_message_id: metaMessageId,
+             meta_status_payload: metaRes,
+             sent_at: nowIso(),
+@@ -2701,7 +2711,7 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
+         await supa
+           .from("wa_broadcast_recipients")
+           .update({
+-            status: "sent",
++            status: "accepted",
+             wa_message_id: msg.id,
+             provider_message_id: metaMessageId,
+             sent_at: nowIso(),
+@@ -2785,19 +2795,19 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
+ 
+     if (updErr) return c.json(jsonFail(updErr.message), 500);
+ 
+-    await supa.from("app_activity").insert({
+-      org_id: user.org_id,
+-      actor_user_id: user.id,
+-      type: "broadcast_processed",
+-      message: `Broadcast diproses: ${broadcast.title}`,
+-      meta: {
+-        broadcast_id: broadcast.id,
+-        sent_in_batch: sentCount,
+-        failed_in_batch: failedCount,
+-        send_delay_ms: effectiveDelayMs,
+-        throttle_per_min: effectiveThrottle,
+-      },
+-    });
++    if (nextStatus === "completed") {
++      await supa.from("app_activity").insert({
++        org_id: user.org_id,
++        actor_user_id: user.id,
++        type: "broadcast_completed",
++        message: `Broadcast selesai: ${broadcast.title} (${totalSent} sukses, ${totalFailed} gagal)`,
++        meta: {
++          broadcast_id: broadcast.id,
++          total_sent: totalSent,
++          total_failed: totalFailed,
++        },
++      });
++    }
+ 
+     return c.json(
+       jsonOk({
+@@ -2844,8 +2854,8 @@ async function recalculateBroadcastStats(supa: any, broadcastId: string) {
+   }
+ }
+ 
+-// ===== WEBHOOK VERIFY =====
+-app.get(`${API_PREFIX}/webhooks/meta`, async (c) => {
++/// ===== WEBHOOK HANDLERS =====
++const handleWebhookGet = async (c: any) => {
+   try {
+     const mode = c.req.query("hub.mode");
+     const token = c.req.query("hub.verify_token");
+@@ -2863,10 +2873,9 @@ app.get(`${API_PREFIX}/webhooks/meta`, async (c) => {
+   } catch (e) {
+     return c.text(e instanceof Error ? e.message : String(e), 500);
+   }
+-});
++};
+ 
+-// ===== WEBHOOK RECEIVE =====
+-app.post(`${API_PREFIX}/webhooks/meta`, async (c) => {
++const handleWebhookPost = async (c: any) => {
+   try {
+     const payload = await c.req.json();
+     const supa = sb();
+@@ -2897,158 +2906,159 @@ app.post(`${API_PREFIX}/webhooks/meta`, async (c) => {
+               query = query.eq("name", templateName);
+             }
+ 
+-            const { data: updated, error: tplUpdErr } = await query.select("*");
+-            console.log("Webhook template status update:", { event, metaTemplateId, templateName, updated, tplUpdErr });
++            const { error: tplUpdErr } = await query;
++            console.log("Webhook template status update:", { event, metaTemplateId, templateName, tplUpdErr });
+           }
+-          continue;
+         }
+ 
+-        const metadata = value?.metadata ?? {};
+-        const phoneNumberId = metadata?.phone_number_id ?? null;
+-
+-        let numberRow: any = null;
+-
+-        if (phoneNumberId) {
+-          const { data } = await supa
+-            .from("wa_numbers")
+-            .select("*")
+-            .eq("phone_number_id", phoneNumberId)
+-            .maybeSingle();
+-          numberRow = data;
+-        }
++        if (field === "messages") {
++          const metadata = value?.metadata ?? {};
++          const phoneNumberId = metadata?.phone_number_id ?? null;
+ 
+-        const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
+-        for (const statusRow of statuses) {
+-          const metaMessageId = statusRow?.id ?? null;
+-          const status = String(statusRow?.status ?? "");
+-          const timestamp = statusRow?.timestamp
+-            ? new Date(Number(statusRow.timestamp) * 1000).toISOString()
+-            : nowIso();
++          let numberRow: any = null;
+ 
+-          if (!metaMessageId) continue;
+-
+-          const patch: any = {
+-            meta_status_payload: statusRow,
+-          };
+-
+-          if (status === "sent") {
+-            patch.status = "sent";
+-            patch.sent_at = timestamp;
+-          } else if (status === "delivered") {
+-            patch.status = "delivered";
+-            patch.delivered_at = timestamp;
+-          } else if (status === "read") {
+-            patch.status = "read";
+-            patch.read_at = timestamp;
+-          } else if (status === "failed") {
+-            patch.status = "failed";
+-            patch.error =
+-              statusRow?.errors?.[0]?.title ||
+-              statusRow?.errors?.[0]?.message ||
+-              "Message failed";
++          if (phoneNumberId) {
++            const { data } = await supa
++              .from("wa_numbers")
++              .select("*")
++              .eq("phone_number_id", phoneNumberId)
++              .maybeSingle();
++            numberRow = data;
+           }
+ 
+-          const { data: msg } = await supa
+-            .from("wa_messages")
+-            .update(patch)
+-            .eq("meta_message_id", metaMessageId)
+-            .select("*")
+-            .maybeSingle();
++          const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
++          for (const statusRow of statuses) {
++            const metaMessageId = statusRow?.id ?? null;
++            const status = String(statusRow?.status ?? "");
++            const timestamp = statusRow?.timestamp
++              ? new Date(Number(statusRow.timestamp) * 1000).toISOString()
++              : nowIso();
++
++            if (!metaMessageId) continue;
+ 
+-          if (msg) {
+-            const recipientPatch: any = {
+-              provider_message_id: metaMessageId,
+-              error: patch.error ?? null,
++            const patch: any = {
++              meta_status_payload: statusRow,
+             };
+-            if (patch.status && ["pending", "processing", "sent", "failed"].includes(patch.status)) {
+-              recipientPatch.status = patch.status;
+-            }
+-            const { data: updatedRecs } = await supa
+-              .from("wa_broadcast_recipients")
+-              .update(recipientPatch)
+-              .eq("wa_message_id", msg.id)
+-              .select("broadcast_id");
+-
+-            let broadcastId = updatedRecs?.[0]?.broadcast_id;
+-            if (!broadcastId && typeof msg.payload === "object" && msg.payload) {
+-              broadcastId = msg.payload.broadcast_id;
+-            } else if (!broadcastId && typeof msg.payload === "string" && msg.payload) {
+-              try {
+-                const parsed = JSON.parse(msg.payload);
+-                broadcastId = parsed.broadcast_id;
+-              } catch {}
++
++            if (status === "sent") {
++              patch.status = "sent";
++              patch.sent_at = timestamp;
++            } else if (status === "delivered") {
++              patch.status = "delivered";
++              patch.delivered_at = timestamp;
++            } else if (status === "read") {
++              patch.status = "read";
++              patch.read_at = timestamp;
++            } else if (status === "failed") {
++              patch.status = "failed";
++              patch.error =
++                statusRow?.errors?.[0]?.title ||
++                statusRow?.errors?.[0]?.message ||
++                "Message failed";
+             }
+ 
+-            if (broadcastId) {
+-              await recalculateBroadcastStats(supa, broadcastId);
++            const { data: msg } = await supa
++              .from("wa_messages")
++              .update(patch)
++              .eq("meta_message_id", metaMessageId)
++              .select("*")
++              .maybeSingle();
++
++            if (msg) {
++              const recipientPatch: any = {
++                provider_message_id: metaMessageId,
++                error: patch.error ?? null,
++              };
++              if (patch.status && ["pending", "processing", "accepted", "sent", "delivered", "read", "failed"].includes(patch.status)) {
++                recipientPatch.status = patch.status;
++              }
++              const { data: updatedRecs } = await supa
++                .from("wa_broadcast_recipients")
++                .update(recipientPatch)
++                .eq("wa_message_id", msg.id)
++                .select("broadcast_id");
++
++              let broadcastId = updatedRecs?.[0]?.broadcast_id;
++              if (!broadcastId && typeof msg.payload === "object" && msg.payload) {
++                broadcastId = msg.payload.broadcast_id;
++              } else if (!broadcastId && typeof msg.payload === "string" && msg.payload) {
++                try {
++                  const parsed = JSON.parse(msg.payload);
++                  broadcastId = parsed.broadcast_id;
++                } catch {}
++              }
++
++              if (broadcastId) {
++                await recalculateBroadcastStats(supa, broadcastId);
++              }
+             }
+           }
+-        }
+ 
+-        const messages = Array.isArray(value?.messages) ? value.messages : [];
+-        const contacts = Array.isArray(value?.contacts) ? value.contacts : [];
++          const messages = Array.isArray(value?.messages) ? value.messages : [];
++          const contacts = Array.isArray(value?.contacts) ? value.contacts : [];
+ 
+-        for (const incoming of messages) {
+-          const from = normalizePhone(incoming?.from ?? "");
+-          if (!from || !numberRow) continue;
++          for (const incoming of messages) {
++            const from = normalizePhone(incoming?.from ?? "");
++            if (!from || !numberRow) continue;
+ 
+-          const waContact = contacts.find((x: any) => normalizePhone(x?.wa_id ?? "") === from);
+-          const displayName =
+-            waContact?.profile?.name ||
+-            waContact?.profile?.formatted_name ||
+-            "Kontak";
++            const waContact = contacts.find((x: any) => normalizePhone(x?.wa_id ?? "") === from);
++            const displayName =
++              waContact?.profile?.name ||
++              waContact?.profile?.formatted_name ||
++              "Kontak";
+ 
+-          let { data: contact } = await supa
+-            .from("wa_contacts")
+-            .select("*")
+-            .eq("org_id", numberRow.org_id)
+-            .eq("phone_e164", from)
+-            .maybeSingle();
+-
+-          if (!contact) {
+-            const inserted = await supa
++            let { data: contact } = await supa
+               .from("wa_contacts")
+-              .insert({
+-                org_id: numberRow.org_id,
+-                phone_e164: from,
+-                display_name: null,
+-                last_message_at: nowIso(),
+-              })
+               .select("*")
+-              .single();
++              .eq("org_id", numberRow.org_id)
++              .eq("phone_e164", from)
++              .maybeSingle();
++
++            if (!contact) {
++              const inserted = await supa
++                .from("wa_contacts")
++                .insert({
++                  org_id: numberRow.org_id,
++                  phone_e164: from,
++                  display_name: null,
++                  last_message_at: nowIso(),
++                })
++                .select("*")
++                .single();
++
++              if (inserted.error) throw inserted.error;
++              contact = inserted.data;
++            } else {
++              await supa
++                .from("wa_contacts")
++                .update({
++                  last_message_at: nowIso(),
++                })
++                .eq("id", contact.id);
++            }
+ 
+-            if (inserted.error) throw inserted.error;
+-            contact = inserted.data;
+-          } else {
+-            await supa
+-              .from("wa_contacts")
+-              .update({
+-                last_message_at: nowIso(),
+-              })
+-              .eq("id", contact.id);
++            const messageType = String(incoming?.type ?? "text");
++            const textBody =
++              incoming?.text?.body ??
++              incoming?.button?.text ??
++              incoming?.interactive?.button_reply?.title ??
++              incoming?.interactive?.list_reply?.title ??
++              `[${messageType}]`;
++
++            await supa.from("wa_messages").insert({
++              org_id: numberRow.org_id,
++              number_id: numberRow.id,
++              contact_id: contact.id,
++              direction: "in",
++              status: "delivered",
++              meta_message_id: incoming?.id ?? null,
++              meta_status_payload: incoming,
++              message_type: messageType,
++              text_body: textBody,
++              payload: incoming,
++              delivered_at: nowIso(),
++            });
+           }
+-
+-          const messageType = String(incoming?.type ?? "text");
+-          const textBody =
+-            incoming?.text?.body ??
+-            incoming?.button?.text ??
+-            incoming?.interactive?.button_reply?.title ??
+-            incoming?.interactive?.list_reply?.title ??
+-            `[${messageType}]`;
+-
+-          await supa.from("wa_messages").insert({
+-            org_id: numberRow.org_id,
+-            number_id: numberRow.id,
+-            contact_id: contact.id,
+-            direction: "in",
+-            status: "delivered",
+-            meta_message_id: incoming?.id ?? null,
+-            meta_status_payload: incoming,
+-            message_type: messageType,
+-            text_body: textBody,
+-            payload: incoming,
+-            delivered_at: nowIso(),
+-          });
+         }
+       }
+     }
+@@ -3057,7 +3067,13 @@ app.post(`${API_PREFIX}/webhooks/meta`, async (c) => {
+   } catch (e) {
+     return c.json(jsonFail(e), 500);
+   }
+-});
++};
++
++app.get("/webhooks/meta", handleWebhookGet);
++app.get(`${API_PREFIX}/webhooks/meta`, handleWebhookGet);
++
++app.post("/webhooks/meta", handleWebhookPost);
++app.post(`${API_PREFIX}/webhooks/meta`, handleWebhookPost);
+ 
+ app.get(`${API_PREFIX}/dev/check-columns`, async (c) => {
+   try {

@@ -181,7 +181,8 @@ export function RulesView({ user, onBack }: RulesViewProps) {
         toast.success("Kebijakan penggunaan berhasil diperbarui.");
         setIsEditMode(false);
       } else {
-        toast.error("Gagal memperbarui: " + (res.error || "Gagal menghubungi server"));
+        const errorMsg = "error" in res ? res.error : "Gagal menghubungi server";
+        toast.error("Gagal memperbarui: " + errorMsg);
       }
     } catch (err) {
       console.error(err);

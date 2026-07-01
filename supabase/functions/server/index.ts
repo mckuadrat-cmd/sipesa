@@ -798,23 +798,54 @@ app.get(`${API_PREFIX}/numbers/:numberId/contacts`, requireAuth, async (c) => {
   }
 });
 
-app.get(`${API_PREFIX}/media/:mediaId`, requireAuth, async (c) => {
+app.get(`${API_PREFIX}/media/:mediaId`, async (c) => {
   try {
-    const user = c.get("authUser");
     const mediaId = c.req.param("mediaId");
     const numberId = c.req.query("numberId");
+    const token = c.req.query("token");
+    const apiKeyParam = c.req.query("apikey");
 
     if (!numberId) {
       return c.json(jsonFail("numberId wajib"), 400);
     }
 
     const supa = sb();
-    const { data: numberRow, error } = await supa
-      .from("wa_numbers")
-      .select("access_token")
-      .eq("org_id", user.org_id)
-      .eq("id", numberId)
-      .maybeSingle();
+
+    // Authenticate: either valid JWT user token OR valid Supabase Anon/Service Key
+    let isAuthenticated = false;
+    let authUser: any = null;
+    const systemAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+    const systemServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+    if (apiKeyParam && (apiKeyParam === systemAnonKey || apiKeyParam === systemServiceKey)) {
+      isAuthenticated = true;
+    } else if (token) {
+      const { data: { user } } = await supa.auth.getUser(token);
+      if (user) {
+        isAuthenticated = true;
+        // Fetch user org details
+        const { data: appUser } = await supa
+          .from("app_users")
+          .select("org_id")
+          .eq("id", user.id)
+          .maybeSingle();
+        if (appUser) {
+          authUser = appUser;
+        }
+      }
+    }
+
+    if (!isAuthenticated) {
+      return c.json(jsonFail("Sesi Anda tidak valid atau tidak memiliki akses"), 401);
+    }
+
+    // Query WABA number row
+    let query = supa.from("wa_numbers").select("access_token").eq("id", numberId);
+    if (authUser?.org_id) {
+      query = query.eq("org_id", authUser.org_id);
+    }
+
+    const { data: numberRow, error } = await query.maybeSingle();
 
     if (error || !numberRow || !numberRow.access_token) {
       return c.json(jsonFail("Nomor WA tidak valid atau token tidak ditemukan"), 404);
@@ -1143,7 +1174,7 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
       await supa
         .from("wa_messages")
         .update({
-          status: "accepted",
+          status: "processing",
           meta_message_id: metaMessageId,
           meta_status_payload: metaRes,
           sent_at: nowIso(),
@@ -2701,7 +2732,7 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
         await supa
           .from("wa_messages")
           .update({
-            status: "accepted",
+            status: "processing",
             meta_message_id: metaMessageId,
             meta_status_payload: metaRes,
             sent_at: nowIso(),
@@ -2711,7 +2742,7 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
         await supa
           .from("wa_broadcast_recipients")
           .update({
-            status: "accepted",
+            status: "processing",
             wa_message_id: msg.id,
             provider_message_id: metaMessageId,
             sent_at: nowIso(),
@@ -2878,6 +2909,7 @@ const handleWebhookGet = async (c: any) => {
 const handleWebhookPost = async (c: any) => {
   try {
     const payload = await c.req.json();
+    console.log("Webhook POST payload received:", JSON.stringify(payload));
     const supa = sb();
 
     const entries = Array.isArray(payload?.entry) ? payload.entry : [];
@@ -2914,16 +2946,30 @@ const handleWebhookPost = async (c: any) => {
         if (field === "messages") {
           const metadata = value?.metadata ?? {};
           const phoneNumberId = metadata?.phone_number_id ?? null;
+          console.log("Webhook field=messages. phoneNumberId received:", phoneNumberId);
 
           let numberRow: any = null;
 
           if (phoneNumberId) {
-            const { data } = await supa
+            const { data, error: numErr } = await supa
               .from("wa_numbers")
               .select("*")
               .eq("phone_number_id", phoneNumberId)
               .maybeSingle();
+            
+            if (numErr) {
+              console.error("Error querying wa_numbers for phoneNumberId:", numErr.message);
+            }
             numberRow = data;
+            
+            if (!numberRow) {
+              const { data: allNums } = await supa.from("wa_numbers").select("phone_number_id, phone_e164");
+              console.warn("WABA number NOT found in DB. Received:", phoneNumberId, ". Configured in DB:", allNums);
+            } else {
+              console.log("Matched WABA number in DB:", numberRow.phone_e164);
+            }
+          } else {
+            console.warn("Missing phone_number_id in webhook payload metadata.");
           }
 
           const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
@@ -2940,7 +2986,9 @@ const handleWebhookPost = async (c: any) => {
               meta_status_payload: statusRow,
             };
 
-            if (status === "sent") {
+            if (status === "accepted") {
+              patch.status = "processing";
+            } else if (status === "sent") {
               patch.status = "sent";
               patch.sent_at = timestamp;
             } else if (status === "delivered") {
@@ -2969,7 +3017,7 @@ const handleWebhookPost = async (c: any) => {
                 provider_message_id: metaMessageId,
                 error: patch.error ?? null,
               };
-              if (patch.status && ["pending", "processing", "accepted", "sent", "delivered", "read", "failed"].includes(patch.status)) {
+              if (patch.status && ["pending", "processing", "sent", "delivered", "read", "failed"].includes(patch.status)) {
                 recipientPatch.status = patch.status;
               }
               const { data: updatedRecs } = await supa
@@ -2996,10 +3044,14 @@ const handleWebhookPost = async (c: any) => {
 
           const messages = Array.isArray(value?.messages) ? value.messages : [];
           const contacts = Array.isArray(value?.contacts) ? value.contacts : [];
+          console.log(`Processing ${messages.length} messages and ${contacts.length} contacts.`);
 
           for (const incoming of messages) {
             const from = normalizePhone(incoming?.from ?? "");
-            if (!from || !numberRow) continue;
+            if (!from || !numberRow) {
+              console.warn("Skipping message: from =", from, ", numberRow found =", !!numberRow);
+              continue;
+            }
 
             const waContact = contacts.find((x: any) => normalizePhone(x?.wa_id ?? "") === from);
             const displayName =
@@ -3015,6 +3067,7 @@ const handleWebhookPost = async (c: any) => {
               .maybeSingle();
 
             if (!contact) {
+              console.log("Creating new contact in DB for:", from, "with name:", displayName);
               const inserted = await supa
                 .from("wa_contacts")
                 .insert({
@@ -3026,9 +3079,13 @@ const handleWebhookPost = async (c: any) => {
                 .select("*")
                 .single();
 
-              if (inserted.error) throw inserted.error;
+              if (inserted.error) {
+                console.error("Error creating contact:", inserted.error.message);
+                throw inserted.error;
+              }
               contact = inserted.data;
             } else {
+              console.log("Found existing contact in DB for:", from);
               await supa
                 .from("wa_contacts")
                 .update({
@@ -3045,7 +3102,8 @@ const handleWebhookPost = async (c: any) => {
               incoming?.interactive?.list_reply?.title ??
               `[${messageType}]`;
 
-            await supa.from("wa_messages").insert({
+            console.log("Inserting incoming message into wa_messages:", textBody, "type:", messageType);
+            const { error: insertErr } = await supa.from("wa_messages").insert({
               org_id: numberRow.org_id,
               number_id: numberRow.id,
               contact_id: contact.id,
@@ -3058,6 +3116,12 @@ const handleWebhookPost = async (c: any) => {
               payload: incoming,
               delivered_at: nowIso(),
             });
+
+            if (insertErr) {
+              console.error("Error inserting incoming message into wa_messages:", insertErr.message);
+            } else {
+              console.log("Incoming message inserted successfully!");
+            }
           }
         }
       }
@@ -3083,9 +3147,14 @@ app.get(`${API_PREFIX}/dev/check-columns`, async (c) => {
       .select("*")
       .order("created_at", { ascending: false })
       .limit(10);
+    const { data: numbers, error: numErr } = await supa
+      .from("wa_numbers")
+      .select("*");
     return c.json({
       messages,
-      msgErr
+      msgErr,
+      numbers,
+      numErr
     });
   } catch (e) {
     return c.json({ error: String(e) });
