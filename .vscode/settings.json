@@ -3,5 +3,6 @@
   "deno.unstable": true,
   "deno.lint": true,
   "deno.importMap": ["supabase/functions/deno.json"],
-  "deno.enablePaths": ["supabase/functions"]
+  "deno.enablePaths": ["supabase/functions"],
+  "css.lint.unknownAtRules": "ignore"
 }

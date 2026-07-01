@@ -92,7 +92,7 @@ function normalizeRecipientStatus(status?: string | null) {
   const s = String(status || "").toLowerCase();
   if (s === "read") return "read";
   if (s === "delivered") return "delivered";
-  if (s === "sent") return "sent";
+  if (s === "sent") return "accepted";
   if (s === "accepted") return "accepted";
   if (s === "failed") return "failed";
   if (s === "processing") return "processing";
@@ -118,15 +118,6 @@ function renderStatusBadge(status?: string | null) {
       <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700">
         <CheckCircle2 className="w-3 h-3" />
         Delivered
-      </span>
-    );
-  }
-
-  if (s === "sent") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">
-        <Send className="w-3 h-3" />
-        Sent
       </span>
     );
   }
@@ -342,13 +333,14 @@ export function BroadcastProgressModal({
 
   const summary = useMemo(() => {
     const accepted = rows.filter((r) => normalizeRecipientStatus(r.status) === "accepted").length;
-    const sent = rows.filter((r) => normalizeRecipientStatus(r.status) === "sent").length;
     const delivered = rows.filter((r) => normalizeRecipientStatus(r.status) === "delivered").length;
     const read = rows.filter((r) => normalizeRecipientStatus(r.status) === "read").length;
     const failed = rows.filter((r) => normalizeRecipientStatus(r.status) === "failed").length;
-    const processing = rows.filter((r) => normalizeRecipientStatus(r.status) === "processing").length;
     const pending = rows.filter((r) => normalizeRecipientStatus(r.status) === "pending").length;
     const cancelled = rows.filter((r) => normalizeRecipientStatus(r.status) === "cancelled").length;
+    const processing = rows.filter((r) => normalizeRecipientStatus(r.status) === "processing").length;
+
+    const sent = accepted + delivered + read;
 
     return {
       total: rows.length,
@@ -357,17 +349,14 @@ export function BroadcastProgressModal({
       delivered,
       read,
       failed,
-      processing,
       pending,
       cancelled,
+      processing,
     };
   }, [rows]);
 
   const processedCount =
-    summary.accepted +
     summary.sent +
-    summary.delivered +
-    summary.read +
     summary.failed +
     summary.cancelled;
 
@@ -397,7 +386,7 @@ export function BroadcastProgressModal({
     <AppModal
       open={open}
       title="Proses Broadcast"
-      description={`Total: ${summary.total} • Accepted: ${summary.accepted} • Sent: ${summary.sent} • Delivered: ${summary.delivered} • Read: ${summary.read} • Failed: ${summary.failed} • Cancelled: ${summary.cancelled} • Processing: ${summary.processing} • Pending: ${summary.pending}`}
+      description={`Total: ${summary.total} • Sent: ${summary.sent} • Accepted: ${summary.accepted} • Processing: ${summary.processing} • Delivered: ${summary.delivered} • Read: ${summary.read} • Failed: ${summary.failed} • Cancelled: ${summary.cancelled} • Pending: ${summary.pending}`}
       onClose={onClose}
       closeOnBackdrop={isDone}
       closeDisabled={!isDone}
