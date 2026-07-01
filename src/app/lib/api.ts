@@ -744,8 +744,9 @@ export const api = {
     return ok(res.data);
   },
 
-  async processBroadcasts(): Promise<AppResult<any>> {
-    const res = await apiFetch<any>(`${API_PREFIX}/jobs/process-broadcasts`, {
+  async processBroadcasts(limit?: number): Promise<AppResult<any>> {
+    const url = limit ? `${API_PREFIX}/jobs/process-broadcasts?limit=${limit}` : `${API_PREFIX}/jobs/process-broadcasts`;
+    const res = await apiFetch<any>(url, {
       method: "POST",
     });
 

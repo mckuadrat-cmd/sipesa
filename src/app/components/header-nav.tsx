@@ -16,6 +16,8 @@ import {
   Building,
   Users,
   Scale,
+  Menu,
+  X,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import logoFull from "/logo-sipesa.png";
@@ -40,6 +42,7 @@ export function HeaderNav({
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
   const [showMailDropdown, setShowMailDropdown] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [avatar, setAvatar] = useState<string | null>(null);
   const [hasNewMessages, setHasNewMessages] = useState(false);
   const [hasNewNotifs, setHasNewNotifs] = useState(false);
@@ -155,9 +158,17 @@ export function HeaderNav({
   return (
     <header className="sticky top-0 z-50 w-full border-b border-slate-100 bg-white/80 backdrop-blur-md">
       <div className="flex h-16 items-center justify-between px-6">
-        {/* Brand Logo */}
-        <div className="flex items-center gap-2 cursor-pointer" onClick={() => onViewChange(isSuperadmin ? "superadmin" : "dashboard")}>
-          <img src={logoFull} alt="Sipesa" className="h-9 w-auto object-contain" />
+        {/* Brand Logo and Hamburger Toggle */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowMobileMenu(!showMobileMenu)}
+            className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-lg xl:hidden transition-colors"
+          >
+            {showMobileMenu ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => onViewChange(isSuperadmin ? "superadmin" : "dashboard")}>
+            <img src={logoFull} alt="Sipesa" className="h-9 w-auto object-contain" />
+          </div>
         </div>
 
         {/* Center Navigation links */}
@@ -399,18 +410,7 @@ export function HeaderNav({
                     Peraturan Penggunaan
                   </button>
 
-                  {!isSuperadmin && (
-                    <button
-                      onClick={() => {
-                        onViewChange("add-number");
-                        setShowProfileDropdown(false);
-                      }}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors md:hidden"
-                    >
-                      <Plus className="w-4 h-4 text-slate-400" />
-                      Tambah Nomor WA
-                    </button>
-                  )}
+
                 </div>
 
                 <div className="mt-1 pt-1 border-t border-slate-50">
@@ -432,6 +432,70 @@ export function HeaderNav({
           </div>
         </div>
       </div>
+
+      {/* Mobile Dropdown Menu (Floating Card) */}
+      {showMobileMenu && (
+        <div className="absolute top-14 left-6 w-72 bg-white border border-slate-100 shadow-2xl rounded-2xl xl:hidden flex flex-col p-3 z-50 space-y-1 max-h-[calc(100vh-5rem)] overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeView === item.id || (item.id === "history" && activeView === "broadcast-detail");
+            return (
+              <button
+                key={item.id}
+                onClick={() => {
+                  onViewChange(item.id);
+                  setShowMobileMenu(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                  isActive
+                    ? "bg-slate-100 text-slate-900"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                }`}
+              >
+                <Icon className={`w-4 h-4 ${isActive ? "text-primary" : "text-slate-400"}`} />
+                <span>{item.label}</span>
+                {item.id === "inbox" && totalUnread > 0 && (
+                  <span className="ml-auto inline-flex items-center justify-center rounded-full bg-red-500 px-2 py-0.5 text-xs font-medium text-white">
+                    {totalUnread}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+
+          <div className="border-t border-slate-100 my-1.5 pt-1.5" />
+
+          {/* Action Buttons at the bottom */}
+          <div className="space-y-2">
+            {!isSuperadmin && (
+              <Button
+                size="sm"
+                className="w-full bg-primary hover:bg-primary/95 text-primary-foreground font-medium rounded-xl shadow-sm flex items-center justify-center gap-1.5 py-2.5"
+                onClick={() => {
+                  onViewChange("add-number");
+                  setShowMobileMenu(false);
+                }}
+              >
+                <Plus className="w-4 h-4" />
+                Tambah Nomor WA
+              </Button>
+            )}
+
+            {onLogout && (
+              <button
+                onClick={() => {
+                  setShowMobileMenu(false);
+                  onLogout();
+                }}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-xl transition-colors border border-red-100"
+              >
+                <LogOut className="w-4 h-4" />
+                Logout
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </header>
   );
 }

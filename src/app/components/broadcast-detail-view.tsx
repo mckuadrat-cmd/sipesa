@@ -209,7 +209,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       onClose={onBack}
       maxWidthClassName="max-w-4xl"
     >
-      <div className="w-full flex flex-col gap-4 max-h-[75vh] overflow-y-auto pr-1">
+      <div className="w-full flex flex-col gap-4 max-h-none sm:max-h-[75vh] overflow-y-visible sm:overflow-y-auto pr-1">
 
         {error && (
           <Card className="p-4 bg-red-50 border-red-200 text-red-700">
@@ -319,8 +319,8 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
         {/* Table */}
         <Card className="overflow-hidden border border-gray-200 shadow-sm">
-          <div className="overflow-auto max-h-[60vh]">
-            <table className="w-full text-sm table-fixed">
+          <div className="overflow-x-auto w-full">
+            <table className="w-full text-sm min-w-[650px] table-fixed">
               <thead className="bg-slate-50 sticky top-0 border-b border-gray-200 z-10">
                 <tr>
                   <th className="p-3 text-left text-slate-600 font-semibold w-16">No</th>

@@ -88,7 +88,7 @@ function renderStatusBadge(status?: string | null) {
 
   if (s === "read") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-1 text-[11px] font-medium text-emerald-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700">
         <Eye className="w-3 h-3" />
         Read
       </span>
@@ -97,7 +97,7 @@ function renderStatusBadge(status?: string | null) {
 
   if (s === "delivered") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-1 text-[11px] font-medium text-green-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700">
         <CheckCircle2 className="w-3 h-3" />
         Delivered
       </span>
@@ -106,7 +106,7 @@ function renderStatusBadge(status?: string | null) {
 
   if (s === "sent") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 text-[11px] font-medium text-blue-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">
         <Send className="w-3 h-3" />
         Sent
       </span>
@@ -115,7 +115,7 @@ function renderStatusBadge(status?: string | null) {
 
   if (s === "processing") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-700">
         <Loader2 className="w-3 h-3 animate-spin" />
         Processing
       </span>
@@ -124,7 +124,7 @@ function renderStatusBadge(status?: string | null) {
 
   if (s === "failed") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-1 text-[11px] font-medium text-red-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-1 text-xs font-medium text-red-700">
         <XCircle className="w-3 h-3" />
         Failed
       </span>
@@ -133,7 +133,7 @@ function renderStatusBadge(status?: string | null) {
 
   if (s === "cancelled") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-[11px] font-medium text-slate-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-xs font-medium text-slate-700">
         <XCircle className="w-3 h-3" />
         Cancelled
       </span>
@@ -141,7 +141,7 @@ function renderStatusBadge(status?: string | null) {
   }
 
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-700">
+    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
       <Clock3 className="w-3 h-3" />
       Pending
     </span>
@@ -181,17 +181,29 @@ export function BroadcastProgressModal({
       setError("");
     }
 
+    let currentRecs: RecipientRow[] = [];
     if (!("error" in rowsRes)) {
-      setRows(rowsRes.data || []);
+      currentRecs = rowsRes.data || [];
+      setRows(currentRecs);
     }
 
-    // Auto-trigger batch processing if broadcast is sending or queued
-    if (currentStats && (currentStats.status === "sending" || currentStats.status === "queued")) {
+    const hasProcessing = currentRecs.some((r: any) => normalizeRecipientStatus(r.status) === "processing");
+    const hasPending = currentRecs.some((r: any) => normalizeRecipientStatus(r.status) === "pending");
+
+    // Auto-trigger sequential processing (one-by-one) if broadcast is sending or queued
+    // and no recipient is currently in 'processing' status to avoid duplicate processing.
+    if (
+      currentStats && 
+      (currentStats.status === "sending" || currentStats.status === "queued") &&
+      !hasProcessing && 
+      hasPending
+    ) {
       if (!isProcessingRef.current) {
         isProcessingRef.current = true;
         try {
-          await api.processBroadcasts();
-          // After processing a batch, refetch data to update progress
+          // Process exactly 1 recipient sequentially
+          await api.processBroadcasts(1);
+          // After processing, refetch data to update progress
           const [updatedStatsRes, updatedRowsRes] = await Promise.all([
             api.getBroadcastStats(broadcastId),
             api.getBroadcastRecipients(broadcastId),
@@ -203,7 +215,7 @@ export function BroadcastProgressModal({
             setRows(updatedRowsRes.data || []);
           }
         } catch (err) {
-          console.error("Auto batch processing error:", err);
+          console.error("Auto sequential processing error:", err);
         } finally {
           isProcessingRef.current = false;
         }
@@ -331,6 +343,12 @@ export function BroadcastProgressModal({
 
   const progressPct = summary.total > 0 ? Math.round((processedCount / summary.total) * 100) : 0;
 
+  const progressBarColorClass = useMemo(() => {
+    if (progressPct < 33) return "bg-red-500";
+    if (progressPct < 80) return "bg-amber-500";
+    return "bg-green-500";
+  }, [progressPct]);
+
   const isDone =
     stats?.status === "completed" ||
     stats?.status === "cancelled" ||
@@ -383,7 +401,7 @@ export function BroadcastProgressModal({
 
         <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden">
           <div
-            className="h-2 rounded-full bg-slate-900 transition-all"
+            className={`h-2 rounded-full transition-all ${progressBarColorClass}`}
             style={{ width: `${progressPct}%` }}
           />
         </div>
@@ -462,7 +480,7 @@ export function BroadcastProgressModal({
           </table>
         </div>
 
-        <p className="text-[11px] text-slate-500">
+        <p className="text-xs text-slate-500">
           Modal ini terhubung secara realtime untuk menampilkan progres broadcast terbaru.
         </p>
       </div>

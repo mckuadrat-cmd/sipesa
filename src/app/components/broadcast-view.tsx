@@ -1124,20 +1124,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         if (newBroadcastId) {
           setProgressModalOpen(true);
         }
-
-        const processRes = await api.processBroadcasts();
-
-        if ("error" in processRes) {
-          openResultModal(
-            "error",
-            "Broadcast dibuat, tapi proses kirim gagal",
-            processRes.error,
-          );
-          return;
-        }
       }
 
-      resetImportedContacts();
+      // Do NOT reset imported contacts immediately to prevent preview from disappearing
       setScheduleEnabled(false);
       setScheduleDate("");
       setScheduleTime("");
@@ -1853,6 +1842,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         onCancelled={() => {
           loadInitialData();
           onBroadcastSent?.();
+          resetImportedContacts();
         }}
         onComplete={(bcId) => {
           setProgressModalOpen(false);
@@ -1862,6 +1852,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
             "Pesan broadcast Anda telah selesai dikirim. Silakan lihat laporan detail untuk melihat rincian pengiriman.",
             bcId,
           );
+          resetImportedContacts();
         }}
       />
     </div>
