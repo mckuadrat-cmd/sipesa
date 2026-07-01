@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { ArrowLeft, CheckCircle, Clock, XCircle, Search, Download } from "lucide-react";
+import { ArrowLeft, CheckCircle, Clock, XCircle, Search, Download, Eye, CheckCircle2, Send, Loader2, Clock3 } from "lucide-react";
 import { api } from "../lib/api";
 import { AppModal } from "./AppModal";
 
@@ -41,7 +41,7 @@ function formatDate(date?: string) {
     const year = d.getFullYear();
     const hours = pad(d.getHours());
     const minutes = pad(d.getMinutes());
-    return `${day}-${month}-${year} ${hours}:${minutes}`;
+    return `${day}-${month}-${year} ${hours}:${minutes} WIB`;
   } catch {
     return date;
   }
@@ -119,12 +119,13 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
   };
 
   const stats = useMemo(() => {
-    if (!broadcast) return { total: 0, sent: 0, delivered: 0, read: 0, failed: 0 };
+    if (!broadcast) return { total: 0, accepted: 0, sent: 0, delivered: 0, read: 0, failed: 0 };
 
     const r = broadcast.recipients;
 
     return {
       total: r.length,
+      accepted: r.filter((x) => x.status === "accepted").length,
       sent: r.filter((x) => x.status === "sent").length,
       delivered: r.filter((x) => x.status === "delivered").length,
       read: r.filter((x) => x.status === "read").length,
@@ -146,20 +147,70 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
     });
   }, [broadcast, searchQuery, filterStatus]);
 
-  const getStatus = (status: string) => {
-    switch (status) {
-      case "read":
-        return { label: "Read", color: "text-blue-700", icon: <CheckCircle size={16} /> };
-      case "delivered":
-        return { label: "Delivered", color: "text-green-700", icon: <CheckCircle size={16} /> };
-      case "sent":
-        return { label: "Accepted", color: "text-yellow-700", icon: <Clock size={16} /> };
-      case "failed":
-        return { label: "Failed", color: "text-red-600", icon: <XCircle size={16} /> };
-      default:
-        return { label: "Pending", color: "text-gray-500", icon: <Clock size={16} /> };
-    }
-  };
+function renderStatusBadge(status?: string | null) {
+  const s = String(status || "").toLowerCase().trim();
+
+  if (s === "read") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+        <Eye className="w-3 h-3" />
+        Read
+      </span>
+    );
+  }
+
+  if (s === "delivered") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
+        <CheckCircle2 className="w-3 h-3" />
+        Delivered
+      </span>
+    );
+  }
+
+  if (s === "sent" || s === "accepted") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
+        <Send className="w-3 h-3" />
+        Sent
+      </span>
+    );
+  }
+
+  if (s === "processing") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+        <Loader2 className="w-3 h-3 animate-spin" />
+        Processing
+      </span>
+    );
+  }
+
+  if (s === "failed") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+        <XCircle className="w-3 h-3" />
+        Failed
+      </span>
+    );
+  }
+
+  if (s === "cancelled") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-700">
+        <XCircle className="w-3 h-3" />
+        Cancelled
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+      <Clock3 className="w-3 h-3" />
+      Pending
+    </span>
+  );
+}
 
   const exportCsv = () => {
     if (!broadcast) return;
@@ -247,7 +298,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
         </Card>
 
         {/* Statistik */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4">
           <Card 
             className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
               filterStatus === "all" ? "border-slate-800 bg-slate-50/50 shadow-sm" : "border-slate-100 hover:border-slate-300"
@@ -260,12 +311,22 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
           <Card 
             className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "sent" ? "border-yellow-600 bg-yellow-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              filterStatus === "accepted" ? "border-yellow-600 bg-yellow-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+            }`} 
+            onClick={() => setFilterStatus("accepted")}
+          >
+            <div className="text-xs font-medium text-yellow-700">Accepted</div>
+            <div className="text-xl font-bold mt-1 text-yellow-700">{stats.accepted}</div>
+          </Card>
+
+          <Card 
+            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
+              filterStatus === "sent" ? "border-blue-600 bg-blue-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
             }`} 
             onClick={() => setFilterStatus("sent")}
           >
-            <div className="text-xs font-medium text-yellow-700">Accepted</div>
-            <div className="text-xl font-bold mt-1 text-yellow-700">{stats.sent}</div>
+            <div className="text-xs font-medium text-blue-700">Sent</div>
+            <div className="text-xl font-bold mt-1 text-blue-700">{stats.sent}</div>
           </Card>
 
           <Card 
@@ -280,12 +341,12 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
           <Card 
             className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "read" ? "border-blue-600 bg-blue-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              filterStatus === "read" ? "border-emerald-600 bg-emerald-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
             }`} 
             onClick={() => setFilterStatus("read")}
           >
-            <div className="text-xs font-medium text-blue-700">Read</div>
-            <div className="text-xl font-bold mt-1 text-blue-700">{stats.read}</div>
+            <div className="text-xs font-medium text-emerald-700">Read</div>
+            <div className="text-xl font-bold mt-1 text-emerald-700">{stats.read}</div>
           </Card>
 
           <Card 
@@ -333,18 +394,13 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
               <tbody>
                 {filteredRecipients.map((r, i) => {
-                  const st = getStatus(r.status);
-
                   return (
                     <tr key={r.id} className="border-t border-gray-100 hover:bg-slate-50/50 transition-colors">
                       <td className="p-3 text-slate-500">{i + 1}</td>
                       <td className="p-3 font-mono font-medium text-slate-800">{r.contactPhone}</td>
                       <td className="p-3 text-slate-700">{r.contactName}</td>
                       <td className="p-3">
-                        <div className={`flex items-center gap-2 font-medium ${st.color}`}>
-                          {st.icon}
-                          <span>{st.label}</span>
-                        </div>
+                        {renderStatusBadge(r.status)}
                       </td>
                       <td className="p-3 text-slate-500 overflow-visible">
                         <InfoTooltip text={r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp)} />

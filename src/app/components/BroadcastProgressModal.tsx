@@ -37,6 +37,23 @@ function translateError(err?: string | null) {
   return err;
 }
 
+function formatDateWIB(isoString?: string | null) {
+  if (!isoString || isoString === "-") return "-";
+  try {
+    const d = new Date(isoString);
+    if (Number.isNaN(d.getTime())) return isoString;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const day = pad(d.getDate());
+    const month = pad(d.getMonth() + 1);
+    const year = d.getFullYear();
+    const hours = pad(d.getHours());
+    const minutes = pad(d.getMinutes());
+    return `${day}/${month}/${year} ${hours}:${minutes} WIB`;
+  } catch {
+    return isoString;
+  }
+}
+
 const InfoTooltip = ({ text }: { text: string }) => {
   if (!text || text === "-") return <span className="text-slate-400">-</span>;
   return (
@@ -76,6 +93,7 @@ function normalizeRecipientStatus(status?: string | null) {
   if (s === "read") return "read";
   if (s === "delivered") return "delivered";
   if (s === "sent") return "sent";
+  if (s === "accepted") return "accepted";
   if (s === "failed") return "failed";
   if (s === "processing") return "processing";
   if (s === "pending") return "pending";
@@ -109,6 +127,15 @@ function renderStatusBadge(status?: string | null) {
       <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">
         <Send className="w-3 h-3" />
         Sent
+      </span>
+    );
+  }
+
+  if (s === "accepted") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-1 text-xs font-medium text-yellow-700">
+        <Clock3 className="w-3 h-3" />
+        Accepted
       </span>
     );
   }
@@ -314,6 +341,7 @@ export function BroadcastProgressModal({
   }, [open]);
 
   const summary = useMemo(() => {
+    const accepted = rows.filter((r) => normalizeRecipientStatus(r.status) === "accepted").length;
     const sent = rows.filter((r) => normalizeRecipientStatus(r.status) === "sent").length;
     const delivered = rows.filter((r) => normalizeRecipientStatus(r.status) === "delivered").length;
     const read = rows.filter((r) => normalizeRecipientStatus(r.status) === "read").length;
@@ -324,6 +352,7 @@ export function BroadcastProgressModal({
 
     return {
       total: rows.length,
+      accepted,
       sent,
       delivered,
       read,
@@ -335,6 +364,7 @@ export function BroadcastProgressModal({
   }, [rows]);
 
   const processedCount =
+    summary.accepted +
     summary.sent +
     summary.delivered +
     summary.read +
@@ -367,7 +397,7 @@ export function BroadcastProgressModal({
     <AppModal
       open={open}
       title="Proses Broadcast"
-      description={`Total: ${summary.total} • Sent: ${summary.sent} • Delivered: ${summary.delivered} • Read: ${summary.read} • Failed: ${summary.failed} • Cancelled: ${summary.cancelled} • Processing: ${summary.processing} • Pending: ${summary.pending}`}
+      description={`Total: ${summary.total} • Accepted: ${summary.accepted} • Sent: ${summary.sent} • Delivered: ${summary.delivered} • Read: ${summary.read} • Failed: ${summary.failed} • Cancelled: ${summary.cancelled} • Processing: ${summary.processing} • Pending: ${summary.pending}`}
       onClose={onClose}
       closeOnBackdrop={isDone}
       closeDisabled={!isDone}
@@ -463,7 +493,7 @@ export function BroadcastProgressModal({
                     </td>
                     <td className="px-3 py-2 text-center">{renderStatusBadge(row.status)}</td>
                     <td className="px-3 py-2 text-slate-600 overflow-visible">
-                      <InfoTooltip text={row.error ? translateError(row.error) : row.sent_at || row.updated_at || row.created_at || "-"} />
+                      <InfoTooltip text={row.error ? translateError(row.error) : formatDateWIB(row.sent_at || row.updated_at || row.created_at)} />
                     </td>
                   </tr>
                 );

@@ -26,9 +26,11 @@ function formatDate(date: string) {
 export function InboxView({ numbers, onSelectNumber }: InboxViewProps) {
   return (
     <div className="w-full p-6 md:p-8 bg-white min-h-screen">
-      <div className="mb-8">
-        <h1 className="mb-2">Kotak Masuk WhatsApp</h1>
-        <p className="text-muted-foreground">Kelola percakapan dari semua nomor WABA Anda</p>
+      <div className="mb-6">
+        <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight leading-tight">Kotak Masuk WhatsApp</h1>
+        <p className="text-sm text-slate-500 mt-1.5 leading-relaxed break-words whitespace-normal max-w-2xl">
+          Kelola percakapan dari semua nomor WABA Anda.
+        </p>
       </div>
 
       {numbers.length === 0 ? (

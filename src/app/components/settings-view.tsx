@@ -341,9 +341,9 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
   return (
     <div className="w-full p-6 md:p-8 bg-white space-y-6">
       <div>
-        <h1 className="text-3xl font-extrabold text-slate-900 leading-tight">Pengaturan</h1>
-        <p className="text-sm text-slate-500 mt-1">
-          Kelola profil user, data instansi, dan pengaturan pengiriman pesan
+        <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight leading-tight">Pengaturan</h1>
+        <p className="text-sm text-slate-500 mt-1.5 leading-relaxed break-words whitespace-normal max-w-2xl">
+          Kelola profil user, data instansi, dan pengaturan pengiriman pesan Anda.
         </p>
       </div>
 

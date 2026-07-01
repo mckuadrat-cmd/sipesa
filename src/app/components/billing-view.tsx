@@ -243,9 +243,11 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
 
   return (
     <div className="w-full p-6 md:p-8 bg-white">
-      <div className="mb-8">
-        <h1 className="mb-2">Billing & Token</h1>
-        <p className="text-muted-foreground">Kelola saldo token dan riwayat transaksi Anda</p>
+      <div className="mb-6">
+        <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight leading-tight">Billing & Token</h1>
+        <p className="text-sm text-slate-500 mt-1.5 leading-relaxed break-words whitespace-normal max-w-2xl">
+          Kelola saldo token dan riwayat transaksi Anda.
+        </p>
       </div>
 
       {safe.currentTokens === 0 && (

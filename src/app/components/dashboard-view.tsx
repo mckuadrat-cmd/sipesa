@@ -81,6 +81,26 @@ export function DashboardView({
   const [currentDate, setCurrentDate] = useState(new Date());
   const [broadcastHistory, setBroadcastHistory] = useState<BroadcastHistoryItem[]>([]);
 
+  // Date Filter State
+  const [daysFilter, setDaysFilter] = useState("30");
+  const [showFilterDropdown, setShowFilterDropdown] = useState(false);
+
+  // Filtered total messages sent in the day range
+  const filteredTotalMessages = useMemo(() => {
+    if (daysFilter === "all") {
+      return totalMessages;
+    }
+    const daysLimit = Number(daysFilter);
+    const limitDate = new Date();
+    limitDate.setDate(limitDate.getDate() - daysLimit);
+
+    const sum = broadcastHistory
+      .filter((item) => new Date(item.createdAt).getTime() >= limitDate.getTime())
+      .reduce((acc, item) => acc + safeNum(item.totalRecipients), 0);
+
+    return sum;
+  }, [broadcastHistory, daysFilter, totalMessages]);
+
   // Fetch Broadcast History for Calendar indicators and Schedule List
   useEffect(() => {
     const fetchHistory = async () => {
@@ -100,8 +120,8 @@ export function DashboardView({
   const statCards = [
     {
       title: "Total Pesan",
-      value: totalMessages >= 1000 ? `${(totalMessages / 1000).toFixed(1)}k` : totalMessages.toString(),
-      subtext: "Pesan terkirim",
+      value: filteredTotalMessages >= 1000 ? `${(filteredTotalMessages / 1000).toFixed(1)}k` : filteredTotalMessages.toString(),
+      subtext: daysFilter === "all" ? "Semua pesan terkirim" : `Pesan terkirim (${daysFilter} hari terakhir)`,
       icon: MessageSquare,
       bgColor: "bg-sky-50/70 border-sky-100/50",
       iconColor: "text-sky-500 bg-sky-100/80",
@@ -135,14 +155,14 @@ export function DashboardView({
   // 2. Generate smooth bezier curve coordinates for the SVG usage chart
   const chartPoints = useMemo(() => {
     if (usage7d.length === 0) return [];
-    
+
     const width = 500;
     const height = 140;
     const paddingX = 40;
     const paddingY = 20;
-    
+
     const maxVal = Math.max(1, ...usage7d.map((x) => safeNum(x.tokens)));
-    
+
     return usage7d.map((item, idx) => {
       const x = paddingX + (idx * (width - 2 * paddingX)) / Math.max(1, usage7d.length - 1);
       const y = height - paddingY - (safeNum(item.tokens) / maxVal) * (height - 2 * paddingY);
@@ -239,24 +259,63 @@ export function DashboardView({
 
   // 4. Upcoming schedules or recent history campaigns (top 3)
   const sortedSchedules = useMemo(() => {
-    return [...broadcastHistory]
+    let list = [...broadcastHistory];
+    if (daysFilter !== "all") {
+      const daysLimit = Number(daysFilter);
+      const limitDate = new Date();
+      limitDate.setDate(limitDate.getDate() - daysLimit);
+      list = list.filter((item) => new Date(item.createdAt).getTime() >= limitDate.getTime());
+    }
+    return list
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, 3);
-  }, [broadcastHistory]);
+  }, [broadcastHistory, daysFilter]);
 
   return (
     <div className="w-full p-6 md:p-8 bg-white min-h-screen">
       {/* Dashboard Title Header */}
       <div className="mb-6 flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-900 leading-tight">Dashboard</h1>
-          <p className="text-sm text-slate-500 mt-1">Kelola WABA Meta untuk sekolah Anda</p>
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight leading-tight">Dashboard</h1>
+          <p className="text-sm text-slate-500 mt-1.5 leading-relaxed break-words whitespace-normal max-w-2xl">
+            Kelola WABA sekolah Anda.
+          </p>
         </div>
 
         {/* Date Filter selector dropdown matching reference image */}
-        <div className="flex items-center gap-1.5 border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-500 bg-slate-50/50 hover:bg-slate-100 cursor-pointer transition-colors">
-          <span>30 Days</span>
-          <ChevronRight className="w-3.5 h-3.5 rotate-90 text-slate-400" />
+        <div className="relative">
+          <div
+            onClick={() => setShowFilterDropdown(!showFilterDropdown)}
+            className="flex items-center gap-1.5 border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-500 bg-slate-50/50 hover:bg-slate-100 cursor-pointer transition-colors"
+          >
+            <span>{daysFilter === "all" ? "All Time" : `${daysFilter} Days`}</span>
+            <ChevronRight className={`w-3.5 h-3.5 text-slate-400 transition-transform ${showFilterDropdown ? "-rotate-90" : "rotate-90"}`} />
+          </div>
+
+          {showFilterDropdown && (
+            <div className="absolute right-0 mt-1.5 w-32 bg-white border border-slate-100 rounded-xl shadow-xl z-50 p-1 flex flex-col space-y-0.5 animate-in fade-in slide-in-from-top-1 duration-150">
+              {[
+                { label: "7 Days", value: "7" },
+                { label: "30 Days", value: "30" },
+                { label: "90 Days", value: "90" },
+                { label: "All Time", value: "all" },
+              ].map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => {
+                    setDaysFilter(opt.value);
+                    setShowFilterDropdown(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 text-xs font-medium rounded-lg transition-colors ${daysFilter === opt.value
+                    ? "bg-slate-100 text-slate-900"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -496,13 +555,11 @@ export function DashboardView({
                     className="flex flex-col items-center justify-center py-1.5 relative cursor-pointer group"
                   >
                     <span
-                      className={`text-xs w-7 h-7 flex items-center justify-center rounded-full font-medium transition-all ${
-                        cell.isCurrentMonth ? "text-slate-700" : "text-slate-300"
-                      } ${
-                        isToday
+                      className={`text-xs w-7 h-7 flex items-center justify-center rounded-full font-medium transition-all ${cell.isCurrentMonth ? "text-slate-700" : "text-slate-300"
+                        } ${isToday
                           ? "bg-primary text-primary-foreground font-bold shadow-sm"
                           : "hover:bg-slate-50"
-                      }`}
+                        }`}
                     >
                       {cell.day}
                     </span>
@@ -552,9 +609,8 @@ export function DashboardView({
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         {/* Icon representation */}
-                        <span className={`flex h-9 w-9 items-center justify-center rounded-xl flex-shrink-0 ${
-                          isScheduled ? "bg-blue-50 text-blue-500" : "bg-emerald-50 text-emerald-500"
-                        }`}>
+                        <span className={`flex h-9 w-9 items-center justify-center rounded-xl flex-shrink-0 ${isScheduled ? "bg-blue-50 text-blue-500" : "bg-emerald-50 text-emerald-500"
+                          }`}>
                           {isScheduled ? <Clock className="w-4.5 h-4.5" /> : <CheckCircle className="w-4.5 h-4.5" />}
                         </span>
                         <div className="min-w-0">
