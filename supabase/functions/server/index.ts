@@ -2526,7 +2526,7 @@ app.get(`${API_PREFIX}/broadcasts/:id/stats`, requireAuth, async (c) => {
 
     const { data: b, error: bErr } = await supa
       .from("wa_broadcasts")
-      .select("id, title, status, total_recipients, total_sent, total_failed, started_at, finished_at, number_id")
+      .select("id, title, status, total_recipients, total_sent, total_failed, started_at, finished_at, number_id, text_body")
       .eq("org_id", user.org_id)
       .eq("id", id)
       .maybeSingle();
@@ -2565,6 +2565,7 @@ app.get(`${API_PREFIX}/broadcasts/:id/stats`, requireAuth, async (c) => {
         finishedAt: b.finished_at,
         senderNumber,
         senderName,
+        textBody: b.text_body,
       }),
     );
   } catch (e) {

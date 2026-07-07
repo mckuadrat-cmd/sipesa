@@ -560,8 +560,8 @@ export const api = {
   },
 
   async getBroadcastDetail(broadcastId: string): Promise<AppResult<any>> {
-    const detailRes = await apiFetch<any>(`${API_PREFIX}/broadcasts`, { method: "GET" });
-    if (isApiFail(detailRes)) return fail(detailRes.error);
+    const statsRes = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/stats`, { method: "GET" });
+    if (isApiFail(statsRes)) return fail(statsRes.error);
 
     const recipientsRes = await apiFetch<any>(
       `${API_PREFIX}/broadcasts/${broadcastId}/recipients`,
@@ -569,9 +569,7 @@ export const api = {
     );
     if (isApiFail(recipientsRes)) return fail(recipientsRes.error);
 
-    const broadcast = (detailRes.data ?? []).find((x: any) => x.id === broadcastId);
-    if (!broadcast) return fail("Broadcast tidak ditemukan");
-
+    const broadcast = statsRes.data;
     const recipients = (recipientsRes.data ?? []).map((r: any) => ({
       id: r.id,
       contactName: r.recipient_name ?? "Tanpa Nama",
@@ -581,13 +579,17 @@ export const api = {
       errorMessage: r.error ?? undefined,
     }));
 
+    const senderNumber = broadcast.senderNumber || "";
+    const senderName = broadcast.senderName || "";
+    const numberName = senderName ? `${senderNumber} — ${senderName}` : senderNumber || "Nomor WA";
+
     return ok({
       id: broadcast.id,
       numberId: broadcast.numberId,
-      numberName: broadcast.numberName ?? "Nomor WA",
-      message: broadcast.message ?? "",
+      numberName,
+      message: broadcast.textBody ?? "",
       totalRecipients: broadcast.totalRecipients ?? recipients.length,
-      createdAt: broadcast.createdAt ?? "-",
+      createdAt: broadcast.startedAt || broadcast.finishedAt || "-",
       recipients,
     });
   },

@@ -123,14 +123,11 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
     const r = broadcast.recipients;
 
-    // Accepted is any message sent to Meta but not yet delivered/read (status: accepted, processing, or sent)
-    const acceptedCount = r.filter((x) => x.status === "accepted" || x.status === "processing" || x.status === "sent").length;
+    const acceptedCount = r.filter((x) => x.status === "accepted" || x.status === "processing").length;
+    const sentCount = r.filter((x) => x.status === "sent").length;
     const deliveredCount = r.filter((x) => x.status === "delivered").length;
     const readCount = r.filter((x) => x.status === "read").length;
     const failedCount = r.filter((x) => x.status === "failed").length;
-
-    // Sent is cumulative sent messages (Accepted + Delivered + Read)
-    const sentCount = acceptedCount + deliveredCount + readCount;
 
     return {
       total: r.length,
@@ -154,10 +151,9 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       if (filterStatus === "all") {
         filter = true;
       } else if (filterStatus === "accepted") {
-        filter = r.status === "accepted" || r.status === "processing" || r.status === "sent";
+        filter = r.status === "accepted" || r.status === "processing";
       } else if (filterStatus === "sent") {
-        // Sent filters for all successful messages (accepted + delivered + read)
-        filter = ["accepted", "processing", "sent", "delivered", "read"].includes(r.status);
+        filter = r.status === "sent";
       } else {
         filter = r.status === filterStatus;
       }
@@ -330,22 +326,22 @@ function renderStatusBadge(status?: string | null) {
 
           <Card 
             className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "sent" ? "border-blue-600 bg-blue-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              filterStatus === "sent" ? "border-orange-600 bg-orange-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
             }`} 
             onClick={() => setFilterStatus("sent")}
           >
-            <div className="text-xs font-medium text-blue-700">Sent</div>
-            <div className="text-xl font-bold mt-1 text-blue-700">{stats.sent}</div>
+            <div className="text-xs font-medium text-orange-700">Sent</div>
+            <div className="text-xl font-bold mt-1 text-orange-700">{stats.sent}</div>
           </Card>
 
           <Card 
             className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "accepted" ? "border-yellow-600 bg-yellow-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              filterStatus === "accepted" ? "border-amber-600 bg-amber-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
             }`} 
             onClick={() => setFilterStatus("accepted")}
           >
-            <div className="text-xs font-medium text-yellow-700">Accepted</div>
-            <div className="text-xl font-bold mt-1 text-yellow-700">{stats.accepted}</div>
+            <div className="text-xs font-medium text-amber-800">Accepted</div>
+            <div className="text-xl font-bold mt-1 text-amber-800">{stats.accepted}</div>
           </Card>
 
           <Card 
@@ -360,12 +356,12 @@ function renderStatusBadge(status?: string | null) {
 
           <Card 
             className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "read" ? "border-emerald-600 bg-emerald-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              filterStatus === "read" ? "border-blue-600 bg-blue-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
             }`} 
             onClick={() => setFilterStatus("read")}
           >
-            <div className="text-xs font-medium text-emerald-700">Read</div>
-            <div className="text-xl font-bold mt-1 text-emerald-700">{stats.read}</div>
+            <div className="text-xs font-medium text-blue-700">Read</div>
+            <div className="text-xl font-bold mt-1 text-blue-700">{stats.read}</div>
           </Card>
 
           <Card 
