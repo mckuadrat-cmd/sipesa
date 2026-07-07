@@ -1239,7 +1239,7 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
       await supa
         .from("wa_messages")
         .update({
-          status: "processing",
+          status: "sent",
           meta_message_id: metaMessageId,
           meta_status_payload: metaRes,
           sent_at: nowIso(),
@@ -2797,7 +2797,7 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
         await supa
           .from("wa_messages")
           .update({
-            status: "processing",
+            status: "sent",
             meta_message_id: metaMessageId,
             meta_status_payload: metaRes,
             sent_at: nowIso(),
@@ -2807,7 +2807,7 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
         await supa
           .from("wa_broadcast_recipients")
           .update({
-            status: "processing",
+            status: "sent",
             wa_message_id: msg.id,
             provider_message_id: metaMessageId,
             sent_at: nowIso(),
@@ -3082,7 +3082,7 @@ const handleWebhookPost = async (c: any) => {
             };
 
             if (status === "accepted") {
-              patch.status = "processing";
+              patch.status = "sent";
             } else if (status === "sent") {
               patch.status = "sent";
               patch.sent_at = timestamp;

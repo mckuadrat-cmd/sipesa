@@ -15,7 +15,7 @@ interface LoginViewProps {
     orgName: string,
     username: string,
     waNumber: string
-  ) => Promise<{ emailVerificationRequired: boolean } | void>;
+  ) => Promise<{ emailVerificationRequired: boolean } | undefined>;
 }
 
 function getErrorMessage(err: unknown): string {
