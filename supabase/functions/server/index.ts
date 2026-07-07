@@ -3599,6 +3599,115 @@ async function requireSuperadmin(c: any, next: any) {
   await next();
 }
 
+app.post(`${API_PREFIX}/superadmin/fix-stuck-broadcasts`, requireAuth, requireSuperadmin, async (c) => {
+  try {
+    const supa = sb();
+
+    const { data: broadcasts, error: bErr } = await supa
+      .from("wa_broadcasts")
+      .select("id, title, status")
+      .in("status", ["queued", "sending"]);
+
+    if (bErr) return c.json(jsonFail(bErr.message), 500);
+
+    let updatedRecsCount = 0;
+    let updatedMsgsCount = 0;
+    const fixedBroadcasts = [];
+
+    for (const b of (broadcasts ?? [])) {
+      const { data: recs } = await supa
+        .from("wa_broadcast_recipients")
+        .select("id, wa_message_id")
+        .eq("broadcast_id", b.id)
+        .in("status", ["pending", "processing"]);
+
+      if (recs && recs.length > 0) {
+        const recIds = recs.map((r: any) => r.id);
+        const msgIds = recs.map((r: any) => r.wa_message_id).filter(Boolean);
+
+        const { error: recUpdErr } = await supa
+          .from("wa_broadcast_recipients")
+          .update({ status: "sent", updated_at: nowIso() })
+          .in("id", recIds);
+
+        if (!recUpdErr) {
+          updatedRecsCount += recIds.length;
+        }
+
+        if (msgIds.length > 0) {
+          const { error: msgUpdErr } = await supa
+            .from("wa_messages")
+            .update({ status: "sent" })
+            .in("id", msgIds);
+          
+          if (!msgUpdErr) {
+            updatedMsgsCount += msgIds.length;
+          }
+        }
+
+        await recalculateBroadcastStats(supa, b.id);
+        fixedBroadcasts.push(b.title);
+      } else {
+        await recalculateBroadcastStats(supa, b.id);
+        fixedBroadcasts.push(`${b.title} (recalculated only)`);
+      }
+    }
+
+    return c.json(jsonOk({
+      message: "Berhasil memperbaiki broadcast yang tersangkut",
+      fixedBroadcasts,
+      updatedRecipients: updatedRecsCount,
+      updatedMessages: updatedMsgsCount
+    }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/superadmin/reset-broadcast`, requireAuth, requireSuperadmin, async (c) => {
+  try {
+    const supa = sb();
+    const body = await c.req.json();
+    const broadcastId = String(body.broadcastId ?? "").trim();
+
+    if (!broadcastId) return c.json(jsonFail("broadcastId wajib"), 400);
+
+    const { error: bErr } = await supa
+      .from("wa_broadcasts")
+      .update({
+        status: "queued",
+        total_sent: 0,
+        total_failed: 0,
+        started_at: null,
+        finished_at: null,
+        updated_at: nowIso(),
+      })
+      .eq("id", broadcastId);
+
+    if (bErr) return c.json(jsonFail(bErr.message), 500);
+
+    const { error: rErr } = await supa
+      .from("wa_broadcast_recipients")
+      .update({
+        status: "pending",
+        wa_message_id: null,
+        provider_message_id: null,
+        sent_at: null,
+        updated_at: nowIso(),
+        error: null,
+      })
+      .eq("broadcast_id", broadcastId);
+
+    if (rErr) return c.json(jsonFail(rErr.message), 500);
+
+    return c.json(jsonOk({
+      message: `Broadcast ${broadcastId} berhasil di-reset ke antrean (queued)`,
+    }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
 app.get(`${API_PREFIX}/superadmin/orgs`, requireAuth, requireSuperadmin, async (c) => {
   try {
     const supa = sb();
