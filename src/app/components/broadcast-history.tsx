@@ -10,6 +10,7 @@ import {
   XCircle,
   Loader2,
   Eye,
+  Trash2,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -116,12 +117,73 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
 
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
   const [search, setSearch] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [senderFilter, setSenderFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
+
+  const handleDeleteOne = async (id: string, name?: string) => {
+    const displayName = name || "Broadcast ini";
+    if (!window.confirm(`Apakah Anda yakin ingin menghapus riwayat broadcast "${displayName}"?`)) {
+      return;
+    }
+
+    try {
+      const res = await api.deleteBroadcasts({ ids: [id] });
+      if ("error" in res) {
+        alert("Gagal menghapus: " + res.error);
+        return;
+      }
+      setSelectedIds((prev) => prev.filter((x) => x !== id));
+      loadBroadcasts("refresh");
+    } catch (err) {
+      console.error(err);
+      alert("Gagal menghapus broadcast");
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.length === 0) return;
+    if (!window.confirm(`Apakah Anda yakin ingin menghapus ${selectedIds.length} riwayat broadcast yang dipilih?`)) {
+      return;
+    }
+
+    try {
+      const res = await api.deleteBroadcasts({ ids: selectedIds });
+      if ("error" in res) {
+        alert("Gagal menghapus: " + res.error);
+        return;
+      }
+      setSelectedIds([]);
+      loadBroadcasts("refresh");
+    } catch (err) {
+      console.error(err);
+      alert("Gagal menghapus broadcast");
+    }
+  };
+
+  const handleDeleteAll = async () => {
+    if (!window.confirm("Apakah Anda yakin ingin menghapus SELURUH riwayat broadcast instansi Anda? Tindakan ini tidak dapat dibatalkan.")) {
+      return;
+    }
+
+    try {
+      const res = await api.deleteBroadcasts({ all: true });
+      if ("error" in res) {
+        alert("Gagal menghapus: " + res.error);
+        return;
+      }
+      setSelectedIds([]);
+      loadBroadcasts("refresh");
+    } catch (err) {
+      console.error(err);
+      alert("Gagal menghapus semua broadcast");
+    }
+  };
 
   useEffect(() => {
     loadBroadcasts("initial");
@@ -209,6 +271,34 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
     const startIndex = (currentPage - 1) * PAGE_SIZE;
     return filteredBroadcasts.slice(startIndex, startIndex + PAGE_SIZE);
   }, [filteredBroadcasts, currentPage]);
+
+  const isAllSelected = useMemo(() => {
+    if (paginatedBroadcasts.length === 0) return false;
+    return paginatedBroadcasts.every((b) => selectedIds.includes(b.id));
+  }, [paginatedBroadcasts, selectedIds]);
+
+  const handleSelectAllToggle = () => {
+    if (isAllSelected) {
+      const pageIds = paginatedBroadcasts.map((b) => b.id);
+      setSelectedIds((prev) => prev.filter((id) => !pageIds.includes(id)));
+    } else {
+      const pageIds = paginatedBroadcasts.map((b) => b.id);
+      setSelectedIds((prev) => {
+        const unique = new Set([...prev, ...pageIds]);
+        return Array.from(unique);
+      });
+    }
+  };
+
+  const handleSelectRowToggle = (id: string) => {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) {
+        return prev.filter((x) => x !== id);
+      } else {
+        return [...prev, id];
+      }
+    });
+  };
 
   const totalPages = Math.max(1, Math.ceil(filteredBroadcasts.length / PAGE_SIZE || 1));
   const fromIndex = filteredBroadcasts.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
@@ -462,6 +552,26 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                 </div>
               </div>
 
+              {selectedIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleDeleteSelected}
+                  className="px-3.5 py-1.5 border border-red-200 text-red-700 bg-red-50 rounded-lg hover:bg-red-100 transition-colors flex items-center gap-1.5 text-xs font-semibold shadow-sm"
+                >
+                  <Trash2 size={14} />
+                  Hapus Terpilih ({selectedIds.length})
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleDeleteAll}
+                className="px-3.5 py-1.5 border border-red-200 text-red-600 bg-white rounded-lg hover:bg-red-50 transition-colors flex items-center gap-1.5 text-xs font-semibold shadow-sm"
+              >
+                <Trash2 size={14} />
+                Hapus Semua
+              </button>
+
               <button
                 type="button"
                 onClick={handleExportCsv}
@@ -477,6 +587,14 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
             <table className="w-full">
               <thead className="bg-gray-50">
                 <tr>
+                  <th className="px-3 py-3 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={isAllSelected}
+                      onChange={handleSelectAllToggle}
+                      className="rounded border-slate-300 text-primary focus:ring-primary h-3.5 w-3.5 cursor-pointer"
+                    />
+                  </th>
                   <th className="px-3 py-3 text-left text-gray-600 text-xs font-semibold">Date &amp; Time</th>
                   <th className="px-3 py-3 text-left text-gray-600 text-xs font-semibold">Template</th>
                   <th className="px-3 py-3 text-left text-gray-600 text-xs font-semibold">Sender</th>
@@ -511,6 +629,15 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
 
                   return (
                     <tr key={log.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                      <td className="px-3 py-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.includes(log.id)}
+                          onChange={() => handleSelectRowToggle(log.id)}
+                          className="rounded border-slate-300 text-primary focus:ring-primary h-3.5 w-3.5 cursor-pointer"
+                        />
+                      </td>
+
                       <td className="px-3 py-3 text-gray-600 text-xs">
                         <div className="font-medium text-slate-800">
                           {date} {time}
@@ -543,7 +670,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                         {log.totalRecipients.toLocaleString()}
                       </td>
 
-                      <td className="px-3 py-3 text-green-700 text-xs text-center">
+                      <td className="px-3 py-3 text-orange-600 text-xs text-center font-medium">
                         {log.sent.toLocaleString()}
                       </td>
 
@@ -575,14 +702,24 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                       <td className="px-3 py-3">{getPhaseBadge(log.status)}</td>
 
                       <td className="px-3 py-3 text-right">
-                        <button
-                          type="button"
-                          onClick={() => onViewDetail(log.id)}
-                          className="text-xs text-[#25D366] hover:text-[#128C7E] underline inline-flex items-center gap-1"
-                        >
-                          <Eye className="w-4 h-4" />
-                          Detail
-                        </button>
+                        <div className="flex justify-end items-center gap-3.5">
+                          <button
+                            type="button"
+                            onClick={() => onViewDetail(log.id)}
+                            className="text-xs text-[#25D366] hover:text-[#128C7E] underline inline-flex items-center gap-1 font-semibold"
+                          >
+                            <Eye className="w-4 h-4" />
+                            Detail
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteOne(log.id, log.templateName || log.title)}
+                            className="text-xs text-red-600 hover:text-red-800 inline-flex items-center gap-1 font-semibold"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                            Hapus
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -590,7 +727,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
 
                 {paginatedBroadcasts.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={9} className="px-6 py-10 text-center text-slate-400 text-sm">
+                    <td colSpan={10} className="px-6 py-10 text-center text-slate-400 text-sm">
                       Tidak ada data untuk ditampilkan.
                     </td>
                   </tr>

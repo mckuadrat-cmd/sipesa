@@ -92,7 +92,7 @@ function normalizeRecipientStatus(status?: string | null) {
   const s = String(status || "").toLowerCase();
   if (s === "read") return "read";
   if (s === "delivered") return "delivered";
-  if (s === "sent") return "accepted";
+  if (s === "sent") return "sent";
   if (s === "accepted") return "accepted";
   if (s === "failed") return "failed";
   if (s === "processing") return "processing";
@@ -106,7 +106,7 @@ function renderStatusBadge(status?: string | null) {
 
   if (s === "read") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">
         <Eye className="w-3 h-3" />
         Read
       </span>
@@ -122,9 +122,18 @@ function renderStatusBadge(status?: string | null) {
     );
   }
 
+  if (s === "sent") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-1 text-xs font-medium text-orange-700">
+        <Send className="w-3 h-3" />
+        Sent
+      </span>
+    );
+  }
+
   if (s === "accepted") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-1 text-xs font-medium text-yellow-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
         <Clock3 className="w-3 h-3" />
         Accepted
       </span>
@@ -468,8 +477,8 @@ export function BroadcastProgressModal({
                         : status === "failed"
                         ? "bg-red-50/50"
                         : status === "sent"
-                        ? "bg-blue-50/50"
-                        : status === "processing"
+                        ? "bg-orange-50/50"
+                        : status === "accepted" || status === "processing"
                         ? "bg-amber-50/50"
                         : status === "cancelled"
                         ? "bg-slate-100/80"
