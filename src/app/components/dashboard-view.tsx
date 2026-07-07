@@ -338,7 +338,7 @@ export function DashboardView({
                 Hai, {user?.name || "Saepul R."}
               </h2>
               <p className="text-sm text-slate-500 mt-1">
-                Semua sistem operasional dan gateway WABA Meta Anda berjalan normal.
+                SIPESA adalah platform berbasis WhatsApp Business Platform (WABA) resmi dari Meta.
               </p>
 
               <div className="mt-5 space-y-2 border-t border-slate-100 pt-4">
