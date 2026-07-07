@@ -171,7 +171,7 @@ function renderStatusBadge(status?: string | null) {
 
   if (s === "read") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
         <Eye className="w-3 h-3" />
         Read
       </span>
@@ -187,9 +187,18 @@ function renderStatusBadge(status?: string | null) {
     );
   }
 
-  if (s === "accepted" || s === "processing" || s === "sent") {
+  if (s === "sent") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-semibold text-yellow-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-700">
+        <Send className="w-3 h-3" />
+        Sent
+      </span>
+    );
+  }
+
+  if (s === "accepted" || s === "processing") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
         <Clock3 className="w-3 h-3" />
         Accepted
       </span>

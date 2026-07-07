@@ -778,6 +778,16 @@ export const api = {
     return ok(res.data);
   },
 
+  async deleteBroadcasts(payload: { ids?: string[]; all?: boolean }): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts/delete`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
   async importFromGoogleSheet(
     sheetUrl: string,
     sheetName?: string,

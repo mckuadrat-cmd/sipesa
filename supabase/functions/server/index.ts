@@ -2572,6 +2572,72 @@ app.get(`${API_PREFIX}/broadcasts/:id/stats`, requireAuth, async (c) => {
   }
 });
 
+app.post(`${API_PREFIX}/broadcasts/delete`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const body = await c.req.json();
+    const supa = sb();
+
+    const ids = Array.isArray(body.ids) ? body.ids : [];
+    const deleteAll = body.all === true;
+
+    if (ids.length === 0 && !deleteAll) {
+      return c.json(jsonFail("ID broadcast wajib diisi"), 400);
+    }
+
+    if (deleteAll) {
+      const { error: recErr } = await supa
+        .from("wa_broadcast_recipients")
+        .delete()
+        .eq("org_id", user.org_id);
+      
+      if (recErr) return c.json(jsonFail(recErr.message), 500);
+
+      const { error: bErr } = await supa
+        .from("wa_broadcasts")
+        .delete()
+        .eq("org_id", user.org_id);
+
+      if (bErr) return c.json(jsonFail(bErr.message), 500);
+
+      await supa.from("app_activity").insert({
+        org_id: user.org_id,
+        actor_user_id: user.id,
+        type: "broadcasts_deleted_all",
+        message: "Menghapus semua riwayat broadcast",
+      });
+    } else {
+      const { error: recErr } = await supa
+        .from("wa_broadcast_recipients")
+        .delete()
+        .eq("org_id", user.org_id)
+        .in("broadcast_id", ids);
+
+      if (recErr) return c.json(jsonFail(recErr.message), 500);
+
+      const { error: bErr } = await supa
+        .from("wa_broadcasts")
+        .delete()
+        .eq("org_id", user.org_id)
+        .in("id", ids);
+
+      if (bErr) return c.json(jsonFail(bErr.message), 500);
+
+      await supa.from("app_activity").insert({
+        org_id: user.org_id,
+        actor_user_id: user.id,
+        type: "broadcasts_deleted_selected",
+        message: `Menghapus ${ids.length} riwayat broadcast`,
+        meta: { ids },
+      });
+    }
+
+    return c.json(jsonOk({ success: true }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
 // ===== JOBS / WORKER =====
 app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
   try {
