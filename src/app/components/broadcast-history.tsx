@@ -13,6 +13,8 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { AppModal } from "./AppModal";
+import { toast } from "sonner";
 
 interface Broadcast {
   id: string;
@@ -118,6 +120,15 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
   const [error, setError] = useState("");
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [confirmDelete, setConfirmDelete] = useState<{
+    open: boolean;
+    type: "one" | "selected" | "all";
+    id?: string;
+    name?: string;
+  }>({
+    open: false,
+    type: "one",
+  });
 
   const [search, setSearch] = useState("");
   const [startDate, setStartDate] = useState("");
@@ -126,62 +137,75 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
   const [senderFilter, setSenderFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
 
-  const handleDeleteOne = async (id: string, name?: string) => {
-    const displayName = name || "Broadcast ini";
-    if (!window.confirm(`Apakah Anda yakin ingin menghapus riwayat broadcast "${displayName}"?`)) {
-      return;
-    }
+  const handleDeleteOne = (id: string, name?: string) => {
+    setConfirmDelete({
+      open: true,
+      type: "one",
+      id,
+      name,
+    });
+  };
 
+  const handleDeleteSelected = () => {
+    if (selectedIds.length === 0) return;
+    setConfirmDelete({
+      open: true,
+      type: "selected",
+    });
+  };
+
+  const handleDeleteAll = () => {
+    setConfirmDelete({
+      open: true,
+      type: "all",
+    });
+  };
+
+  const executeDeleteOne = async (id: string) => {
     try {
       const res = await api.deleteBroadcasts({ ids: [id] });
       if ("error" in res) {
-        alert("Gagal menghapus: " + res.error);
+        toast.error("Gagal menghapus: " + res.error);
         return;
       }
+      toast.success("Riwayat broadcast berhasil dihapus");
       setSelectedIds((prev) => prev.filter((x) => x !== id));
       loadBroadcasts("refresh");
     } catch (err) {
       console.error(err);
-      alert("Gagal menghapus broadcast");
+      toast.error("Gagal menghapus broadcast");
     }
   };
 
-  const handleDeleteSelected = async () => {
-    if (selectedIds.length === 0) return;
-    if (!window.confirm(`Apakah Anda yakin ingin menghapus ${selectedIds.length} riwayat broadcast yang dipilih?`)) {
-      return;
-    }
-
+  const executeDeleteSelected = async () => {
     try {
       const res = await api.deleteBroadcasts({ ids: selectedIds });
       if ("error" in res) {
-        alert("Gagal menghapus: " + res.error);
+        toast.error("Gagal menghapus: " + res.error);
         return;
       }
+      toast.success(`${selectedIds.length} riwayat broadcast berhasil dihapus`);
       setSelectedIds([]);
       loadBroadcasts("refresh");
     } catch (err) {
       console.error(err);
-      alert("Gagal menghapus broadcast");
+      toast.error("Gagal menghapus broadcast");
     }
   };
 
-  const handleDeleteAll = async () => {
-    if (!window.confirm("Apakah Anda yakin ingin menghapus SELURUH riwayat broadcast instansi Anda? Tindakan ini tidak dapat dibatalkan.")) {
-      return;
-    }
-
+  const executeDeleteAll = async () => {
     try {
       const res = await api.deleteBroadcasts({ all: true });
       if ("error" in res) {
-        alert("Gagal menghapus: " + res.error);
+        toast.error("Gagal menghapus: " + res.error);
         return;
       }
+      toast.success("Seluruh riwayat broadcast berhasil dihapus");
       setSelectedIds([]);
       loadBroadcasts("refresh");
     } catch (err) {
       console.error(err);
-      alert("Gagal menghapus semua broadcast");
+      toast.error("Gagal menghapus semua broadcast");
     }
   };
 
@@ -740,6 +764,52 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
           </div>
         </div>
       </div>
+
+      <AppModal
+        open={confirmDelete.open}
+        title="Konfirmasi Hapus Riwayat"
+        onClose={() => setConfirmDelete({ open: false, type: "one" })}
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-slate-600 leading-relaxed">
+            {confirmDelete.type === "one" && (
+              <>Apakah Anda yakin ingin menghapus riwayat broadcast <strong>"{confirmDelete.name || "Broadcast ini"}"</strong>?</>
+            )}
+            {confirmDelete.type === "selected" && (
+              <>Apakah Anda yakin ingin menghapus <strong>{selectedIds.length}</strong> riwayat broadcast yang terpilih?</>
+            )}
+            {confirmDelete.type === "all" && (
+              <>Apakah Anda yakin ingin menghapus <strong>SELURUH</strong> riwayat broadcast instansi Anda? Tindakan ini tidak dapat dibatalkan.</>
+            )}
+          </p>
+          <div className="flex items-center justify-end gap-3 mt-2">
+            <button
+              type="button"
+              onClick={() => setConfirmDelete({ open: false, type: "one" })}
+              className="px-4.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors border"
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                const { type, id } = confirmDelete;
+                setConfirmDelete({ open: false, type: "one" });
+                if (type === "one" && id) {
+                  await executeDeleteOne(id);
+                } else if (type === "selected") {
+                  await executeDeleteSelected();
+                } else if (type === "all") {
+                  await executeDeleteAll();
+                }
+              }}
+              className="px-4.5 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors"
+            >
+              Ya, Hapus
+            </button>
+          </div>
+        </div>
+      </AppModal>
     </div>
   );
 }
