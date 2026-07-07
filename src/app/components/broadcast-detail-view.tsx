@@ -123,11 +123,13 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
     const r = broadcast.recipients;
 
-    const acceptedCount = r.filter((x) => x.status === "accepted" || x.status === "processing").length;
-    const sentCount = r.filter((x) => x.status === "sent").length;
+    const acceptedCount = r.filter((x) => x.status === "accepted" || x.status === "processing" || x.status === "sent").length;
     const deliveredCount = r.filter((x) => x.status === "delivered").length;
     const readCount = r.filter((x) => x.status === "read").length;
     const failedCount = r.filter((x) => x.status === "failed").length;
+
+    // Sent is cumulative: Accepted + Delivered + Read
+    const sentCount = acceptedCount + deliveredCount + readCount;
 
     return {
       total: r.length,
@@ -151,9 +153,10 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       if (filterStatus === "all") {
         filter = true;
       } else if (filterStatus === "accepted") {
-        filter = r.status === "accepted" || r.status === "processing";
+        filter = r.status === "accepted" || r.status === "processing" || r.status === "sent";
       } else if (filterStatus === "sent") {
-        filter = r.status === "sent";
+        // Sent filters for all successful messages (accepted + processing + sent + delivered + read)
+        filter = ["accepted", "processing", "sent", "delivered", "read"].includes(r.status);
       } else {
         filter = r.status === filterStatus;
       }
@@ -183,16 +186,7 @@ function renderStatusBadge(status?: string | null) {
     );
   }
 
-  if (s === "sent") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-700">
-        <Send className="w-3 h-3" />
-        Sent
-      </span>
-    );
-  }
-
-  if (s === "accepted" || s === "processing") {
+  if (s === "accepted" || s === "processing" || s === "sent") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
         <Clock3 className="w-3 h-3" />

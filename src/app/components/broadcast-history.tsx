@@ -120,15 +120,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
   const [error, setError] = useState("");
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [confirmDelete, setConfirmDelete] = useState<{
-    open: boolean;
-    type: "one" | "selected" | "all";
-    id?: string;
-    name?: string;
-  }>({
-    open: false,
-    type: "one",
-  });
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   const [search, setSearch] = useState("");
   const [startDate, setStartDate] = useState("");
@@ -137,44 +129,9 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
   const [senderFilter, setSenderFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
 
-  const handleDeleteOne = (id: string, name?: string) => {
-    setConfirmDelete({
-      open: true,
-      type: "one",
-      id,
-      name,
-    });
-  };
-
   const handleDeleteSelected = () => {
     if (selectedIds.length === 0) return;
-    setConfirmDelete({
-      open: true,
-      type: "selected",
-    });
-  };
-
-  const handleDeleteAll = () => {
-    setConfirmDelete({
-      open: true,
-      type: "all",
-    });
-  };
-
-  const executeDeleteOne = async (id: string) => {
-    try {
-      const res = await api.deleteBroadcasts({ ids: [id] });
-      if ("error" in res) {
-        toast.error("Gagal menghapus: " + res.error);
-        return;
-      }
-      toast.success("Riwayat broadcast berhasil dihapus");
-      setSelectedIds((prev) => prev.filter((x) => x !== id));
-      loadBroadcasts("refresh");
-    } catch (err) {
-      console.error(err);
-      toast.error("Gagal menghapus broadcast");
-    }
+    setDeleteConfirmOpen(true);
   };
 
   const executeDeleteSelected = async () => {
@@ -184,28 +141,14 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
         toast.error("Gagal menghapus: " + res.error);
         return;
       }
-      toast.success(`${selectedIds.length} riwayat broadcast berhasil dihapus`);
+      toast.success(`${selectedIds.length} riwayat broadcast terpilih berhasil dihapus`);
       setSelectedIds([]);
       loadBroadcasts("refresh");
     } catch (err) {
       console.error(err);
       toast.error("Gagal menghapus broadcast");
-    }
-  };
-
-  const executeDeleteAll = async () => {
-    try {
-      const res = await api.deleteBroadcasts({ all: true });
-      if ("error" in res) {
-        toast.error("Gagal menghapus: " + res.error);
-        return;
-      }
-      toast.success("Seluruh riwayat broadcast berhasil dihapus");
-      setSelectedIds([]);
-      loadBroadcasts("refresh");
-    } catch (err) {
-      console.error(err);
-      toast.error("Gagal menghapus semua broadcast");
+    } finally {
+      setDeleteConfirmOpen(false);
     }
   };
 
@@ -576,24 +519,19 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                 </div>
               </div>
 
-              {selectedIds.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleDeleteSelected}
-                  className="px-3.5 py-1.5 border border-red-200 text-red-700 bg-red-50 rounded-lg hover:bg-red-100 transition-colors flex items-center gap-1.5 text-xs font-semibold shadow-sm"
-                >
-                  <Trash2 size={14} />
-                  Hapus Terpilih ({selectedIds.length})
-                </button>
-              )}
-
               <button
                 type="button"
-                onClick={handleDeleteAll}
-                className="px-3.5 py-1.5 border border-red-200 text-red-600 bg-white rounded-lg hover:bg-red-50 transition-colors flex items-center gap-1.5 text-xs font-semibold shadow-sm"
+                onClick={handleDeleteSelected}
+                disabled={selectedIds.length === 0}
+                className={`px-3.5 py-1.5 border rounded-lg transition-all flex items-center gap-1.5 text-xs font-semibold shadow-sm ${
+                  selectedIds.length === 0
+                    ? "border-slate-200 text-slate-300 bg-slate-50 cursor-not-allowed"
+                    : "border-red-200 text-red-600 bg-white hover:bg-red-50"
+                }`}
+                title="Hapus terpilih"
               >
                 <Trash2 size={14} />
-                Hapus Semua
+                {selectedIds.length > 0 ? `Hapus (${selectedIds.length})` : "Hapus"}
               </button>
 
               <button
@@ -726,24 +664,14 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                       <td className="px-3 py-3">{getPhaseBadge(log.status)}</td>
 
                       <td className="px-3 py-3 text-right">
-                        <div className="flex justify-end items-center gap-3.5">
-                          <button
-                            type="button"
-                            onClick={() => onViewDetail(log.id)}
-                            className="text-xs text-[#25D366] hover:text-[#128C7E] underline inline-flex items-center gap-1 font-semibold"
-                          >
-                            <Eye className="w-4 h-4" />
-                            Detail
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteOne(log.id, log.templateName || log.title)}
-                            className="text-xs text-red-600 hover:text-red-800 inline-flex items-center gap-1 font-semibold"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                            Hapus
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onViewDetail(log.id)}
+                          className="text-xs text-[#25D366] hover:text-[#128C7E] underline inline-flex items-center gap-1 font-semibold"
+                        >
+                          <Eye className="w-4 h-4" />
+                          Detail
+                        </button>
                       </td>
                     </tr>
                   );
@@ -766,46 +694,28 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
       </div>
 
       <AppModal
-        open={confirmDelete.open}
-        title="Konfirmasi Hapus Riwayat"
-        onClose={() => setConfirmDelete({ open: false, type: "one" })}
+        open={deleteConfirmOpen}
+        title="Hapus Riwayat Broadcast"
+        onClose={() => setDeleteConfirmOpen(false)}
       >
         <div className="flex flex-col gap-4">
           <p className="text-sm text-slate-600 leading-relaxed">
-            {confirmDelete.type === "one" && (
-              <>Apakah Anda yakin ingin menghapus riwayat broadcast <strong>"{confirmDelete.name || "Broadcast ini"}"</strong>?</>
-            )}
-            {confirmDelete.type === "selected" && (
-              <>Apakah Anda yakin ingin menghapus <strong>{selectedIds.length}</strong> riwayat broadcast yang terpilih?</>
-            )}
-            {confirmDelete.type === "all" && (
-              <>Apakah Anda yakin ingin menghapus <strong>SELURUH</strong> riwayat broadcast instansi Anda? Tindakan ini tidak dapat dibatalkan.</>
-            )}
+            Apakah Anda yakin ingin menghapus <strong>{selectedIds.length}</strong> riwayat broadcast terpilih? Tindakan ini tidak dapat dibatalkan.
           </p>
           <div className="flex items-center justify-end gap-3 mt-2">
             <button
               type="button"
-              onClick={() => setConfirmDelete({ open: false, type: "one" })}
+              onClick={() => setDeleteConfirmOpen(false)}
               className="px-4.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors border"
             >
               Batal
             </button>
             <button
               type="button"
-              onClick={async () => {
-                const { type, id } = confirmDelete;
-                setConfirmDelete({ open: false, type: "one" });
-                if (type === "one" && id) {
-                  await executeDeleteOne(id);
-                } else if (type === "selected") {
-                  await executeDeleteSelected();
-                } else if (type === "all") {
-                  await executeDeleteAll();
-                }
-              }}
-              className="px-4.5 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors"
+              onClick={executeDeleteSelected}
+              className="px-4.5 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors shadow-sm"
             >
-              Ya, Hapus
+              Hapus
             </button>
           </div>
         </div>

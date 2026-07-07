@@ -92,8 +92,7 @@ function normalizeRecipientStatus(status?: string | null) {
   const s = String(status || "").toLowerCase();
   if (s === "read") return "read";
   if (s === "delivered") return "delivered";
-  if (s === "sent") return "sent";
-  if (s === "accepted") return "accepted";
+  if (s === "sent" || s === "accepted") return "accepted";
   if (s === "failed") return "failed";
   if (s === "processing") return "processing";
   if (s === "pending") return "pending";
@@ -118,15 +117,6 @@ function renderStatusBadge(status?: string | null) {
       <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700">
         <CheckCircle2 className="w-3 h-3" />
         Delivered
-      </span>
-    );
-  }
-
-  if (s === "sent") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-1 text-xs font-medium text-orange-700">
-        <Send className="w-3 h-3" />
-        Sent
       </span>
     );
   }
