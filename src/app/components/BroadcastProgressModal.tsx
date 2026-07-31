@@ -212,14 +212,13 @@ export function BroadcastProgressModal({
     if (
       currentStats && 
       (currentStats.status === "sending" || currentStats.status === "queued") &&
-      !hasProcessing && 
       hasPending
     ) {
       if (!isProcessingRef.current) {
         isProcessingRef.current = true;
         try {
-          // Process exactly 1 recipient sequentially
-          await api.processBroadcasts(1);
+          // Process up to 10 recipients sequentially to avoid function timeout but keep it fast
+          await api.processBroadcasts(10);
           // After processing, refetch data to update progress
           const [updatedStatsRes, updatedRowsRes] = await Promise.all([
             api.getBroadcastStats(broadcastId),
