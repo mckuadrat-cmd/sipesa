@@ -2573,6 +2573,62 @@ app.get(`${API_PREFIX}/broadcasts/:id/stats`, requireAuth, async (c) => {
   }
 });
 
+app.post(`${API_PREFIX}/broadcasts/:id/cancel`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const id = c.req.param("id");
+    const supa = sb();
+
+    const { data: b, error: bErr } = await supa
+      .from("wa_broadcasts")
+      .select("id, status, title")
+      .eq("org_id", user.org_id)
+      .eq("id", id)
+      .maybeSingle();
+
+    if (bErr) return c.json(jsonFail(bErr.message), 500);
+    if (!b) return c.json(jsonFail("Broadcast tidak ditemukan"), 404);
+
+    if (b.status === "completed" || b.status === "cancelled") {
+      return c.json(jsonFail("Broadcast sudah selesai atau dibatalkan"), 400);
+    }
+
+    const { error: updErr } = await supa
+      .from("wa_broadcasts")
+      .update({
+        status: "cancelled",
+        finished_at: nowIso(),
+        updated_at: nowIso(),
+      })
+      .eq("id", b.id);
+
+    if (updErr) return c.json(jsonFail(updErr.message), 500);
+
+    const { error: recErr } = await supa
+      .from("wa_broadcast_recipients")
+      .update({
+        status: "cancelled",
+        updated_at: nowIso(),
+      })
+      .eq("broadcast_id", b.id)
+      .in("status", ["pending", "processing", "queued"]);
+
+    if (recErr) return c.json(jsonFail(recErr.message), 500);
+
+    await supa.from("app_activity").insert({
+      org_id: user.org_id,
+      actor_user_id: user.id,
+      type: "broadcast_cancelled",
+      message: `Membatalkan broadcast: ${b.title || id}`,
+      meta: { broadcast_id: b.id },
+    });
+
+    return c.json(jsonOk({ success: true }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
 app.post(`${API_PREFIX}/broadcasts/delete`, requireAuth, async (c) => {
   try {
     const user = c.get("authUser");
