@@ -158,61 +158,61 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
     });
   }, [broadcast, searchQuery, filterStatus]);
 
-function renderStatusBadge(status?: string | null) {
-  const s = String(status || "").toLowerCase().trim();
+  function renderStatusBadge(status?: string | null) {
+    const s = String(status || "").toLowerCase().trim();
 
-  if (s === "read") {
+    if (s === "read") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
+          <Eye className="w-3 h-3" />
+          Read
+        </span>
+      );
+    }
+
+    if (s === "delivered") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
+          <CheckCircle2 className="w-3 h-3" />
+          Delivered
+        </span>
+      );
+    }
+
+    if (s === "accepted" || s === "processing" || s === "sent") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+          <Send className="w-3 h-3" />
+          Sent
+        </span>
+      );
+    }
+
+    if (s === "failed") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+          <XCircle className="w-3 h-3" />
+          Failed
+        </span>
+      );
+    }
+
+    if (s === "cancelled") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-700">
+          <XCircle className="w-3 h-3" />
+          Cancelled
+        </span>
+      );
+    }
+
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
-        <Eye className="w-3 h-3" />
-        Read
+      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+        <Clock3 className="w-3 h-3" />
+        Pending
       </span>
     );
   }
-
-  if (s === "delivered") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
-        <CheckCircle2 className="w-3 h-3" />
-        Delivered
-      </span>
-    );
-  }
-
-  if (s === "accepted" || s === "processing" || s === "sent") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
-        <Send className="w-3 h-3" />
-        Sent
-      </span>
-    );
-  }
-
-  if (s === "failed") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
-        <XCircle className="w-3 h-3" />
-        Failed
-      </span>
-    );
-  }
-
-  if (s === "cancelled") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-700">
-        <XCircle className="w-3 h-3" />
-        Cancelled
-      </span>
-    );
-  }
-
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
-      <Clock3 className="w-3 h-3" />
-      Pending
-    </span>
-  );
-}
 
   const exportCsv = () => {
     if (!broadcast) return;
@@ -300,51 +300,46 @@ function renderStatusBadge(status?: string | null) {
         </Card>
 
         {/* Statistik */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4">
-          <Card 
-            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "all" ? "border-slate-800 bg-slate-50/50 shadow-sm" : "border-slate-100 hover:border-slate-300"
-            }`} 
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
+          <Card
+            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "all" ? "border-slate-800 bg-slate-50/50 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              }`}
             onClick={() => setFilterStatus("all")}
           >
             <div className="text-xs font-medium text-slate-500">Total</div>
             <div className="text-xl font-bold mt-1 text-slate-800">{stats.total}</div>
           </Card>
 
-          <Card 
-            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "sent" ? "border-amber-600 bg-amber-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
-            }`} 
+          <Card
+            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "sent" ? "border-amber-600 bg-amber-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              }`}
             onClick={() => setFilterStatus("sent")}
           >
             <div className="text-xs font-medium text-amber-800">Sent</div>
             <div className="text-xl font-bold mt-1 text-amber-800">{stats.sent}</div>
           </Card>
 
-          <Card 
-            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "delivered" ? "border-green-600 bg-green-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
-            }`} 
+          <Card
+            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "delivered" ? "border-green-600 bg-green-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              }`}
             onClick={() => setFilterStatus("delivered")}
           >
             <div className="text-xs font-medium text-green-700">Delivered</div>
             <div className="text-xl font-bold mt-1 text-green-700">{stats.delivered}</div>
           </Card>
 
-          <Card 
-            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "read" ? "border-blue-600 bg-blue-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
-            }`} 
+          <Card
+            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "read" ? "border-blue-600 bg-blue-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              }`}
             onClick={() => setFilterStatus("read")}
           >
             <div className="text-xs font-medium text-blue-700">Read</div>
             <div className="text-xl font-bold mt-1 text-blue-700">{stats.read}</div>
           </Card>
 
-          <Card 
-            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "failed" ? "border-red-600 bg-red-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
-            }`} 
+          <Card
+            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "failed" ? "border-red-600 bg-red-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              }`}
             onClick={() => setFilterStatus("failed")}
           >
             <div className="text-xs font-medium text-red-600">Failed</div>
