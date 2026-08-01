@@ -2611,7 +2611,7 @@ app.post(`${API_PREFIX}/broadcasts/:id/cancel`, requireAuth, async (c) => {
         updated_at: nowIso(),
       })
       .eq("broadcast_id", b.id)
-      .in("status", ["pending", "processing", "queued"]);
+      .in("status", ["pending", "processing"]);
 
     if (recErr) return c.json(jsonFail(recErr.message), 500);
 
