@@ -123,17 +123,13 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
     const r = broadcast.recipients;
 
-    const acceptedCount = r.filter((x) => x.status === "accepted" || x.status === "processing" || x.status === "sent").length;
+    const sentCount = r.filter((x) => x.status === "accepted" || x.status === "processing" || x.status === "sent").length;
     const deliveredCount = r.filter((x) => x.status === "delivered").length;
     const readCount = r.filter((x) => x.status === "read").length;
     const failedCount = r.filter((x) => x.status === "failed").length;
 
-    // Sent is cumulative: Accepted + Delivered + Read
-    const sentCount = acceptedCount + deliveredCount + readCount;
-
     return {
       total: r.length,
-      accepted: acceptedCount,
       sent: sentCount,
       delivered: deliveredCount,
       read: readCount,
@@ -152,11 +148,8 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       let filter = false;
       if (filterStatus === "all") {
         filter = true;
-      } else if (filterStatus === "accepted") {
-        filter = r.status === "accepted" || r.status === "processing" || r.status === "sent";
       } else if (filterStatus === "sent") {
-        // Sent filters for all successful messages (accepted + processing + sent + delivered + read)
-        filter = ["accepted", "processing", "sent", "delivered", "read"].includes(r.status);
+        filter = r.status === "accepted" || r.status === "processing" || r.status === "sent";
       } else {
         filter = r.status === filterStatus;
       }
@@ -189,8 +182,8 @@ function renderStatusBadge(status?: string | null) {
   if (s === "accepted" || s === "processing" || s === "sent") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
-        <Clock3 className="w-3 h-3" />
-        Accepted
+        <Send className="w-3 h-3" />
+        Sent
       </span>
     );
   }
@@ -320,22 +313,12 @@ function renderStatusBadge(status?: string | null) {
 
           <Card 
             className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "sent" ? "border-orange-600 bg-orange-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              filterStatus === "sent" ? "border-amber-600 bg-amber-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
             }`} 
             onClick={() => setFilterStatus("sent")}
           >
-            <div className="text-xs font-medium text-orange-700">Sent</div>
-            <div className="text-xl font-bold mt-1 text-orange-700">{stats.sent}</div>
-          </Card>
-
-          <Card 
-            className={`p-4 text-center cursor-pointer transition-all duration-200 border ${
-              filterStatus === "accepted" ? "border-amber-600 bg-amber-50/20 shadow-sm" : "border-slate-100 hover:border-slate-300"
-            }`} 
-            onClick={() => setFilterStatus("accepted")}
-          >
-            <div className="text-xs font-medium text-amber-800">Accepted</div>
-            <div className="text-xl font-bold mt-1 text-amber-800">{stats.accepted}</div>
+            <div className="text-xs font-medium text-amber-800">Sent</div>
+            <div className="text-xl font-bold mt-1 text-amber-800">{stats.sent}</div>
           </Card>
 
           <Card 

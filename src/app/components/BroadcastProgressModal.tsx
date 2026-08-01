@@ -92,7 +92,7 @@ function normalizeRecipientStatus(status?: string | null) {
   const s = String(status || "").toLowerCase();
   if (s === "read") return "read";
   if (s === "delivered") return "delivered";
-  if (s === "sent" || s === "accepted") return "accepted";
+  if (s === "sent" || s === "accepted") return "sent";
   if (s === "failed") return "failed";
   if (s === "processing") return "processing";
   if (s === "pending") return "pending";
@@ -121,11 +121,11 @@ function renderStatusBadge(status?: string | null) {
     );
   }
 
-  if (s === "accepted") {
+  if (s === "sent") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
-        <Clock3 className="w-3 h-3" />
-        Accepted
+        <Send className="w-3 h-3" />
+        Sent
       </span>
     );
   }
@@ -330,7 +330,7 @@ export function BroadcastProgressModal({
   }, [open]);
 
   const summary = useMemo(() => {
-    const accepted = rows.filter((r) => normalizeRecipientStatus(r.status) === "accepted").length;
+    const sent = rows.filter((r) => normalizeRecipientStatus(r.status) === "sent").length;
     const delivered = rows.filter((r) => normalizeRecipientStatus(r.status) === "delivered").length;
     const read = rows.filter((r) => normalizeRecipientStatus(r.status) === "read").length;
     const failed = rows.filter((r) => normalizeRecipientStatus(r.status) === "failed").length;
@@ -338,11 +338,8 @@ export function BroadcastProgressModal({
     const cancelled = rows.filter((r) => normalizeRecipientStatus(r.status) === "cancelled").length;
     const processing = rows.filter((r) => normalizeRecipientStatus(r.status) === "processing").length;
 
-    const sent = accepted + delivered + read;
-
     return {
       total: rows.length,
-      accepted,
       sent,
       delivered,
       read,
@@ -355,6 +352,8 @@ export function BroadcastProgressModal({
 
   const processedCount =
     summary.sent +
+    summary.delivered +
+    summary.read +
     summary.failed +
     summary.cancelled;
 
@@ -384,7 +383,7 @@ export function BroadcastProgressModal({
     <AppModal
       open={open}
       title="Proses Broadcast"
-      description={`Total: ${summary.total} • Sent: ${summary.sent} • Pending: ${summary.pending} • Failed: ${summary.failed} • Cancelled: ${summary.cancelled}`}
+      description={`Total: ${summary.total} • Sent: ${summary.sent} • Delivered: ${summary.delivered} • Read: ${summary.read} • Failed: ${summary.failed}`}
       onClose={onClose}
       closeOnBackdrop={isDone}
       closeDisabled={!isDone}
@@ -465,9 +464,7 @@ export function BroadcastProgressModal({
                         ? "bg-green-50/50"
                         : status === "failed"
                         ? "bg-red-50/50"
-                        : status === "sent"
-                        ? "bg-orange-50/50"
-                        : status === "accepted" || status === "processing"
+                        : status === "sent" || status === "processing"
                         ? "bg-amber-50/50"
                         : status === "cancelled"
                         ? "bg-slate-100/80"
