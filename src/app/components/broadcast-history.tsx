@@ -154,13 +154,20 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
 
   useEffect(() => {
     loadBroadcasts("initial");
+
+    // Poll every 5 seconds to keep the history table updated automatically
+    const interval = setInterval(() => {
+      loadBroadcasts("silent");
+    }, 5000);
+
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
     setCurrentPage(1);
   }, [search, startDate, endDate, statusFilter, senderFilter]);
 
-  const loadBroadcasts = async (mode: "initial" | "refresh" = "initial") => {
+  const loadBroadcasts = async (mode: "initial" | "refresh" | "silent" = "initial") => {
     if (mode === "refresh") setRefreshing(true);
     if (mode === "initial") setLoading(true);
 

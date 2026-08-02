@@ -416,7 +416,8 @@ export const api = {
   },
 
   async getBroadcastRecipients(broadcastId: string): Promise<AppResult<any[]>> {
-    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/recipients`, {
+    const t = new Date().getTime();
+    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/recipients?t=${t}`, {
       method: "GET",
     });
 
@@ -425,7 +426,8 @@ export const api = {
   },
 
   async getBroadcastStats(broadcastId: string): Promise<AppResult<any>> {
-    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/stats`, {
+    const t = new Date().getTime();
+    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/stats?t=${t}`, {
       method: "GET",
     });
 
@@ -560,11 +562,12 @@ export const api = {
   },
 
   async getBroadcastDetail(broadcastId: string): Promise<AppResult<any>> {
-    const statsRes = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/stats`, { method: "GET" });
+    const t = new Date().getTime();
+    const statsRes = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/stats?t=${t}`, { method: "GET" });
     if (isApiFail(statsRes)) return fail(statsRes.error);
 
     const recipientsRes = await apiFetch<any>(
-      `${API_PREFIX}/broadcasts/${broadcastId}/recipients`,
+      `${API_PREFIX}/broadcasts/${broadcastId}/recipients?t=${t}`,
       { method: "GET" },
     );
     if (isApiFail(recipientsRes)) return fail(recipientsRes.error);

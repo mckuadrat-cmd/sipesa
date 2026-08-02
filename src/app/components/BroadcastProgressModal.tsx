@@ -217,8 +217,9 @@ export function BroadcastProgressModal({
       if (!isProcessingRef.current) {
         isProcessingRef.current = true;
         try {
-          // Process up to 10 recipients sequentially to avoid function timeout but keep it fast
-          await api.processBroadcasts(10);
+          // Process fewer recipients per batch (2 instead of 10) to make UI update 
+          // more frequently and give a "one-by-one" real-time visual effect.
+          await api.processBroadcasts(2);
           // After processing, refetch data to update progress
           const [updatedStatsRes, updatedRowsRes] = await Promise.all([
             api.getBroadcastStats(broadcastId),
@@ -314,7 +315,7 @@ export function BroadcastProgressModal({
 
     const interval = setInterval(() => {
       fetchData();
-    }, 10000);
+    }, 1000);
 
     return () => {
       active = false;

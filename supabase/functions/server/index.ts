@@ -941,6 +941,22 @@ app.post(`${API_PREFIX}/contacts`, requireAuth, async (c) => {
     if (!name) return c.json(jsonFail("Nama kontak harus diisi"), 400);
     if (!phone) return c.json(jsonFail("Nomor telepon harus diisi"), 400);
 
+    const { data: existing } = await supa
+      .from("wa_contacts")
+      .select("*")
+      .eq("org_id", user.org_id)
+      .eq("phone_e164", phone)
+      .maybeSingle();
+
+    if (existing) {
+      return c.json(jsonOk({
+        id: existing.id,
+        name: existing.display_name,
+        phone: existing.phone_e164,
+        createdAt: existing.created_at,
+      }));
+    }
+
     const { data, error } = await supa
       .from("wa_contacts")
       .insert({
@@ -2776,6 +2792,17 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
     if (rErr) return c.json(jsonFail(rErr.message), 500);
 
     const batch = recipients ?? [];
+    if (batch.length === 0) {
+      // Nothing more to process, but let's recalculate to ensure it's marked as completed if done
+      await recalculateBroadcastStats(supa, broadcast.id);
+      return c.json(
+        jsonOk({
+          message: "No pending recipients found for this broadcast.",
+          broadcastId: broadcast.id,
+        }),
+      );
+    }
+
     let sentCount = 0;
     let failedCount = 0;
 
