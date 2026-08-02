@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -95,10 +95,19 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
   useEffect(() => {
     loadBroadcastDetail();
+    
+    // Poll every 1 second for real-time updates
+    const interval = setInterval(() => {
+      loadBroadcastDetail(false);
+    }, 1000);
+    
+    return () => clearInterval(interval);
   }, [broadcastId]);
 
-  const loadBroadcastDetail = async () => {
-    setLoading(true);
+  const isProcessingRef = useRef(false);
+
+  const loadBroadcastDetail = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
 
     try {
       const result = await api.getBroadcastDetail(broadcastId);
@@ -110,11 +119,38 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
       setBroadcast(result.data);
       setError("");
+
+      // Auto-trigger sequential processing
+      const hasPending = result.data.recipients.some((r: any) => 
+        (r.status || "").toLowerCase() === "pending"
+      );
+      
+      if (
+        (result.data.status === "sending" || result.data.status === "queued") &&
+        hasPending
+      ) {
+        if (!isProcessingRef.current) {
+          isProcessingRef.current = true;
+          try {
+            await api.processBroadcasts(2);
+            // Re-fetch after processing
+            const updated = await api.getBroadcastDetail(broadcastId);
+            if (!("error" in updated)) {
+              setBroadcast(updated.data);
+            }
+          } catch (err) {
+            console.error("Auto sequential processing error:", err);
+          } finally {
+            isProcessingRef.current = false;
+          }
+        }
+      }
+
     } catch (err) {
       console.error(err);
-      setError("Gagal memuat detail broadcast");
+      if (showLoading) setError("Gagal memuat detail broadcast");
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
