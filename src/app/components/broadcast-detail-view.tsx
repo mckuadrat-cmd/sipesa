@@ -96,10 +96,10 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
   useEffect(() => {
     loadBroadcastDetail();
     
-    // Poll every 1 second for real-time updates
+    // Poll every 3 seconds for real-time updates to reduce query storm
     const interval = setInterval(() => {
       loadBroadcastDetail(false);
-    }, 1000);
+    }, 3000);
     
     return () => clearInterval(interval);
   }, [broadcastId]);
@@ -131,18 +131,21 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       ) {
         if (!isProcessingRef.current) {
           isProcessingRef.current = true;
-          try {
-            await api.processBroadcasts(2);
-            // Re-fetch after processing
-            const updated = await api.getBroadcastDetail(broadcastId);
-            if (!("error" in updated)) {
-              setBroadcast(updated.data);
+          // Process in background without blocking the initial loading spinner
+          (async () => {
+            try {
+              await api.processBroadcasts(5);
+              // Re-fetch after processing
+              const updated = await api.getBroadcastDetail(broadcastId);
+              if (!("error" in updated)) {
+                setBroadcast(updated.data);
+              }
+            } catch (err) {
+              console.error("Auto sequential processing error:", err);
+            } finally {
+              isProcessingRef.current = false;
             }
-          } catch (err) {
-            console.error("Auto sequential processing error:", err);
-          } finally {
-            isProcessingRef.current = false;
-          }
+          })();
         }
       }
 

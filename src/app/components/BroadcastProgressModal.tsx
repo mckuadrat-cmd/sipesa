@@ -216,26 +216,28 @@ export function BroadcastProgressModal({
     ) {
       if (!isProcessingRef.current) {
         isProcessingRef.current = true;
-        try {
-          // Process fewer recipients per batch (2 instead of 10) to make UI update 
-          // more frequently and give a "one-by-one" real-time visual effect.
-          await api.processBroadcasts(2);
-          // After processing, refetch data to update progress
-          const [updatedStatsRes, updatedRowsRes] = await Promise.all([
-            api.getBroadcastStats(broadcastId),
-            api.getBroadcastRecipients(broadcastId),
-          ]);
-          if (!("error" in updatedStatsRes)) {
-            setStats(updatedStatsRes.data);
+        // Process in background to avoid blocking the initial load spinner
+        (async () => {
+          try {
+            // Process 5 recipients per batch to reduce API roundtrips while maintaining responsiveness
+            await api.processBroadcasts(5);
+            // After processing, refetch data to update progress
+            const [updatedStatsRes, updatedRowsRes] = await Promise.all([
+              api.getBroadcastStats(broadcastId),
+              api.getBroadcastRecipients(broadcastId),
+            ]);
+            if (!("error" in updatedStatsRes)) {
+              setStats(updatedStatsRes.data);
+            }
+            if (!("error" in updatedRowsRes)) {
+              setRows(updatedRowsRes.data || []);
+            }
+          } catch (err) {
+            console.error("Auto sequential processing error:", err);
+          } finally {
+            isProcessingRef.current = false;
           }
-          if (!("error" in updatedRowsRes)) {
-            setRows(updatedRowsRes.data || []);
-          }
-        } catch (err) {
-          console.error("Auto sequential processing error:", err);
-        } finally {
-          isProcessingRef.current = false;
-        }
+        })();
       }
     }
   };
@@ -292,18 +294,6 @@ export function BroadcastProgressModal({
         {
           event: "*",
           schema: "public",
-          table: "wa_broadcast_recipients",
-          filter: `broadcast_id=eq.${broadcastId}`,
-        },
-        () => {
-          fetchData();
-        }
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
           table: "wa_broadcasts",
           filter: `id=eq.${broadcastId}`,
         },
@@ -315,12 +305,12 @@ export function BroadcastProgressModal({
 
     const interval = setInterval(() => {
       fetchData();
-    }, 1000);
+    }, 3000);
 
     return () => {
       active = false;
       clearInterval(interval);
-      supabase.removeChannel(channel);
+      if (channel) supabase.removeChannel(channel);
     };
   }, [open, broadcastId]);
 
