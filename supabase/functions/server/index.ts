@@ -2944,49 +2944,65 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
 
         const metaMessageId = metaRes?.messages?.[0]?.id ?? null;
 
-        // Fetch latest status of message in DB to prevent race condition downgrade
-        const { data: latestMsg } = await supa
-          .from("wa_messages")
-          .select("status")
-          .eq("id", msg.id)
-          .maybeSingle();
+        // Check if there is an early webhook stored in key_info
+        let earlyStatus = "sent";
+        let earlyTimestamp = nowIso();
+        let earlyError = null;
+        let earlyPayload = metaRes;
 
-        const newMsgStatus = (latestMsg?.status && ["delivered", "read", "failed"].includes(latestMsg.status))
-          ? latestMsg.status
-          : "sent";
+        if (metaMessageId) {
+          const { data: kvRow } = await supa
+            .from("key_info")
+            .select("value")
+            .eq("key", `webhook_status:${metaMessageId}`)
+            .maybeSingle();
+
+          if (kvRow && kvRow.value) {
+            const val = kvRow.value;
+            earlyStatus = val.status || "sent";
+            earlyTimestamp = val.timestamp || nowIso();
+            earlyError = val.error || null;
+            if (val.meta_status_payload) {
+              earlyPayload = val.meta_status_payload;
+            }
+          }
+        }
+
+        const msgPatch: any = {
+          status: earlyStatus,
+          meta_message_id: metaMessageId,
+          meta_status_payload: earlyPayload,
+          sent_at: nowIso(),
+        };
+        if (earlyStatus === "delivered") msgPatch.delivered_at = earlyTimestamp;
+        if (earlyStatus === "read") {
+          msgPatch.delivered_at = earlyTimestamp;
+          msgPatch.read_at = earlyTimestamp;
+        }
 
         await supa
           .from("wa_messages")
-          .update({
-            status: newMsgStatus,
-            meta_message_id: metaMessageId,
-            meta_status_payload: metaRes,
-            sent_at: nowIso(),
-          })
+          .update(msgPatch)
           .eq("id", msg.id);
 
-        // Fetch latest status of recipient in DB to prevent race condition downgrade
-        const { data: latestRec } = await supa
-          .from("wa_broadcast_recipients")
-          .select("status")
-          .eq("id", rec.id)
-          .maybeSingle();
-
-        const newRecStatus = (latestRec?.status && ["delivered", "read", "failed"].includes(latestRec.status))
-          ? latestRec.status
-          : "sent";
-
         await supa
           .from("wa_broadcast_recipients")
           .update({
-            status: newRecStatus,
+            status: earlyStatus,
             wa_message_id: msg.id,
             provider_message_id: metaMessageId,
             sent_at: nowIso(),
             updated_at: nowIso(),
-            error: null,
+            error: earlyError,
           })
           .eq("id", rec.id);
+
+        if (metaMessageId) {
+          await supa
+            .from("key_info")
+            .delete()
+            .eq("key", `webhook_status:${metaMessageId}`);
+        }
 
         await supa.from("billing_transactions").insert({
           org_id: user.org_id,
@@ -3274,6 +3290,18 @@ const handleWebhookPost = async (c: any) => {
                 "Message failed";
             }
 
+            // 1. Store the webhook event in key_info first to handle race conditions
+            await supa.from("key_info").upsert({
+              key: `webhook_status:${metaMessageId}`,
+              value: {
+                status: patch.status,
+                timestamp: timestamp,
+                error: patch.error ?? null,
+                meta_status_payload: statusRow
+              }
+            });
+
+            // 2. Try to match the message in DB
             const { data: existingMsg } = await supa
               .from("wa_messages")
               .select("status")
@@ -3292,7 +3320,11 @@ const handleWebhookPost = async (c: any) => {
                 return 0;
               };
 
-              if (curStatus === "failed" || getStatusLevel(curStatus) > getStatusLevel(newStatus)) {
+              if (curStatus === "failed") {
+                delete patch.status;
+              } else if (newStatus === "failed") {
+                // Allow transition to failed
+              } else if (getStatusLevel(curStatus) > getStatusLevel(newStatus)) {
                 delete patch.status;
               }
             }
@@ -3328,7 +3360,16 @@ const handleWebhookPost = async (c: any) => {
                   return 0;
                 };
 
-                if (curRecStatus !== "failed" && getStatusLevel(newRecStatus) > getStatusLevel(curRecStatus)) {
+                let allowRecUpdate = false;
+                if (curRecStatus === "failed") {
+                  allowRecUpdate = false;
+                } else if (newRecStatus === "failed") {
+                  allowRecUpdate = true;
+                } else if (getStatusLevel(newRecStatus) > getStatusLevel(curRecStatus)) {
+                  allowRecUpdate = true;
+                }
+
+                if (allowRecUpdate) {
                   recipientPatch.status = patch.status;
                 }
               }
@@ -3352,6 +3393,9 @@ const handleWebhookPost = async (c: any) => {
               if (broadcastId) {
                 await recalculateBroadcastStats(supa, broadcastId);
               }
+
+              // 3. Clean up key_info since the status has been successfully applied
+              await supa.from("key_info").delete().eq("key", `webhook_status:${metaMessageId}`);
             }
           }
 
