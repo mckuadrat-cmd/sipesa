@@ -2944,20 +2944,42 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
 
         const metaMessageId = metaRes?.messages?.[0]?.id ?? null;
 
+        // Fetch latest status of message in DB to prevent race condition downgrade
+        const { data: latestMsg } = await supa
+          .from("wa_messages")
+          .select("status")
+          .eq("id", msg.id)
+          .maybeSingle();
+
+        const newMsgStatus = (latestMsg?.status && ["delivered", "read", "failed"].includes(latestMsg.status))
+          ? latestMsg.status
+          : "sent";
+
         await supa
           .from("wa_messages")
           .update({
-            status: "sent",
+            status: newMsgStatus,
             meta_message_id: metaMessageId,
             meta_status_payload: metaRes,
             sent_at: nowIso(),
           })
           .eq("id", msg.id);
 
+        // Fetch latest status of recipient in DB to prevent race condition downgrade
+        const { data: latestRec } = await supa
+          .from("wa_broadcast_recipients")
+          .select("status")
+          .eq("id", rec.id)
+          .maybeSingle();
+
+        const newRecStatus = (latestRec?.status && ["delivered", "read", "failed"].includes(latestRec.status))
+          ? latestRec.status
+          : "sent";
+
         await supa
           .from("wa_broadcast_recipients")
           .update({
-            status: "sent",
+            status: newRecStatus,
             wa_message_id: msg.id,
             provider_message_id: metaMessageId,
             sent_at: nowIso(),
@@ -3020,7 +3042,9 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
 
     if (statsErr) return c.json(jsonFail(statsErr.message), 500);
 
-    const totalSent = (statsRows ?? []).filter((x: any) => x.status === "sent").length;
+    const totalSent = (statsRows ?? []).filter(
+      (x: any) => x.status === "sent" || x.status === "delivered" || x.status === "read"
+    ).length;
     const totalFailed = (statsRows ?? []).filter((x: any) => x.status === "failed").length;
     const totalPending = (statsRows ?? []).filter(
       (x: any) => x.status === "pending" || x.status === "processing",
@@ -3250,6 +3274,29 @@ const handleWebhookPost = async (c: any) => {
                 "Message failed";
             }
 
+            const { data: existingMsg } = await supa
+              .from("wa_messages")
+              .select("status")
+              .eq("meta_message_id", metaMessageId)
+              .maybeSingle();
+
+            if (existingMsg) {
+              const curStatus = String(existingMsg.status || "").toLowerCase().trim();
+              const newStatus = String(patch.status || "").toLowerCase().trim();
+              
+              const getStatusLevel = (s: string) => {
+                if (s === "read") return 4;
+                if (s === "delivered") return 3;
+                if (s === "sent" || s === "accepted") return 2;
+                if (s === "processing") return 1;
+                return 0;
+              };
+
+              if (curStatus === "failed" || getStatusLevel(curStatus) > getStatusLevel(newStatus)) {
+                delete patch.status;
+              }
+            }
+
             const { data: msg } = await supa
               .from("wa_messages")
               .update(patch)
@@ -3262,9 +3309,30 @@ const handleWebhookPost = async (c: any) => {
                 provider_message_id: metaMessageId,
                 error: patch.error ?? null,
               };
+              
               if (patch.status && ["pending", "processing", "sent", "delivered", "read", "failed"].includes(patch.status)) {
-                recipientPatch.status = patch.status;
+                const { data: currentRec } = await supa
+                  .from("wa_broadcast_recipients")
+                  .select("status")
+                  .eq("wa_message_id", msg.id)
+                  .maybeSingle();
+
+                const curRecStatus = String(currentRec?.status || "").toLowerCase().trim();
+                const newRecStatus = String(patch.status || "").toLowerCase().trim();
+
+                const getStatusLevel = (s: string) => {
+                  if (s === "read") return 4;
+                  if (s === "delivered") return 3;
+                  if (s === "sent" || s === "accepted") return 2;
+                  if (s === "processing") return 1;
+                  return 0;
+                };
+
+                if (curRecStatus !== "failed" && getStatusLevel(newRecStatus) > getStatusLevel(curRecStatus)) {
+                  recipientPatch.status = patch.status;
+                }
               }
+
               const { data: updatedRecs } = await supa
                 .from("wa_broadcast_recipients")
                 .update(recipientPatch)
