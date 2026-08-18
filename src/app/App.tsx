@@ -69,7 +69,7 @@ function parseHash() {
 export default function App() {
   const { view: initialView, numId: initialNum, bcId: initialBc, isSignup: initialIsSignup } = parseHash();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isSignupCallback] = useState(initialIsSignup || false);
+  const [isSignupCallback, setIsSignupCallback] = useState(initialIsSignup || false);
   const [user, setUser] = useState<any>(null);
   const [activeView, setActiveView] = useState(initialView);
   const [selectedNumber, setSelectedNumber] = useState<string | null>(initialNum);
@@ -205,12 +205,10 @@ export default function App() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      if (activeView === "login" || activeView === "register" || activeView === "" || activeView === "callback") {
-        if (activeView === "callback" && isSignupCallback) {
-          setActiveView("verified");
-        } else {
-          setActiveView(user?.email?.toLowerCase() === "mckuadratid@gmail.com" ? "superadmin" : "dashboard");
-        }
+      if (isSignupCallback) {
+        setActiveView("verified");
+      } else if (activeView === "login" || activeView === "register" || activeView === "" || activeView === "callback" || activeView === "landing") {
+        setActiveView(user?.email?.toLowerCase() === "mckuadratid@gmail.com" ? "superadmin" : "dashboard");
       }
     } else if (!loading && activeView === "callback") {
       // Jika loading selesai tapi tidak terautentikasi (mungkin link kadaluarsa)
@@ -223,7 +221,14 @@ export default function App() {
   useEffect(() => {
     const handleHashChange = () => {
       const { view, numId, bcId } = parseHash();
-      setActiveView(view);
+      
+      // Cegah hashchange mereset view jika sedang memproses callback signup
+      setActiveView((prev) => {
+        if ((prev === "callback" || prev === "verified") && isSignupCallback) {
+          return "verified";
+        }
+        return view;
+      });
       setSelectedNumber(numId);
       setSelectedBroadcast(bcId);
     };
@@ -529,7 +534,10 @@ export default function App() {
         return <SuperadminDashboardView />;
 
       case "verified":
-        return <VerifiedView user={user} onContinue={() => setActiveView("dashboard")} />;
+        return <VerifiedView user={user} onContinue={() => {
+          setIsSignupCallback(false);
+          setActiveView("dashboard");
+        }} />;
 
       case "dashboard":
         return (
