@@ -944,6 +944,7 @@ export function SuperadminDashboardView() {
                   <th className="px-5 py-3 text-left">Nama Lengkap</th>
                   <th className="px-5 py-3 text-left">Username</th>
                   <th className="px-5 py-3 text-left">Email</th>
+                  <th className="px-5 py-3 text-left">No. WhatsApp</th>
                   <th className="px-5 py-3 text-left">Instansi Sekolah</th>
                   <th className="px-5 py-3 text-left">Status Email</th>
                   <th className="px-5 py-3 text-left">Status Akun</th>
@@ -968,6 +969,10 @@ export function SuperadminDashboardView() {
                     {/* Email */}
                     <td className="px-5 py-4 text-slate-600">
                       {signup.email}
+                    </td>
+                    {/* WhatsApp */}
+                    <td className="px-5 py-4 font-mono text-xs text-slate-600">
+                      {signup.waNumber || "-"}
                     </td>
                     {/* Instansi info */}
                     <td className="px-5 py-4">

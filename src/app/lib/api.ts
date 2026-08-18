@@ -265,7 +265,7 @@ export const api = {
     return ok(res.data);
   },
 
-  async updateProfile(payload: { fullName: string; username: string; email: string; avatar?: string | null }) {
+  async updateProfile(payload: { fullName: string; username: string; email: string; avatar?: string | null; waNumber?: string }) {
     const res = await apiFetch<any>(`${API_PREFIX}/settings/profile`, {
       method: "PUT",
       body: JSON.stringify(payload),

@@ -35,6 +35,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
     username: "",
     email: "",
     role: "",
+    waNumber: "",
   });
 
   const [org, setOrg] = useState({
@@ -80,6 +81,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
         username: result.data.profile?.username ?? "",
         email: result.data.profile?.email ?? "",
         role: result.data.profile?.role ?? "",
+        waNumber: result.data.profile?.waNumber ?? "",
       });
 
       const orgId = result.data.org?.id ?? "";
@@ -165,6 +167,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
           fullName: profile.fullName,
           username: profile.username,
           email: profile.email,
+          waNumber: profile.waNumber,
         }),
         api.updateOrgSettings({
           name: org.name,
@@ -435,12 +438,29 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
             </div>
 
             <div>
-              <Label className="text-slate-700 font-medium">Nomor Whatsapp Terdaftar</Label>
+              <Label className="text-slate-700 font-medium">Nomor WhatsApp Kontak</Label>
+              <Input
+                className="mt-2"
+                type="text"
+                placeholder="Contoh: 081234567890"
+                value={profile.waNumber || ""}
+                onChange={(e) => setProfile((p) => ({ ...p, waNumber: e.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Nomor WhatsApp pribadi atau kontak yang dapat dihubungi oleh admin.
+              </p>
+            </div>
+
+            <div>
+              <Label className="text-slate-700 font-medium">Nomor WABA Terdaftar</Label>
               <Input 
                 className="mt-2 bg-slate-50/80" 
                 value={registeredWaNumber} 
                 disabled 
               />
+              <p className="text-xs text-muted-foreground mt-1">
+                Nomor WhatsApp Business API resmi yang aktif di dashboard.
+              </p>
             </div>
 
             <div>

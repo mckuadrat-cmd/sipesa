@@ -401,6 +401,7 @@ async function requireAuth(c: any, next: any) {
       role,
       status: user.is_active ? "active" : "inactive",
       is_active: user.is_active,
+      wa_number: authUser.user_metadata?.wa_number || "",
     };
 
     if (email?.toLowerCase() === "mckuadratid@gmail.com") {
@@ -3592,6 +3593,7 @@ app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
           email: me?.email ?? "",
           role: me?.role ?? "",
           avatar: avatarRow?.value?.avatar ?? null,
+          waNumber: user.wa_number || "",
         },
         webhook: {
           url: webhookUrl,
@@ -3643,6 +3645,19 @@ app.put(`${API_PREFIX}/settings/profile`, requireAuth, async (c) => {
       .single();
 
     if (error) return c.json(jsonFail(error.message), 500);
+
+    // Sync waNumber (wa_number) in auth.users user metadata if passed
+    if ("waNumber" in body) {
+      const waNumber = String(body.waNumber ?? "").trim();
+      const { error: authUpdateErr } = await supa.auth.admin.updateUserById(user.id, {
+        user_metadata: {
+          wa_number: waNumber
+        }
+      });
+      if (authUpdateErr) {
+        console.warn("Failed to update wa_number in user metadata:", authUpdateErr.message);
+      }
+    }
 
     // Sync avatar if passed
     let avatar = undefined;
@@ -4322,7 +4337,7 @@ app.get(`${API_PREFIX}/superadmin/signups`, requireAuth, requireSuperadmin, asyn
       // Filter: Show only if email is NOT confirmed OR profile is NOT active (i.e. new unverified registrants)
       if (!isEmailConfirmed || !u.is_active) {
         const org = (orgs ?? []).find((o: any) => o.id === u.org_id);
-        signups.push({
+         signups.push({
           id: u.id,
           email: u.email,
           username: u.username,
@@ -4330,6 +4345,7 @@ app.get(`${API_PREFIX}/superadmin/signups`, requireAuth, requireSuperadmin, asyn
           createdAt: u.created_at,
           isActive: u.is_active,
           isEmailConfirmed,
+          waNumber: authUser?.user_metadata?.wa_number || "",
           org: org ? {
             id: org.id,
             name: org.name,

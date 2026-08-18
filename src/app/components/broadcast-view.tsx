@@ -690,7 +690,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         const mapped = (templatesRes.data || [])
           .filter((t) => {
             const status = String(t.status || "").toLowerCase();
-            return status === "approved" || status === "pending" || status === "rejected";
+            return status === "approved";
           })
           .map((tpl) => {
             const header = extractHeaderInfo(tpl.components);
