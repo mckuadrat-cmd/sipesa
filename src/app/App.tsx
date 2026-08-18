@@ -11,6 +11,7 @@ import { TemplateManagement } from "./components/template-management";
 import { BroadcastHistory } from "./components/broadcast-history";
 import { BroadcastDetailView } from "./components/broadcast-detail-view";
 import { LoginView } from "./components/login-view";
+import { LandingPageView } from "./components/landing-page-view";
 import { ContactListView } from "./components/contact-list-view";
 import { SuperadminDashboardView } from "./components/superadmin-dashboard-view";
 import { RulesView } from "./components/rules-view";
@@ -166,19 +167,35 @@ export default function App() {
   }, [isAuthenticated]);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
-    let hash = `#/${activeView}`;
-    const params = new URLSearchParams();
-    if (selectedNumber) params.set("numberId", selectedNumber);
-    if (selectedBroadcast) params.set("broadcastId", selectedBroadcast);
-    const paramStr = params.toString();
-    if (paramStr) {
-      hash += `?${paramStr}`;
+    let hash = "";
+    if (isAuthenticated) {
+      hash = `#/${activeView}`;
+      const params = new URLSearchParams();
+      if (selectedNumber) params.set("numberId", selectedNumber);
+      if (selectedBroadcast) params.set("broadcastId", selectedBroadcast);
+      const paramStr = params.toString();
+      if (paramStr) {
+        hash += `?${paramStr}`;
+      }
+    } else {
+      if (activeView === "login" || activeView === "register") {
+        hash = `#/${activeView}`;
+      } else {
+        hash = "#/";
+      }
     }
     if (window.location.hash !== hash) {
       window.location.hash = hash;
     }
   }, [activeView, selectedNumber, selectedBroadcast, isAuthenticated]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      if (activeView === "login" || activeView === "register" || activeView === "") {
+        setActiveView(user?.email?.toLowerCase() === "mckuadratid@gmail.com" ? "superadmin" : "dashboard");
+      }
+    }
+  }, [isAuthenticated, activeView, user]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -426,7 +443,21 @@ export default function App() {
   }
 
   if (!isAuthenticated) {
-    return <LoginView onLogin={handleLogin} onSignup={handleSignup} />;
+    if (activeView === "login" || activeView === "register") {
+      return (
+        <LoginView 
+          onLogin={handleLogin} 
+          onSignup={handleSignup} 
+          initialIsLogin={activeView === "login"} 
+        />
+      );
+    }
+    return (
+      <LandingPageView 
+        onNavigateToLogin={() => setActiveView("login")} 
+        onNavigateToRegister={() => setActiveView("register")} 
+      />
+    );
   }
 
   const renderView = () => {
