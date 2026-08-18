@@ -15,6 +15,7 @@ import { LandingPageView } from "./components/landing-page-view";
 import { ContactListView } from "./components/contact-list-view";
 import { SuperadminDashboardView } from "./components/superadmin-dashboard-view";
 import { RulesView } from "./components/rules-view";
+import { VerifiedView } from "./components/verified-view";
 import { api } from "./lib/api";
 import { toast } from "sonner";
 
@@ -46,6 +47,11 @@ function parseHash() {
   let numId: string | null = null;
   let bcId: string | null = null;
 
+  // Tangkap callback dari Supabase Auth (setelah user klik link email)
+  if (hash.includes("access_token=") || hash.includes("error_description=") || hash.includes("type=signup") || hash.includes("type=recovery")) {
+    return { view: "callback", numId: null, bcId: null, isSignup: hash.includes("type=signup") };
+  }
+
   if (hash.startsWith("#/")) {
     const parts = hash.slice(2).split("?");
     view = parts[0] || "dashboard";
@@ -54,13 +60,16 @@ function parseHash() {
       numId = params.get("numberId");
       bcId = params.get("broadcastId");
     }
+  } else if (hash === "" || hash === "#") {
+    view = "landing";
   }
-  return { view, numId, bcId };
+  return { view, numId, bcId, isSignup: false };
 }
 
 export default function App() {
-  const { view: initialView, numId: initialNum, bcId: initialBc } = parseHash();
+  const { view: initialView, numId: initialNum, bcId: initialBc, isSignup: initialIsSignup } = parseHash();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isSignupCallback] = useState(initialIsSignup || false);
   const [user, setUser] = useState<any>(null);
   const [activeView, setActiveView] = useState(initialView);
   const [selectedNumber, setSelectedNumber] = useState<string | null>(initialNum);
@@ -180,6 +189,11 @@ export default function App() {
     } else {
       if (activeView === "login" || activeView === "register") {
         hash = `#/${activeView}`;
+      } else if (activeView === "callback") {
+        // Biarkan hash apa adanya agar Supabase bisa membaca tokennya
+        return;
+      } else if (activeView === "landing") {
+        hash = "#/";
       } else {
         hash = "#/";
       }
@@ -191,11 +205,20 @@ export default function App() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      if (activeView === "login" || activeView === "register" || activeView === "") {
-        setActiveView(user?.email?.toLowerCase() === "mckuadratid@gmail.com" ? "superadmin" : "dashboard");
+      if (activeView === "login" || activeView === "register" || activeView === "" || activeView === "callback") {
+        if (activeView === "callback" && isSignupCallback) {
+          setActiveView("verified");
+        } else {
+          setActiveView(user?.email?.toLowerCase() === "mckuadratid@gmail.com" ? "superadmin" : "dashboard");
+        }
       }
+    } else if (!loading && activeView === "callback") {
+      // Jika loading selesai tapi tidak terautentikasi (mungkin link kadaluarsa)
+      setTimeout(() => {
+        setActiveView("login");
+      }, 3000);
     }
-  }, [isAuthenticated, activeView, user]);
+  }, [isAuthenticated, activeView, user, loading, isSignupCallback]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -443,6 +466,18 @@ export default function App() {
   }
 
   if (!isAuthenticated) {
+    if (activeView === "callback") {
+      return (
+        <div className="flex items-center justify-center h-screen bg-gray-50">
+          <div className="text-center p-8 bg-white shadow rounded-lg max-w-sm w-full mx-4">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-gray-800 mb-2">Memverifikasi Sesi...</h3>
+            <p className="text-sm text-gray-500">Mohon tunggu sebentar, Anda akan segera dialihkan.</p>
+          </div>
+        </div>
+      );
+    }
+
     if (activeView === "login" || activeView === "register") {
       return (
         <LoginView 
@@ -492,6 +527,9 @@ export default function App() {
     switch (activeView) {
       case "superadmin":
         return <SuperadminDashboardView />;
+
+      case "verified":
+        return <VerifiedView user={user} onContinue={() => setActiveView("dashboard")} />;
 
       case "dashboard":
         return (

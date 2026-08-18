@@ -1,15 +1,15 @@
 import { useState } from "react";
-import { 
-  Zap, 
-  MessageSquare, 
-  Send, 
-  History, 
-  ShieldCheck, 
-  Coins, 
-  Users, 
-  Check, 
-  ArrowRight, 
-  ChevronDown, 
+import {
+  Zap,
+  MessageSquare,
+  Send,
+  History,
+  ShieldCheck,
+  Coins,
+  Users,
+  Check,
+  ArrowRight,
+  ChevronDown,
   Calculator,
   MessageCircle,
   CheckCircle2
@@ -38,7 +38,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
   const annualSaving = Math.max(0, (monthlyCompetitorAvg * 12) - (messageCount * tokenPrice));
   const formattedSaving = annualSaving.toLocaleString("id-ID");
 
-  const waAdminLink = "https://wa.me/6281211112222?text=Halo%20Admin%20SIPESA%2C%20saya%20ingin%20bertanya%20lebih%20lanjut%20mengenai%20layanan%20WhatsApp%20Business%20API%20SIPESA%20tanpa%20biaya%20langganan%20bulanan.";
+  const waAdminLink = "https://wa.me/6282312006987?text=Halo%20Admin%20SIPESA%2C%20saya%20ingin%20bertanya%20lebih%20lanjut%20mengenai%20layanan%20WhatsApp%20Business%20API%20SIPESA%20tanpa%20biaya%20langganan%20bulanan.";
 
   const faqs = [
     {
@@ -81,13 +81,13 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
           </nav>
 
           <div className="flex items-center gap-3">
-            <button 
+            <button
               onClick={onNavigateToLogin}
               className="px-4 py-2 text-sm font-semibold text-[#3C405B] hover:text-[#DF7A5E] transition-colors cursor-pointer"
             >
               Masuk
             </button>
-            <button 
+            <button
               onClick={onNavigateToRegister}
               className="px-5 py-2.5 text-sm font-semibold bg-[#DF7A5E] hover:bg-[#DF7A5E]/90 text-white rounded-full shadow-md shadow-[#DF7A5E]/20 transition-all duration-200 cursor-pointer"
             >
@@ -100,10 +100,10 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
       {/* Hero Section */}
       <section className="relative overflow-hidden pt-12 pb-20 lg:pt-20 lg:pb-32 bg-gradient-to-br from-white via-slate-50 to-[#F0EAC6]/20">
         <div className="absolute inset-0 z-0 opacity-40 bg-[radial-gradient(#DF7A5E_1px,transparent_1px)] [background-size:24px_24px]"></div>
-        
+
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
           <div className="grid lg:grid-cols-12 gap-12 lg:gap-8 items-center">
-            
+
             {/* Left Copywriting */}
             <div className="lg:col-span-6 flex flex-col text-left space-y-6">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#DF7A5E]/10 border border-[#DF7A5E]/20 w-fit">
@@ -120,7 +120,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               </p>
 
               <div className="flex flex-col sm:flex-row gap-4 pt-4">
-                <a 
+                <a
                   href={waAdminLink}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -129,7 +129,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                   <MessageCircle className="w-5 h-5 fill-current" />
                   Hubungi WhatsApp Admin
                 </a>
-                <button 
+                <button
                   onClick={onNavigateToRegister}
                   className="inline-flex items-center justify-center gap-2 px-8 py-4 bg-[#3C405B] hover:bg-[#3C405B]/90 text-white text-base font-bold rounded-2xl transition-all duration-200 cursor-pointer"
                 >
@@ -159,10 +159,10 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
             <div className="lg:col-span-6 relative">
               <div className="absolute inset-0 bg-gradient-to-tr from-[#DF7A5E]/20 to-[#F0EAC6]/30 rounded-3xl filter blur-3xl -z-10 transform scale-95"></div>
               <div className="relative border-8 border-slate-900 rounded-3xl shadow-2xl overflow-hidden bg-slate-900 aspect-[16/10] group">
-                <img 
-                  src="/dashboard_illustration.png" 
-                  alt="SIPESA Dashboard" 
-                  className="w-full h-full object-cover object-top hover:scale-102 transition-transform duration-700" 
+                <img
+                  src="/dashboard_illustration.png"
+                  alt="SIPESA Dashboard"
+                  className="w-full h-full object-cover object-top hover:scale-102 transition-transform duration-700"
                 />
                 <div className="absolute inset-0 bg-slate-900/10 group-hover:bg-transparent transition-all duration-300"></div>
               </div>
@@ -185,7 +185,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
           </div>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-8 mt-16">
-            
+
             {/* Card 1 */}
             <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 hover:border-[#DF7A5E]/30 transition-all duration-300 flex flex-col space-y-4">
               <div className="w-12 h-12 rounded-xl bg-[#DF7A5E]/10 flex items-center justify-center text-[#DF7A5E] shrink-0">
@@ -237,7 +237,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
       {/* Fitur Utama */}
       <section id="fitur" className="py-20 bg-slate-50 border-y border-slate-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          
+
           <div className="text-center max-w-3xl mx-auto space-y-4 mb-16">
             <h2 className="text-3xl sm:text-4xl font-extrabold text-[#3C405B]">
               Satu Dashboard, Semua Fitur CRM Terlengkap
@@ -383,7 +383,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
       {/* Kalkulator Simulasi & Skema Harga */}
       <section id="harga" className="py-20 bg-white">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          
+
           <div className="text-center max-w-3xl mx-auto space-y-4 mb-16">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#DF7A5E]/10 border border-[#DF7A5E]/20 w-fit">
               <span className="text-xs font-semibold text-[#DF7A5E] uppercase tracking-wider">Pay-As-You-Go Pricing</span>
@@ -397,17 +397,17 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
           </div>
 
           <div className="grid lg:grid-cols-12 gap-8 items-stretch mt-12">
-            
+
             {/* Pricing Model Info */}
             <div className="lg:col-span-5 flex flex-col justify-between bg-[#3C405B] text-white rounded-3xl p-8 lg:p-10 shadow-xl relative overflow-hidden">
               <div className="absolute top-0 right-0 -mt-8 -mr-8 w-32 h-32 bg-white/5 rounded-full filter blur-xl"></div>
-              
+
               <div className="space-y-6 text-left relative z-10">
                 <span className="text-xs font-bold bg-[#DF7A5E] text-white px-3 py-1.5 rounded-full uppercase tracking-wider">Skema Tarif</span>
                 <h3 className="text-3xl font-extrabold">Rp 1.500 <span className="text-sm font-normal text-white/70">/ pesan (token)</span></h3>
-                
+
                 <p className="text-white/80 text-sm leading-relaxed">
-                  Seluruh fitur premium SIPESA dapat diakses penuh secara gratis. Anda hanya membeli saldo pesan (token). 
+                  Seluruh fitur premium SIPESA dapat diakses penuh secara gratis. Anda hanya membeli saldo pesan (token).
                 </p>
 
                 <div className="space-y-4 pt-4 border-t border-white/10 text-sm">
@@ -431,7 +431,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               </div>
 
               <div className="pt-8 relative z-10">
-                <a 
+                <a
                   href={waAdminLink}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -449,7 +449,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                 <div className="flex items-center gap-3">
                   <span className="text-xl font-bold text-[#3C405B]">Kalkulator Simulasi Penghematan</span>
                 </div>
-                
+
                 <p className="text-sm text-slate-600">
                   Geser slider di bawah untuk mensimulasikan estimasi volume pesan bulanan Anda dan bandingkan biayanya dengan CRM berlangganan konvensional.
                 </p>
@@ -460,10 +460,10 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                     <span className="text-sm font-semibold text-slate-700">Volume Pesan Bulanan:</span>
                     <span className="text-2xl font-black text-[#DF7A5E]">{messageCount.toLocaleString("id-ID")} <span className="text-xs font-normal text-slate-500">pesan</span></span>
                   </div>
-                  <input 
-                    type="range" 
-                    min="500" 
-                    max="50000" 
+                  <input
+                    type="range"
+                    min="500"
+                    max="50000"
                     step="500"
                     value={messageCount}
                     onChange={(e) => setMessageCount(Number(e.target.value))}
@@ -516,7 +516,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
       {/* FAQ Section */}
       <section id="faq" className="py-20 bg-slate-50 border-t border-slate-100">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-          
+
           <div className="text-center space-y-4 mb-16">
             <h2 className="text-3xl sm:text-4xl font-extrabold text-[#3C405B]">
               Frequently Asked Questions
@@ -530,8 +530,8 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
             {faqs.map((faq, index) => {
               const isOpen = activeFaq === index;
               return (
-                <div 
-                  key={index} 
+                <div
+                  key={index}
                   className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden transition-all duration-200"
                 >
                   <button
@@ -541,8 +541,8 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                     <span className="font-bold text-slate-800 text-sm sm:text-base">{faq.q}</span>
                     <ChevronDown className={`w-5 h-5 text-slate-400 shrink-0 transition-transform duration-200 ${isOpen ? "transform rotate-180" : ""}`} />
                   </button>
-                  
-                  <div 
+
+                  <div
                     className={`transition-all duration-300 ease-in-out overflow-hidden ${isOpen ? "max-h-96 border-t border-slate-100" : "max-h-0"}`}
                   >
                     <p className="px-6 py-5 text-sm sm:text-base text-slate-600 leading-relaxed text-left">
@@ -572,7 +572,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
           </p>
 
           <div className="flex flex-col sm:flex-row gap-4 justify-center pt-4">
-            <a 
+            <a
               href={waAdminLink}
               target="_blank"
               rel="noopener noreferrer"
@@ -581,7 +581,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               <MessageCircle className="w-5 h-5 fill-current text-white" />
               <span className="text-white font-bold">Hubungi WhatsApp Admin</span>
             </a>
-            <button 
+            <button
               onClick={onNavigateToRegister}
               className="inline-flex items-center justify-center gap-2 px-8 py-4 bg-[#3C405B] hover:bg-[#3C405B]/90 text-white text-base font-bold rounded-2xl shadow-xl transition-all duration-200 cursor-pointer"
             >
@@ -595,7 +595,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
       {/* Footer */}
       <footer className="bg-[#3C405B] text-white/70 py-12 border-t border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid md:grid-cols-2 lg:grid-cols-4 gap-8">
-          
+
           <div className="space-y-4 text-left">
             <div className="flex items-center gap-3">
               <img src="/sipesa-white.png" alt="SIPESA Logo" className="h-10 w-auto" />
@@ -631,7 +631,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               Butuh panduan pendaftaran akun Meta Business Manager?
             </p>
             <div className="pt-2">
-              <a 
+              <a
                 href={waAdminLink}
                 target="_blank"
                 rel="noopener noreferrer"
