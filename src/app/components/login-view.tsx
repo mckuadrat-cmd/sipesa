@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -16,6 +16,7 @@ interface LoginViewProps {
     username: string,
     waNumber: string
   ) => Promise<{ emailVerificationRequired: boolean } | undefined>;
+  initialIsLogin?: boolean;
 }
 
 function getErrorMessage(err: unknown): string {
@@ -56,8 +57,12 @@ function normalizeUsername(value: string) {
     .replace(/[^a-z0-9_]/g, "");
 }
 
-export function LoginView({ onLogin, onSignup }: LoginViewProps) {
-  const [isLogin, setIsLogin] = useState(true);
+export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginViewProps) {
+  const [isLogin, setIsLogin] = useState(initialIsLogin);
+
+  useEffect(() => {
+    setIsLogin(initialIsLogin);
+  }, [initialIsLogin]);
   const [isRegistered, setIsRegistered] = useState(false);
 
   const [identifier, setIdentifier] = useState("");
