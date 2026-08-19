@@ -8,6 +8,36 @@ import { ArrowLeft, Send, Search, Phone, Smile, RotateCw, CheckCheck, Trash2, Sq
 import { toast } from "sonner";
 import { api } from "../lib/api";
 
+function SafeImage({
+  src,
+  alt,
+  className,
+  fallbackText,
+  onClick,
+}: {
+  src: string;
+  alt: string;
+  className?: string;
+  fallbackText: string;
+  onClick?: () => void;
+}) {
+  const [hasError, setHasError] = useState(false);
+
+  if (hasError) {
+    return <span className="text-slate-500 italic text-xs">{fallbackText}</span>;
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      onClick={onClick}
+      onError={() => setHasError(true)}
+    />
+  );
+}
+
 interface Message {
   id: string;
   content: string;
@@ -703,11 +733,12 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                           if (message.messageType === "image" && imageId) {
                             return (
                               <div className="flex flex-col gap-1.5">
-                                <img
+                                <SafeImage
                                   src={api.getMediaUrl(imageId, numberId)}
                                   alt="Media"
                                   className="rounded-lg max-w-full max-h-64 object-contain cursor-pointer hover:opacity-95 transition-opacity"
                                   onClick={() => window.open(api.getMediaUrl(imageId, numberId), '_blank')}
+                                  fallbackText="[Gambar (Gagal dimuat)]"
                                 />
                                 {imageCaption && (
                                   <p className="text-[14px] leading-relaxed mt-1">{imageCaption}</p>
@@ -717,17 +748,12 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                           } else if (message.messageType === "sticker") {
                             const stickerId = payloadObj?.sticker?.id || payloadObj?.id;
                             return stickerId ? (
-                              <img
+                              <SafeImage
                                 src={api.getMediaUrl(stickerId, numberId)}
                                 alt="Sticker"
                                 className="w-28 h-28 object-contain rounded-lg hover:scale-105 transition-transform cursor-pointer"
                                 onClick={() => window.open(api.getMediaUrl(stickerId, numberId), '_blank')}
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none';
-                                  if (e.currentTarget.parentElement) {
-                                    e.currentTarget.parentElement.innerHTML = '<span class="text-xs text-slate-500 italic">[Stiker]</span>';
-                                  }
-                                }}
+                                fallbackText="[Stiker]"
                               />
                             ) : (
                               <span className="text-slate-500 italic text-xs">[Stiker]</span>
