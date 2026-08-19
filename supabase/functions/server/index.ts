@@ -2184,17 +2184,26 @@ app.get(`${API_PREFIX}/billing/transactions`, requireAuth, async (c) => {
       .map((r: any) => r.value)
       .filter((v: any) => v && v.org_id === user.org_id);
 
-    const mappedMidtrans = midtransTxs.map((tx: any) => ({
-      id: tx.id,
-      type: "midtrans",
-      amount: tx.amount_tokens,
-      amount_idr: tx.amount_idr,
-      date: tx.created_at,
-      description: `Top-up Midtrans (${tx.amount_tokens} token)`,
-      status: tx.status,
-      snap_token: tx.snap_token,
-      snap_url: tx.snap_url,
-    }));
+    const mappedMidtrans = midtransTxs.map((tx: any) => {
+      let status = "pending";
+      if (tx.status === "settlement" || tx.status === "capture" || tx.status === "success") {
+        status = "success";
+      } else if (["expire", "cancel", "deny", "failed"].includes(tx.status)) {
+        status = "failed";
+      }
+
+      return {
+        id: tx.id,
+        type: "midtrans",
+        amount: tx.amount_tokens,
+        amount_idr: tx.amount_idr,
+        date: tx.created_at,
+        description: `Top-up otomatis (${tx.amount_tokens} token)`,
+        status,
+        snap_token: tx.snap_token,
+        snap_url: tx.snap_url,
+      };
+    });
 
     // Merge both lists
     const allTx = [...mapped, ...mappedMidtrans];
@@ -5043,6 +5052,48 @@ app.post(`${API_PREFIX}/superadmin/manual-requests/:id/reject`, requireAuth, req
     if (saveErr) return c.json(jsonFail(saveErr.message), 500);
 
     return c.json(jsonOk(requestObj));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.delete(`${API_PREFIX}/superadmin/manual-requests/:id`, requireAuth, requireSuperadmin, async (c) => {
+  try {
+    const id = c.req.param("id");
+    const supa = sb();
+
+    const { data: searchRows, error: searchErr } = await supa
+      .from("key_info")
+      .select("key")
+      .like("key", `%:${id}`)
+      .limit(1);
+
+    if (searchErr) return c.json(jsonFail(searchErr.message), 500);
+    
+    let keyToDelete = searchRows?.[0]?.key;
+    if (!keyToDelete) {
+      const { data: midtransRows, error: midtransErr } = await supa
+        .from("key_info")
+        .select("key")
+        .eq("key", `midtrans_tx:${id}`)
+        .limit(1);
+
+      if (midtransErr) return c.json(jsonFail(midtransErr.message), 500);
+      keyToDelete = midtransRows?.[0]?.key;
+    }
+
+    if (!keyToDelete) {
+      return c.json(jsonFail("Riwayat transaksi tidak ditemukan"), 404);
+    }
+
+    const { error: deleteErr } = await supa
+      .from("key_info")
+      .delete()
+      .eq("key", keyToDelete);
+
+    if (deleteErr) return c.json(jsonFail(deleteErr.message), 500);
+
+    return c.json(jsonOk({ message: "Riwayat transaksi berhasil dihapus" }));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }

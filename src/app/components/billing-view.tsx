@@ -561,7 +561,7 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
                                 : "bg-yellow-500 text-black"
                             }
                           >
-                            Midtrans ({item.status === "success" ? "Berhasil" : item.status === "failed" ? "Gagal" : "Menunggu Pembayaran"})
+                            Pembayaran Instan ({item.status === "success" ? "Berhasil" : item.status === "failed" ? "Gagal" : "Menunggu Pembayaran"})
                           </Badge>
                           <span className="text-xs text-muted-foreground">
                             {formatDate(item.date)}
