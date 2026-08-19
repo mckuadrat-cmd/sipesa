@@ -53,10 +53,14 @@ type BillingData = {
 
 type Transaction = {
   id: string;
-  type: "topup" | "usage" | "adjustment" | "refund";
+  type: "topup" | "usage" | "adjustment" | "refund" | "midtrans";
   amount: number;
   date: string;
   description: string;
+  status?: string;
+  snap_token?: string;
+  snap_url?: string;
+  amount_idr?: number;
 };
 
 type BillingViewProps = {
@@ -196,6 +200,10 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
         date: tx.date,
         timestamp: new Date(tx.date).getTime(),
         description: tx.description,
+        status: tx.status,
+        snap_token: tx.snap_token,
+        snap_url: tx.snap_url,
+        amount_idr: tx.amount_idr,
       });
     });
 
@@ -536,6 +544,93 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
             ) : (
               mergedHistory.map((item) => {
                 if (item.itemType === "transaction") {
+                  if (item.type === "midtrans") {
+                    const isPending = item.status === "pending";
+                    return (
+                      <div
+                        key={item.id}
+                        className="border rounded-lg p-4 space-y-3 bg-slate-50/30"
+                      >
+                        <div className="flex items-center justify-between">
+                          <Badge
+                            className={
+                              item.status === "success"
+                                ? "bg-green-500 text-white"
+                                : item.status === "failed"
+                                ? "bg-red-500 text-white"
+                                : "bg-yellow-500 text-black"
+                            }
+                          >
+                            Midtrans ({item.status === "success" ? "Berhasil" : item.status === "failed" ? "Gagal" : "Menunggu Pembayaran"})
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">
+                            {formatDate(item.date)}
+                          </span>
+                        </div>
+
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="font-bold text-slate-800 text-sm">
+                              +{Number(item.amount ?? 0).toLocaleString("id-ID")} token
+                            </p>
+                            <p className="text-xs text-slate-600 mt-0.5">
+                              Nominal: <span className="font-semibold text-slate-900">Rp {Number(item.amount_idr ?? 0).toLocaleString("id-ID")}</span>
+                            </p>
+                            <p className="text-[10px] text-slate-400 mt-1">
+                              ID Transaksi: {item.id}
+                            </p>
+                          </div>
+
+                          {isPending && item.snap_token && (
+                            <Button
+                              variant="default"
+                              size="sm"
+                              onClick={() => {
+                                const snap = (window as any).snap;
+                                if (snap) {
+                                  snap.pay(item.snap_token, {
+                                    onSuccess: function (result: any) {
+                                      openNotice(
+                                        "success",
+                                        "Pembayaran Berhasil",
+                                        "Terima kasih! Pembayaran Anda berhasil dan saldo token akan bertambah secara otomatis."
+                                      );
+                                      onUpdate?.();
+                                    },
+                                    onPending: function (result: any) {
+                                      openNotice(
+                                        "info",
+                                        "Pembayaran Tertunda",
+                                        "Silakan selesaikan pembayaran Anda sesuai instruksi pada layar pembayaran."
+                                      );
+                                      onUpdate?.();
+                                    },
+                                    onError: function (result: any) {
+                                      openNotice(
+                                        "error",
+                                        "Pembayaran Gagal",
+                                        "Terjadi kesalahan saat memproses pembayaran. Silakan coba lagi."
+                                      );
+                                    },
+                                    onClose: function () {
+                                      console.log("Snap popup closed by user");
+                                    }
+                                  });
+                                } else if (item.snap_url) {
+                                  window.open(item.snap_url, "_blank");
+                                }
+                              }}
+                              className="bg-primary hover:bg-primary/90 text-white text-xs h-8 flex items-center gap-1 font-semibold"
+                            >
+                              <Coins className="w-3.5 h-3.5" />
+                              Bayar Sekarang
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
                   return (
                     <div
                       key={item.id}
@@ -634,220 +729,6 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
         </Card>
       </div>
 
-      {/* Manual Top-up Modal */}
-      <AppModal
-        open={isTopupModalOpen}
-        title="Pembayaran Top-up Token"
-        onClose={() => setIsTopupModalOpen(false)}
-        footer={
-          <div className="flex justify-between w-full">
-            <Button variant="outline" onClick={() => setIsTopupModalOpen(false)}>
-              Batal
-            </Button>
-            <Button
-              onClick={handleSubmitManualPayment}
-              disabled={submittingRequest || !receiptBase64}
-              className="bg-primary hover:bg-primary/90 text-white"
-            >
-              {submittingRequest ? "Mengirim..." : "Konfirmasi & Kirim Bukti"}
-            </Button>
-          </div>
-        }
-      >
-        <div className="space-y-6 max-h-[75vh] overflow-y-auto pr-1">
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
-            <p className="font-semibold mb-1">PENTING: Transfer Sesuai Nominal Unik!</p>
-            <p>
-              Mohon transfer tepat sesuai jumlah nominal di bawah ini hingga 3 digit terakhir. Kode referral digunakan untuk mempercepat proses pencocokan transfer secara manual.
-            </p>
-          </div>
-
-          <div className="text-center py-4 bg-gray-50 border rounded-lg">
-            <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Total Nominal Transfer</p>
-            <h1 className="text-3xl font-extrabold text-slate-900 mt-1">
-              Rp {((parseInt(topupAmount, 10) || 0) * safe.tokenPrice + referralCode).toLocaleString("id-ID")}
-            </h1>
-            <p className="text-xs text-slate-500 mt-1">
-              (Rp {((parseInt(topupAmount, 10) || 0) * safe.tokenPrice).toLocaleString("id-ID")} + Rp {referralCode} kode referral)
-            </p>
-          </div>
-
-          <div className="space-y-4">
-            <h4 className="font-semibold text-slate-800 border-b pb-1">Tujuan Transfer</h4>
-            
-            {/* Structured Payment Methods */}
-            {paymentSettings && (paymentSettings.bank || paymentSettings.ewallet || paymentSettings.qris) ? (
-              <>
-                {paymentSettings.bank?.enabled && (
-                  <div className="border rounded-xl p-4 bg-slate-50/50 flex flex-col gap-3 hover:bg-slate-50 transition-colors">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <BankBrandLogo name={paymentSettings.bank.bank_name} />
-                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Transfer Bank</span>
-                      </div>
-                      <span className="text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">Proses Cepat</span>
-                    </div>
-                    <div className="space-y-2 border-t pt-3 border-slate-100">
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-medium">Nomor Rekening</span>
-                          <span className="text-sm font-mono font-bold text-slate-800">{paymentSettings.bank.account_number}</span>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => copyToClipboard(paymentSettings.bank.account_number, "Nomor rekening")}
-                          className="h-7 text-[10px] px-2 flex items-center gap-1 font-semibold hover:bg-slate-100"
-                        >
-                          <Copy className="w-3 h-3" />
-                          Salin
-                        </Button>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-slate-400 block uppercase font-medium">Nama Penerima (A/N)</span>
-                        <span className="text-sm font-bold text-slate-800">{paymentSettings.bank.account_name}</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {paymentSettings.ewallet?.enabled && (
-                  <div className="border rounded-xl p-4 bg-slate-50/50 flex flex-col gap-3 hover:bg-slate-50 transition-colors">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <EWalletBrandLogo name={paymentSettings.ewallet.provider} />
-                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">E-Wallet</span>
-                      </div>
-                      <span className="text-[11px] font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">Instant</span>
-                    </div>
-                    <div className="space-y-2 border-t pt-3 border-slate-100">
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-medium">Nomor E-Wallet</span>
-                          <span className="text-sm font-mono font-bold text-slate-800">{paymentSettings.ewallet.phone_number}</span>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => copyToClipboard(paymentSettings.ewallet.phone_number, "Nomor e-wallet")}
-                          className="h-7 text-[10px] px-2 flex items-center gap-1 font-semibold hover:bg-slate-100"
-                        >
-                          <Copy className="w-3 h-3" />
-                          Salin
-                        </Button>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-slate-400 block uppercase font-medium">Nama Akun (A/N)</span>
-                        <span className="text-sm font-bold text-slate-800">{paymentSettings.ewallet.account_name}</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {paymentSettings.qris?.enabled && paymentSettings.qris.qris_url && (
-                  <div className="border rounded-xl p-4 bg-slate-50/50 flex flex-col gap-3 items-center hover:bg-slate-50 transition-colors">
-                    <div className="w-full flex items-center justify-between mb-1">
-                      <div className="flex items-center gap-2">
-                        <span className="inline-flex items-center justify-center px-2 py-0.5 bg-red-600 text-white rounded text-[10px] font-extrabold tracking-wider">QRIS</span>
-                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Bayar Instan</span>
-                      </div>
-                      <span className="text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">Scan & Pay</span>
-                    </div>
-                    <div className="bg-white p-3 border rounded-xl shadow-sm text-center w-full">
-                      <img
-                        src={paymentSettings.qris.qris_url}
-                        alt="QRIS Barcode"
-                        className="max-w-[200px] h-auto object-contain mx-auto"
-                      />
-                      <p className="text-[10px] text-slate-400 mt-2 font-medium">Pindai QRIS di atas menggunakan aplikasi E-Wallet atau Bank Anda</p>
-                    </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              // Legacy fallback string rendering
-              <>
-                {paymentSettings?.bank_transfer && (
-                  <div className="space-y-1">
-                    <p className="text-xs text-muted-foreground uppercase font-bold">Transfer Bank</p>
-                    <p className="text-sm font-medium whitespace-pre-line bg-white p-3 border rounded-lg">
-                      {paymentSettings.bank_transfer}
-                    </p>
-                  </div>
-                )}
-
-                {paymentSettings?.gopay && (
-                  <div className="space-y-1">
-                    <p className="text-xs text-muted-foreground uppercase font-bold">Gopay / E-Wallet</p>
-                    <p className="text-sm font-medium bg-white p-3 border rounded-lg">
-                      {paymentSettings.gopay}
-                    </p>
-                  </div>
-                )}
-
-                {paymentSettings?.qris_url && (
-                  <div className="space-y-1 text-center">
-                    <p className="text-xs text-muted-foreground uppercase font-bold text-left">QRIS Pembayaran</p>
-                    <div className="inline-block bg-white p-3 border rounded-lg mt-1 mx-auto">
-                      <img
-                        src={paymentSettings.qris_url}
-                        alt="QRIS Barcode"
-                        className="max-w-[200px] h-auto mx-auto object-contain"
-                      />
-                      <p className="text-[10px] text-muted-foreground mt-1">Pindai kode QRIS di atas untuk membayar</p>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-
-            {(!paymentSettings?.bank_transfer && !paymentSettings?.gopay && !paymentSettings?.qris_url && !paymentSettings?.bank?.enabled && !paymentSettings?.ewallet?.enabled && !paymentSettings?.qris?.enabled) && (
-              <p className="text-sm text-yellow-600 bg-yellow-50 p-3 rounded-lg border border-yellow-200">
-                Peringatan: Admin belum mengkonfigurasi rekening transfer di pengaturan. Silakan hubungi admin secara langsung.
-              </p>
-            )}
-          </div>
-
-          <div className="space-y-3 pt-2">
-            <h4 className="font-semibold text-slate-800">Unggah Bukti Transfer</h4>
-            <div className="flex flex-col gap-3">
-              <label className="border-2 border-dashed border-slate-200 hover:border-primary/50 transition-colors rounded-lg p-6 flex flex-col items-center justify-center cursor-pointer bg-slate-50/50 hover:bg-slate-50 group">
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleFileChange}
-                  className="hidden"
-                />
-                <Upload className="w-8 h-8 text-slate-400 group-hover:text-primary transition-colors mb-2" />
-                <span className="text-sm font-semibold text-slate-600 group-hover:text-primary transition-colors">
-                  {receiptFileName || "Pilih file bukti transfer"}
-                </span>
-                <span className="text-xs text-slate-400 mt-1">Format gambar (PNG, JPG), maks. 5MB</span>
-              </label>
-
-              {receiptBase64 && (
-                <div className="border rounded-lg p-3 bg-white flex items-center justify-between">
-                  <div className="flex items-center gap-2 overflow-hidden">
-                    <Image className="w-5 h-5 text-primary flex-shrink-0" />
-                    <span className="text-sm truncate font-medium">{receiptFileName}</span>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setReceiptBase64(null);
-                      setReceiptFileName("");
-                    }}
-                    className="text-red-600 hover:text-red-700 hover:bg-red-50 flex-shrink-0"
-                  >
-                    Hapus
-                  </Button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </AppModal>
 
       {/* Zoom Receipt Modal */}
       <AppModal
