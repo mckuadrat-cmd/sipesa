@@ -728,7 +728,7 @@ export function SuperadminDashboardView() {
             : "border-transparent text-slate-500 hover:text-slate-800"
             }`}
         >
-          Sekolah & Instansi ({orgs.length})
+          Instansi ({orgs.length})
         </button>
         <button
           onClick={() => setActiveTab("signups")}
@@ -746,16 +746,7 @@ export function SuperadminDashboardView() {
             : "border-transparent text-slate-500 hover:text-slate-800"
             }`}
         >
-          Persetujuan Pembayaran ({paymentRequests.filter((r) => r.status === "pending").length})
-        </button>
-        <button
-          onClick={() => setActiveTab("settings")}
-          className={`px-5 py-3 text-sm font-semibold border-b-2 transition-all ${activeTab === "settings"
-            ? "border-primary text-primary"
-            : "border-transparent text-slate-500 hover:text-slate-800"
-            }`}
-        >
-          Pengaturan Pembayaran
+          Riwayat Pembelian ({paymentRequests.filter((r) => r.status === "pending").length})
         </button>
       </div>
 
@@ -767,7 +758,7 @@ export function SuperadminDashboardView() {
             <div className="relative flex-1 max-w-md">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-slate-400" />
               <Input
-                placeholder="Cari sekolah, slug, atau email..."
+                placeholder="Cari instansi, email..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-10 h-10 rounded-lg text-sm bg-slate-50/50 border-slate-200 focus:bg-white"
@@ -798,10 +789,10 @@ export function SuperadminDashboardView() {
             </div>
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-100">
-              <table className="min-w-full divide-y divide-slate-100 text-sm">
+              <table className="min-w-full divide-y divide-slate-100 text-sm whitespace-nowrap">
                 <thead className="bg-slate-50/70">
                   <tr className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    <th className="px-5 py-3 text-left">Nama Sekolah</th>
+                    <th className="px-5 py-3 text-left">Instansi</th>
                     <th className="px-5 py-3 text-left">Plan / Status</th>
                     <th className="px-5 py-3 text-center">Token</th>
                     <th className="px-5 py-3 text-left">Nomor WhatsApp</th>
@@ -823,7 +814,6 @@ export function SuperadminDashboardView() {
                           >
                             {org.name}
                           </button>
-                          <div className="text-xs text-slate-400 font-mono mt-0.5">/{org.slug}</div>
                         </td>
                         {/* Plan & Status */}
                         <td className="px-5 py-4">
@@ -855,9 +845,8 @@ export function SuperadminDashboardView() {
                             ) : (
                               org.numbers.map((num) => (
                                 <div key={num.id} className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-                                  <span className={`w-1.5 h-1.5 rounded-full ${num.isActive ? "bg-green-500" : "bg-slate-300"}`} />
-                                  <span>{num.label}</span>
-                                  <span className="text-slate-400 font-mono">({num.phone})</span>
+                                  <span className={`w-1.5 h-1.5 rounded-full ${num.isActive ? "bg-green-500" : "bg-slate-300"} flex-shrink-0`} />
+                                  <span>{num.phone} - {num.label}</span>
                                 </div>
                               ))
                             )}
@@ -937,7 +926,7 @@ export function SuperadminDashboardView() {
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-slate-100">
-            <table className="min-w-full divide-y divide-slate-100 text-sm">
+            <table className="min-w-full divide-y divide-slate-100 text-sm whitespace-nowrap">
               <thead className="bg-slate-50/70">
                 <tr className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                   <th className="px-5 py-3 text-left">Tanggal Daftar</th>
@@ -945,7 +934,7 @@ export function SuperadminDashboardView() {
                   <th className="px-5 py-3 text-left">Username</th>
                   <th className="px-5 py-3 text-left">Email</th>
                   <th className="px-5 py-3 text-left">No. WhatsApp</th>
-                  <th className="px-5 py-3 text-left">Instansi Sekolah</th>
+                  <th className="px-5 py-3 text-left">Instansi</th>
                   <th className="px-5 py-3 text-left">Status Email</th>
                   <th className="px-5 py-3 text-left">Status Akun</th>
                   <th className="px-5 py-3 text-right">Aksi</th>
@@ -979,7 +968,7 @@ export function SuperadminDashboardView() {
                       {signup.org ? (
                         <div>
                           <div className="font-semibold text-slate-800">{signup.org.name}</div>
-                          <div className="text-[10px] text-slate-400 font-mono mt-0.5">/{signup.org.slug} • {signup.org.plan.toUpperCase()}</div>
+                          <div className="text-[10px] text-slate-400 font-mono mt-0.5">Plan: {signup.org.plan.toUpperCase()}</div>
                         </div>
                       ) : (
                         <span className="text-xs italic text-slate-400">Tidak ada data instansi</span>
@@ -1044,24 +1033,25 @@ export function SuperadminDashboardView() {
         </Card>
       )}
 
-      {/* Tab Contents: Manual Topup Payments Approvals */}
+      {/* Tab Contents: Unified Purchases History */}
       {activeTab === "payments" && (
         <Card className="p-6 space-y-6">
           <div className="flex justify-between items-center">
-            <h3 className="text-lg font-bold text-slate-800">Persetujuan Pembayaran Top-up Manual</h3>
+            <h3 className="text-lg font-bold text-slate-800">Riwayat Pembelian Token</h3>
             <Button onClick={loadSuperadminRequests} variant="outline" className="h-8 text-xs">
-              Refresh Pengajuan
+              Refresh Riwayat
             </Button>
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-slate-100">
-            <table className="min-w-full divide-y divide-slate-100 text-sm">
+            <table className="min-w-full divide-y divide-slate-100 text-sm whitespace-nowrap">
               <thead className="bg-slate-50/70">
                 <tr className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                   <th className="px-5 py-3 text-left">Tanggal</th>
-                  <th className="px-5 py-3 text-left">Nama Instansi</th>
+                  <th className="px-5 py-3 text-left">Instansi</th>
                   <th className="px-5 py-3 text-left">Jumlah Token</th>
-                  <th className="px-5 py-3 text-left">Nominal Transfer (Referral)</th>
+                  <th className="px-5 py-3 text-left">Nominal</th>
+                  <th className="px-5 py-3 text-left">Metode</th>
                   <th className="px-5 py-3 text-left">Diajukan Oleh</th>
                   <th className="px-5 py-3 text-left">Bukti</th>
                   <th className="px-5 py-3 text-left">Status</th>
@@ -1083,11 +1073,19 @@ export function SuperadminDashboardView() {
                     <td className="px-5 py-4 font-mono font-bold text-primary">
                       Rp {Number(req.amount_idr ?? 0).toLocaleString("id-ID")}
                     </td>
+                    <td className="px-5 py-4">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${req.payment_method === "Midtrans"
+                        ? "bg-purple-100 text-purple-700"
+                        : "bg-slate-100 text-slate-700"
+                        }`}>
+                        {req.payment_method || "Manual"}
+                      </span>
+                    </td>
                     <td className="px-5 py-4 text-slate-600">
                       {req.created_by_email}
                     </td>
                     <td className="px-5 py-4">
-                      {req.receipt_url && (
+                      {req.payment_method === "Manual" && req.receipt_url ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -1097,6 +1095,8 @@ export function SuperadminDashboardView() {
                           <Eye className="w-3.5 h-3.5" />
                           Lihat Bukti
                         </Button>
+                      ) : (
+                        <span className="text-xs text-slate-400">-</span>
                       )}
                     </td>
                     <td className="px-5 py-4">
@@ -1117,7 +1117,7 @@ export function SuperadminDashboardView() {
                       </Badge>
                     </td>
                     <td className="px-5 py-4 text-right">
-                      {req.status === "pending" ? (
+                      {req.payment_method === "Manual" && req.status === "pending" ? (
                         <div className="flex justify-end gap-2">
                           <Button
                             size="sm"
@@ -1139,7 +1139,9 @@ export function SuperadminDashboardView() {
                         </div>
                       ) : (
                         <div className="text-xs text-slate-400">
-                          {req.notes ? (
+                          {req.payment_method === "Midtrans" ? (
+                            <span>Otomatis (Sistem)</span>
+                          ) : req.notes ? (
                             <span className="truncate max-w-[150px] inline-block" title={req.notes}>
                               Catatan: {req.notes}
                             </span>
@@ -1153,8 +1155,8 @@ export function SuperadminDashboardView() {
                 ))}
                 {paymentRequests.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-5 py-10 text-center text-slate-400">
-                      Belum ada pengajuan top-up manual.
+                    <td colSpan={9} className="px-5 py-10 text-center text-slate-400">
+                      Belum ada riwayat pembelian token.
                     </td>
                   </tr>
                 )}
@@ -1164,228 +1166,7 @@ export function SuperadminDashboardView() {
         </Card>
       )}
 
-      {activeTab === "settings" && (
-        <Card className="p-6 max-w-2xl space-y-6">
-          <div>
-            <h3 className="text-lg font-bold text-slate-800 mb-1">Pengaturan Akun Transfer Pembayaran</h3>
-            <p className="text-xs text-slate-400">Atur metode pembayaran, bank transfer, e-wallet, dan QRIS yang akan ditampilkan kepada pengguna di halaman billing.</p>
-          </div>
 
-          <div className="space-y-6">
-            {/* 1. BANK TRANSFER METHOD */}
-            <div className="p-5 border rounded-2xl bg-slate-50/30 space-y-4 hover:border-slate-300 transition-colors">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="p-2 bg-blue-50 text-blue-600 rounded-lg">
-                    <Building className="w-4 h-4" />
-                  </span>
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-800">1. Transfer Bank Resmi</h4>
-                    <p className="text-[11px] text-slate-400">Terima pembayaran via transfer antar bank</p>
-                  </div>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={bankEnabled}
-                  onChange={(e) => setBankEnabled(e.target.checked)}
-                  className="w-4 h-4 rounded text-primary focus:ring-primary cursor-pointer animate-pulse-once"
-                />
-              </div>
-
-              {bankEnabled && (
-                <div className="space-y-4 pt-3 border-t border-slate-100">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="bank-select" className="text-xs font-semibold text-slate-600">Pilih Bank</Label>
-                      <div className="flex items-center gap-2">
-                        <select
-                          id="bank-select"
-                          value={bankName}
-                          onChange={(e) => setBankName(e.target.value)}
-                          className="flex-1 h-10 px-3 border rounded-lg text-sm bg-white font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                        >
-                          <option value="BCA">BCA (Bank Central Asia)</option>
-                          <option value="Mandiri">Bank Mandiri</option>
-                          <option value="BRI">BRI (Bank Rakyat Indonesia)</option>
-                          <option value="BNI">BNI (Bank Negara Indonesia)</option>
-                          <option value="BSI">BSI (Bank Syariah Indonesia)</option>
-                        </select>
-                        <div className="flex-shrink-0">
-                          <BankBrandLogo name={bankName} />
-                        </div>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="bank-norek" className="text-xs font-semibold text-slate-600">Nomor Rekening</Label>
-                      <Input
-                        id="bank-norek"
-                        placeholder="Contoh: 1234567890"
-                        value={bankAccountNumber}
-                        onChange={(e) => setBankAccountNumber(e.target.value)}
-                        className="h-10 text-sm font-mono"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="bank-an" className="text-xs font-semibold text-slate-600">Atas Nama (A/N) Pemilik Rekening</Label>
-                    <Input
-                      id="bank-an"
-                      placeholder="Contoh: PT MCKUADRAT"
-                      value={bankAccountName}
-                      onChange={(e) => setBankAccountName(e.target.value)}
-                      className="h-10 text-sm"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* 2. E-WALLET METHOD */}
-            <div className="p-5 border rounded-2xl bg-slate-50/30 space-y-4 hover:border-slate-300 transition-colors">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="p-2 bg-purple-50 text-purple-600 rounded-lg">
-                    <Coins className="w-4 h-4" />
-                  </span>
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-800">2. E-Wallet / QR Payment</h4>
-                    <p className="text-[11px] text-slate-400">Terima pembayaran via OVO, GoPay, Dana, dll</p>
-                  </div>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={ewalletEnabled}
-                  onChange={(e) => setEwalletEnabled(e.target.checked)}
-                  className="w-4 h-4 rounded text-primary focus:ring-primary cursor-pointer"
-                />
-              </div>
-
-              {ewalletEnabled && (
-                <div className="space-y-4 pt-3 border-t border-slate-100">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="ewallet-provider" className="text-xs font-semibold text-slate-600">Provider E-Wallet</Label>
-                      <div className="flex items-center gap-2">
-                        <select
-                          id="ewallet-provider"
-                          value={ewalletProvider}
-                          onChange={(e) => setEwalletProvider(e.target.value)}
-                          className="flex-1 h-10 px-3 border rounded-lg text-sm bg-white font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                        >
-                          <option value="GoPay">GoPay</option>
-                          <option value="OVO">OVO</option>
-                          <option value="Dana">Dana</option>
-                          <option value="LinkAja">LinkAja</option>
-                        </select>
-                        <div className="flex-shrink-0">
-                          <EWalletBrandLogo name={ewalletProvider} />
-                        </div>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="ewallet-phone" className="text-xs font-semibold text-slate-600">Nomor Handphone / Akun</Label>
-                      <Input
-                        id="ewallet-phone"
-                        placeholder="Contoh: 081234567890"
-                        value={ewalletPhoneNumber}
-                        onChange={(e) => setEwalletPhoneNumber(e.target.value)}
-                        className="h-10 text-sm font-mono"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="ewallet-an" className="text-xs font-semibold text-slate-600">Atas Nama (A/N) Akun</Label>
-                    <Input
-                      id="ewallet-an"
-                      placeholder="Contoh: PT MCKUADRAT"
-                      value={ewalletAccountName}
-                      onChange={(e) => setEwalletAccountName(e.target.value)}
-                      className="h-10 text-sm"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* 3. QRIS METHOD */}
-            <div className="p-5 border rounded-2xl bg-slate-50/30 space-y-4 hover:border-slate-300 transition-colors">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="p-2 bg-red-50 text-red-600 rounded-lg">
-                    <Scale className="w-4 h-4" />
-                  </span>
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-800">3. Kode QRIS Pembayaran</h4>
-                    <p className="text-[11px] text-slate-400">Scan QR Code untuk pembayaran langsung</p>
-                  </div>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={qrisEnabled}
-                  onChange={(e) => setQrisEnabled(e.target.checked)}
-                  className="w-4 h-4 rounded text-primary focus:ring-primary cursor-pointer"
-                />
-              </div>
-
-              {qrisEnabled && (
-                <div className="space-y-4 pt-3 border-t border-slate-100">
-                  <Label className="text-xs font-semibold text-slate-600">Barcode QRIS Pembayaran (Gambar)</Label>
-                  <div className="flex flex-col gap-3">
-                    <label className="border-2 border-dashed border-slate-200 hover:border-primary/50 transition-colors rounded-lg p-6 flex flex-col items-center justify-center cursor-pointer bg-slate-50/50 hover:bg-slate-50 group">
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={handleQrisUpload}
-                        className="hidden"
-                      />
-                      <Upload className="w-8 h-8 text-slate-400 group-hover:text-primary transition-colors mb-2" />
-                      <span className="text-sm font-semibold text-slate-600 group-hover:text-primary transition-colors">
-                        {qrisFileName || "Pilih gambar barcode QRIS"}
-                      </span>
-                      <span className="text-xs text-slate-400 mt-1">Format gambar (PNG, JPG), maks. 2MB</span>
-                    </label>
-
-                    {qrisBase64 && (
-                      <div className="border rounded-lg p-3 bg-white flex flex-col gap-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-slate-500">Preview QRIS:</span>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setQrisBase64(null);
-                              setQrisFileName("");
-                            }}
-                            className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 h-7 text-xs"
-                          >
-                            Hapus QRIS
-                          </Button>
-                        </div>
-                        <img
-                          src={qrisBase64}
-                          alt="QRIS Preview"
-                          className="max-w-[200px] h-auto object-contain border rounded p-1 mx-auto bg-white"
-                        />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Save Button */}
-            <div className="pt-2 flex justify-end">
-              <Button
-                onClick={handleSaveSettings}
-                disabled={submittingSettings}
-                className="bg-primary hover:bg-primary/90 text-white font-semibold"
-              >
-                {submittingSettings ? "Menyimpan..." : "Simpan Pengaturan"}
-              </Button>
-            </div>
-          </div>
-        </Card>
-      )}
 
       {/* Modal 1: Update Token Balance */}
       <AppModal

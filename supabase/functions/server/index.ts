@@ -381,7 +381,12 @@ async function requireAuth(c: any, next: any) {
 
     if (userErr) return c.json(jsonFail(userErr.message), 500);
     if (!user) return c.json(jsonFail("Profil pengguna tidak ditemukan"), 401);
-    if (!user.is_active) return c.json(jsonFail("Akun Anda dinonaktifkan. Silakan hubungi admin."), 403);
+    const reqUrl = new URL(c.req.url);
+    const isSessionRoute = reqUrl.pathname.endsWith("/auth/session") || reqUrl.pathname.endsWith("/auth/logout");
+
+    if (!user.is_active && !isSessionRoute) {
+      return c.json(jsonFail("Akun Anda dinonaktifkan. Silakan hubungi admin."), 403);
+    }
 
     let org_id = user.org_id;
     let email = user.email;
@@ -483,9 +488,7 @@ app.post(`${API_PREFIX}/auth/login`, async (c) => {
       return c.json(jsonFail("Email/username atau password salah"), 401);
     }
 
-    if (!userProfile.is_active) {
-      return c.json(jsonFail("Akun Anda belum aktif. Silakan verifikasi email Anda terlebih dahulu."), 403);
-    }
+
 
     // Login via Supabase Auth
     const { data: authSession, error: authErr } = await supa.auth.signInWithPassword({
@@ -2171,7 +2174,33 @@ app.get(`${API_PREFIX}/billing/transactions`, requireAuth, async (c) => {
       description: r.description ?? (r.type === "topup" ? "Top-up token" : "Pemakaian token"),
     }));
 
-    return c.json(jsonOk(mapped));
+    // Fetch Midtrans records from key_info
+    const { data: midtransTxRows } = await supa
+      .from("key_info")
+      .select("key, value")
+      .like("key", "midtrans_tx:%");
+
+    const midtransTxs = (midtransTxRows ?? [])
+      .map((r: any) => r.value)
+      .filter((v: any) => v && v.org_id === user.org_id);
+
+    const mappedMidtrans = midtransTxs.map((tx: any) => ({
+      id: tx.id,
+      type: "midtrans",
+      amount: tx.amount_tokens,
+      amount_idr: tx.amount_idr,
+      date: tx.created_at,
+      description: `Top-up Midtrans (${tx.amount_tokens} token)`,
+      status: tx.status,
+      snap_token: tx.snap_token,
+      snap_url: tx.snap_url,
+    }));
+
+    // Merge both lists
+    const allTx = [...mapped, ...mappedMidtrans];
+    allTx.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return c.json(jsonOk(allTx));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -4564,6 +4593,112 @@ app.post(`${API_PREFIX}/billing/midtrans/create`, requireAuth, async (c) => {
   }
 });
 
+app.post(`${API_PREFIX}/billing/midtrans/webhook`, async (c) => {
+  try {
+    const body = await c.req.json();
+    console.log("Midtrans Webhook Received:", JSON.stringify(body));
+
+    const orderId = body.order_id;
+    const transactionStatus = body.transaction_status;
+    const fraudStatus = body.fraud_status;
+
+    if (!orderId) {
+      return c.json(jsonFail("Order ID tidak ditemukan"), 400);
+    }
+
+    const supa = sb();
+
+    // Retrieve pending transaction from key_info
+    const { data: kvRow, error: kvErr } = await supa
+      .from("key_info")
+      .select("key, value")
+      .eq("key", `midtrans_tx:${orderId}`)
+      .maybeSingle();
+
+    if (kvErr || !kvRow) {
+      console.warn("Midtrans transaction not found in key_info:", orderId);
+      return c.json(jsonFail("Transaksi tidak ditemukan"), 404);
+    }
+
+    const txObj = kvRow.value;
+    const orgId = txObj.org_id;
+    const tokens = Number(txObj.amount_tokens);
+    const amount = Number(txObj.amount_idr);
+
+    let nextStatus = "pending";
+    let shouldAddTokens = false;
+
+    if (transactionStatus === "capture") {
+      if (fraudStatus === "challenge") {
+        nextStatus = "challenge";
+      } else if (fraudStatus === "accept") {
+        nextStatus = "success";
+        shouldAddTokens = true;
+      }
+    } else if (transactionStatus === "settlement") {
+      nextStatus = "success";
+      shouldAddTokens = true;
+    } else if (["cancel", "deny", "expire"].includes(transactionStatus)) {
+      nextStatus = "failed";
+    } else if (transactionStatus === "pending") {
+      nextStatus = "pending";
+    }
+
+    // Check if status is updated
+    if (txObj.status !== nextStatus) {
+      txObj.status = nextStatus;
+      txObj.updated_at = new Date().toISOString();
+      txObj.raw_webhook_payload = body;
+
+      // Update inside key_info
+      await supa
+        .from("key_info")
+        .update({ value: txObj })
+        .eq("key", `midtrans_tx:${orderId}`);
+
+      if (shouldAddTokens) {
+        // 1. Get current balance
+        const { data: balance } = await supa
+          .from("billing_balance")
+          .select("tokens_balance")
+          .eq("org_id", orgId)
+          .maybeSingle();
+
+        const currentBalance = Number(balance?.tokens_balance ?? 0);
+        const newBalance = currentBalance + tokens;
+
+        // 2. Update balance
+        await supa
+          .from("billing_balance")
+          .upsert({
+            org_id: orgId,
+            tokens_balance: newBalance,
+            updated_at: new Date().toISOString(),
+          }, { onConflict: "org_id" });
+
+        // 3. Write into billing_transactions
+        await supa
+          .from("billing_transactions")
+          .insert({
+            org_id: orgId,
+            type: "topup",
+            tokens_delta: tokens,
+            amount_idr: amount,
+            description: `Top-up Midtrans berhasil (${tokens} token)`,
+            created_by: txObj.user_id,
+          });
+
+        console.log(`Successfully added ${tokens} tokens to org ${orgId} via Midtrans webhook.`);
+      }
+    }
+
+    return c.json(jsonOk("Webhook processed successfully"));
+  } catch (e) {
+    console.error("Midtrans Webhook Error:", e);
+    return c.json(jsonFail(e), 500);
+  }
+});
+
 // ===== MANUAL BILLING ENDPOINTS =====
 app.get(`${API_PREFIX}/billing/payment-settings`, requireAuth, async (c) => {
   try {
@@ -4736,17 +4871,61 @@ app.put(`${API_PREFIX}/superadmin/payment-settings`, requireAuth, requireSuperad
 app.get(`${API_PREFIX}/superadmin/manual-requests`, requireAuth, requireSuperadmin, async (c) => {
   try {
     const supa = sb();
-    const { data, error } = await supa
+
+    // 1. Fetch manual requests
+    const { data: manualData } = await supa
       .from("key_info")
       .select("key, value")
       .like("key", "payment_request:%");
 
-    if (error) return c.json(jsonFail(error.message), 500);
+    const manualRequests = (manualData ?? []).map((row: any) => {
+      const v = row.value;
+      return {
+        id: v.id,
+        org_name: v.org_name,
+        created_by_email: v.created_by_email,
+        amount_tokens: Number(v.amount_tokens),
+        amount_idr: Number(v.amount_idr),
+        payment_method: "Manual",
+        status: v.status, // pending, approved, rejected
+        created_at: v.created_at,
+        approved_at: v.approved_at,
+        approved_by: v.approved_by,
+      };
+    });
 
-    const requests = (data ?? []).map((row: any) => row.value);
-    requests.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    // 2. Fetch Midtrans transactions
+    const { data: midtransData } = await supa
+      .from("key_info")
+      .select("key, value")
+      .like("key", "midtrans_tx:%");
 
-    return c.json(jsonOk(requests));
+    const { data: orgs } = await supa
+      .from("orgs")
+      .select("id, name");
+    const orgMap = new Map((orgs ?? []).map((o: any) => [o.id, o.name]));
+
+    const midtransRequests = (midtransData ?? []).map((row: any) => {
+      const v = row.value;
+      return {
+        id: v.id,
+        org_name: orgMap.get(v.org_id) || "Organisasi Tidak Dikenal",
+        created_by_email: v.user_email,
+        amount_tokens: Number(v.amount_tokens),
+        amount_idr: Number(v.amount_idr),
+        payment_method: "Midtrans",
+        status: v.status === "success" ? "approved" : v.status === "failed" ? "rejected" : "pending",
+        created_at: v.created_at,
+        approved_at: v.updated_at || v.created_at,
+        approved_by: "System (Midtrans)",
+      };
+    });
+
+    // Merge both lists
+    const allPurchases = [...manualRequests, ...midtransRequests];
+    allPurchases.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    return c.json(jsonOk(allPurchases));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }

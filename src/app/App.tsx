@@ -18,6 +18,7 @@ import { RulesView } from "./components/rules-view";
 import { VerifiedView } from "./components/verified-view";
 import { api } from "./lib/api";
 import { toast } from "sonner";
+import { Lock } from "lucide-react";
 
 type DashboardStats = {
   totalMessages: number;
@@ -117,8 +118,12 @@ export default function App() {
           setActiveView("superadmin");
         }
 
-        await api.init();
-        await loadData(session.data);
+        const sData = session.data as any;
+        const userIsActive = sData?.is_active ?? (sData?.status ? sData.status === "active" : true);
+        if (userIsActive && session.data?.email?.toLowerCase() !== "mckuadratid@gmail.com") {
+          await api.init();
+          await loadData(session.data);
+        }
       } catch (error) {
         console.error("Error initializing app:", error);
       } finally {
@@ -250,8 +255,12 @@ export default function App() {
       if (result.data.user?.email?.toLowerCase() === "mckuadratid@gmail.com") {
         setActiveView("superadmin");
       }
-      await api.init();
-      await loadData(result.data.user);
+      const u = result.data.user as any;
+      const userIsActive = u?.is_active ?? (u?.status ? u.status === "active" : true);
+      if (userIsActive && result.data.user?.email?.toLowerCase() !== "mckuadratid@gmail.com") {
+        await api.init();
+        await loadData(result.data.user);
+      }
       return;
     }
 
@@ -282,8 +291,12 @@ export default function App() {
       if (result.data.user?.email?.toLowerCase() === "mckuadratid@gmail.com") {
         setActiveView("superadmin");
       }
-      await api.init();
-      await loadData(result.data.user);
+      const u = result.data.user as any;
+      const userIsActive = u?.is_active ?? (u?.status ? u.status === "active" : true);
+      if (userIsActive && result.data.user?.email?.toLowerCase() !== "mckuadratid@gmail.com") {
+        await api.init();
+        await loadData(result.data.user);
+      }
       return { emailVerificationRequired: false };
     }
 
@@ -497,6 +510,62 @@ export default function App() {
         onNavigateToLogin={() => setActiveView("login")} 
         onNavigateToRegister={() => setActiveView("register")} 
       />
+    );
+  }
+
+  const isSuperadmin = user?.email?.toLowerCase() === "mckuadratid@gmail.com";
+  const u = user as any;
+  const userIsActive = u?.is_active ?? (u?.status ? u.status === "active" : true);
+
+  if (isAuthenticated && !isSuperadmin && !userIsActive) {
+    const waActivationLink = "https://wa.me/6282312006987?text=Halo%20Admin%20SIPESA%2C%20saya%20ingin%20mengkonfirmasi%20pendaftaran%20akun%20SIPESA%20saya%20dengan%20email%20" + encodeURIComponent(user?.email || "");
+    return (
+      <div className="flex flex-col h-[100dvh] bg-slate-50 overflow-hidden">
+        <header className="h-16 border-b bg-white flex justify-between items-center px-6">
+          <div className="flex items-center gap-2">
+            <span className="text-xl font-black text-primary tracking-tight">SIPESA</span>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="text-sm font-semibold text-slate-600 hover:text-slate-900 border rounded-lg px-3 py-1.5 hover:bg-slate-50 transition-colors"
+          >
+            Keluar (Logout)
+          </button>
+        </header>
+
+        <main className="flex-1 flex items-center justify-center p-6">
+          <div className="max-w-md w-full bg-white border border-slate-200 shadow-xl rounded-2xl p-8 text-center space-y-6">
+            <div className="mx-auto w-16 h-16 bg-amber-50 rounded-2xl flex items-center justify-center text-amber-500 border border-amber-200">
+              <Lock className="w-8 h-8" />
+            </div>
+            
+            <div className="space-y-2">
+              <h2 className="text-xl font-bold text-slate-800">Akun Belum Disetujui</h2>
+              <p className="text-sm text-slate-500 leading-relaxed">
+                Pendaftaran Anda berhasil. Namun, dashboard Anda saat ini masih terkunci menunggu persetujuan (approval) oleh admin.
+              </p>
+            </div>
+
+            <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 text-xs text-left space-y-2 text-slate-600">
+              <p className="font-semibold text-slate-700">Detail Pendaftaran:</p>
+              <div>• Email: <span className="font-mono font-medium">{user?.email}</span></div>
+              <div>• Organisasi: <span className="font-medium">{user?.orgName || user?.org_name}</span></div>
+              <div>• Status: <span className="font-medium text-amber-600">Belum disetujui admin</span></div>
+            </div>
+
+            <div className="pt-2">
+              <a
+                href={waActivationLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full inline-flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-white font-bold py-3 px-6 rounded-xl transition-all shadow-md hover:shadow-lg"
+              >
+                Hubungi Admin (WhatsApp)
+              </a>
+            </div>
+          </div>
+        </main>
+      </div>
     );
   }
 
