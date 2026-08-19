@@ -469,6 +469,7 @@ export default function App() {
       setShowAddNumberModal(true);
     } else {
       setActiveView(view);
+      loadData();
     }
   };
 

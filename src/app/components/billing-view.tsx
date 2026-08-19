@@ -136,6 +136,7 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
   useEffect(() => {
     loadSettings();
     loadManualRequests();
+    onUpdate?.();
 
     // 1. Load Midtrans Snap JS dynamically
     const isProduction = import.meta.env.VITE_MIDTRANS_IS_PRODUCTION === "true";
