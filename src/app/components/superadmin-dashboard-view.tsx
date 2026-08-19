@@ -73,6 +73,7 @@ interface SignupItem {
   createdAt: string;
   isActive: boolean;
   isEmailConfirmed: boolean;
+  waNumber?: string | null;
   org: {
     id: string;
     name: string;
@@ -416,7 +417,7 @@ export function SuperadminDashboardView() {
         toast.success("Riwayat transaksi berhasil dihapus.");
         loadSuperadminRequests();
       } else {
-        const errorMsg = !res.success ? res.error : "Gagal memproses";
+        const errorMsg = (res as any).error || "Gagal memproses";
         toast.error("Gagal menghapus: " + errorMsg);
       }
     } catch (err) {
@@ -1301,7 +1302,7 @@ export function SuperadminDashboardView() {
                 />
               </div>
               <div>
-                <Label htmlFor="org-slug" className="text-slate-700">Slug Subdomain</Label>
+                <Label htmlFor="org-slug" className="text-slate-700">Slug</Label>
                 <Input
                   id="org-slug"
                   type="text"
@@ -1329,12 +1330,12 @@ export function SuperadminDashboardView() {
                   }}
                   className="w-full mt-2 p-2.5 border rounded-lg text-sm bg-white font-semibold text-slate-700 focus:outline-none"
                 >
-                  <option value="core">CORE (Platform Fee - Rp 250/token)</option>
-                  <option value="full">FULL (All-in Managed - Rp 1.250/token)</option>
+                  <option value="core">CORE</option>
+                  <option value="full">FULL</option>
                 </select>
               </div>
               <div>
-                <Label htmlFor="org-support" className="text-slate-700">Email Bantuan (Support Email)</Label>
+                <Label htmlFor="org-support" className="text-slate-700">Email</Label>
                 <Input
                   id="org-support"
                   type="email"
@@ -1348,7 +1349,7 @@ export function SuperadminDashboardView() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <Label htmlFor="org-delay" className="text-slate-700">Jeda Kirim Broadcast (ms)</Label>
+                <Label htmlFor="org-delay" className="text-slate-700">Jeda Kirim (ms)</Label>
                 <Input
                   id="org-delay"
                   type="number"
@@ -1359,7 +1360,7 @@ export function SuperadminDashboardView() {
                 />
               </div>
               <div>
-                <Label htmlFor="org-throttle" className="text-slate-700">Limit Kirim per Menit (Throttle)</Label>
+                <Label htmlFor="org-throttle" className="text-slate-700">Limit per Menit</Label>
                 <Input
                   id="org-throttle"
                   type="number"
@@ -1381,7 +1382,7 @@ export function SuperadminDashboardView() {
                 className="w-4 h-4 rounded text-primary focus:ring-primary"
               />
               <Label htmlFor="org-active" className="text-slate-700 text-sm font-semibold cursor-pointer">
-                Sekolah/Instansi Aktif (Izinkan Login & Pengiriman)
+                Izinkan Login & Pengiriman
               </Label>
             </div>
 
@@ -1400,9 +1401,6 @@ export function SuperadminDashboardView() {
                 />
                 <span className="text-xs text-slate-400 whitespace-nowrap">/ token</span>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1">
-                Contoh: 1500 = Rp 1.500 per token. Berlaku untuk billing tampilan user (tidak memotong token).
-              </p>
             </div>
           </div>
         )}
@@ -1447,7 +1445,7 @@ export function SuperadminDashboardView() {
                 />
               </div>
               <div>
-                <Label htmlFor="num-phone" className="text-slate-700">Nomor WA (Format Internasional)</Label>
+                <Label htmlFor="num-phone" className="text-slate-700">Nomor WABA</Label>
                 <Input
                   id="num-phone"
                   type="text"
@@ -1461,7 +1459,7 @@ export function SuperadminDashboardView() {
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="md:col-span-1">
-                <Label htmlFor="num-biz" className="text-slate-700">WhatsApp Business ID</Label>
+                <Label htmlFor="num-biz" className="text-slate-700">Business ID</Label>
                 <Input
                   id="num-biz"
                   type="text"
@@ -1591,7 +1589,7 @@ export function SuperadminDashboardView() {
                   <h2 className="text-xl font-bold text-slate-800">{selectedDetailOrg.name}</h2>
                   <p className="text-sm text-slate-400 font-mono mt-0.5">Subdomain: /{selectedDetailOrg.slug}</p>
                 </div>
-                 <Badge className={selectedDetailOrg.plan === "full" ? "bg-emerald-500 text-white" : "bg-blue-500 text-white"}>
+                <Badge className={selectedDetailOrg.plan === "full" ? "bg-emerald-500 text-white" : "bg-blue-500 text-white"}>
                   PLAN: {selectedDetailOrg.plan.toUpperCase()}
                 </Badge>
               </div>
