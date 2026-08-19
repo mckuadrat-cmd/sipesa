@@ -132,6 +132,55 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
   useEffect(() => {
     loadSettings();
     loadManualRequests();
+
+    // 1. Load Midtrans Snap JS dynamically
+    const isProduction = import.meta.env.VITE_MIDTRANS_IS_PRODUCTION === "true";
+    const snapUrl = isProduction
+      ? "https://app.midtrans.com/snap/snap.js"
+      : "https://app.sandbox.midtrans.com/snap/snap.js";
+    const clientKey = import.meta.env.VITE_MIDTRANS_CLIENT_KEY || "";
+
+    if (clientKey && !document.querySelector(`script[src="${snapUrl}"]`)) {
+      const script = document.createElement("script");
+      script.src = snapUrl;
+      script.setAttribute("data-client-key", clientKey);
+      script.async = true;
+      document.body.appendChild(script);
+    }
+
+    // 2. Detect redirect callback from Midtrans
+    const hash = window.location.hash;
+    if (hash.includes("?")) {
+      const queryStr = hash.split("?")[1];
+      const params = new URLSearchParams(queryStr);
+      const status = params.get("status") || params.get("transaction_status");
+      const orderId = params.get("order_id");
+
+      if (status && orderId) {
+        if (status === "success" || status === "settlement" || status === "capture") {
+          openNotice(
+            "success",
+            "Pembayaran Berhasil",
+            `Terima kasih! Pembayaran untuk transaksi #${orderId} telah berhasil diselesaikan. Saldo token Anda akan bertambah secara otomatis.`
+          );
+        } else if (status === "pending") {
+          openNotice(
+            "info",
+            "Pembayaran Pending",
+            `Transaksi #${orderId} sedang menunggu pembayaran. Harap selesaikan pembayaran Anda sesuai dengan petunjuk.`
+          );
+        } else if (status === "error" || status === "failure") {
+          openNotice(
+            "error",
+            "Pembayaran Gagal",
+            `Transaksi #${orderId} gagal atau dibatalkan. Silakan coba kembali.`
+          );
+        }
+        // Clean hash query params to prevent double notification on page refresh
+        window.location.hash = "#/billing";
+        onUpdate?.();
+      }
+    }
   }, []);
 
   const mergedHistory = useMemo(() => {
@@ -204,6 +253,68 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
     setReceiptBase64(null);
     setReceiptFileName("");
     setIsTopupModalOpen(true);
+  };
+
+  const handleMidtransPayment = async () => {
+    const tokens = parseInt(topupAmount, 10);
+    if (!tokens || tokens <= 0) {
+      openNotice("error", "Jumlah token tidak valid", "Masukkan jumlah token yang valid.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const amount = tokens * safe.tokenPrice;
+      const res = await api.createMidtransPayment(amount, tokens);
+      
+      if (res.success && res.data?.token) {
+        const { token } = res.data;
+        const snap = (window as any).snap;
+        
+        if (snap) {
+          snap.pay(token, {
+            onSuccess: function (result: any) {
+              openNotice(
+                "success",
+                "Pembayaran Berhasil",
+                "Terima kasih! Pembayaran Anda berhasil dan saldo token akan bertambah secara otomatis."
+              );
+              setTopupAmount("");
+              onUpdate?.();
+            },
+            onPending: function (result: any) {
+              openNotice(
+                "info",
+                "Pembayaran Tertunda",
+                "Silakan selesaikan pembayaran Anda sesuai instruksi pada layar pembayaran."
+              );
+              setTopupAmount("");
+              onUpdate?.();
+            },
+            onError: function (result: any) {
+              openNotice("error", "Pembayaran Gagal", "Terjadi kesalahan saat memproses pembayaran. Silakan coba lagi.");
+            },
+            onClose: function () {
+              console.log("Snap popup closed by user");
+            },
+          });
+        } else {
+          if (res.data.redirect_url) {
+            window.location.href = res.data.redirect_url;
+          } else {
+            openNotice("error", "Gagal Memuat Pembayaran", "Sistem pembayaran gagal dimuat. Silakan muat ulang halaman.");
+          }
+        }
+      } else {
+        const errorMsg = !res.success ? res.error : "Token transaksi tidak ditemukan.";
+        openNotice("error", "Gagal Memproses Pembayaran", errorMsg);
+      }
+    } catch (err) {
+      console.error(err);
+      openNotice("error", "Terjadi Kesalahan", "Gagal menghubungi server untuk memproses pembayaran otomatis.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSubmitManualPayment = async () => {
@@ -399,11 +510,11 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
 
             <div className="flex flex-col gap-3">
               <Button
-                onClick={handleProceedToPayment}
+                onClick={handleMidtransPayment}
                 disabled={loading}
-                className="bg-primary hover:bg-primary/90"
+                className="bg-primary hover:bg-primary/90 font-semibold"
               >
-                Beli Token / Top-up
+                Beli Token
               </Button>
             </div>
           </div>

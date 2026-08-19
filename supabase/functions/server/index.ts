@@ -4439,6 +4439,131 @@ app.post(`${API_PREFIX}/superadmin/users/:userId/resend-verification`, requireAu
   }
 });
 
+app.post(`${API_PREFIX}/billing/midtrans/create`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const { amount, tokens } = await c.req.json();
+
+    if (!tokens || tokens <= 0) {
+      return c.json(jsonFail("Jumlah token tidak valid"), 400);
+    }
+    if (!amount || amount <= 0) {
+      return c.json(jsonFail("Jumlah nominal pembayaran tidak valid"), 400);
+    }
+
+    const supa = sb();
+
+    const { data: balance, error: balErr } = await supa
+      .from("billing_balance")
+      .select("token_price_idr")
+      .eq("org_id", user.org_id)
+      .maybeSingle();
+
+    if (balErr) return c.json(jsonFail(balErr.message), 500);
+    const price = Number(balance?.token_price_idr ?? 1500);
+
+    const expectedAmount = tokens * price;
+    if (Math.abs(amount - expectedAmount) > 1000) {
+      return c.json(jsonFail(`Nominal pembayaran tidak sesuai. Diharapkan Rp ${expectedAmount}`), 400);
+    }
+
+    const serverKey = Deno.env.get("MIDTRANS_SERVER_KEY");
+    const isProduction = Deno.env.get("MIDTRANS_IS_PRODUCTION") === "true";
+    const webhookUrl = Deno.env.get("MIDTRANS_WEBHOOK_URL");
+
+    if (!serverKey) {
+      return c.json(jsonFail("Midtrans Server Key belum dikonfigurasi di server"), 500);
+    }
+
+    const authHeader = `Basic ${btoa(serverKey + ":")}`;
+
+    const midtransUrl = isProduction
+      ? "https://app.midtrans.com/snap/v1/transactions"
+      : "https://app.sandbox.midtrans.com/snap/v1/transactions";
+
+    const orderId = `SIPESA-TX-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    const payload = {
+      transaction_details: {
+        order_id: orderId,
+        gross_amount: amount,
+      },
+      item_details: [
+        {
+          id: `token-${tokens}`,
+          price: price,
+          quantity: tokens,
+          name: `${tokens} Saldo Token SIPESA`,
+        }
+      ],
+      customer_details: {
+        first_name: user.full_name || user.name,
+        email: user.email,
+      },
+      callbacks: {
+        finish: `https://sipesa.mckuadrat.com/#/billing`,
+      }
+    };
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Authorization": authHeader,
+    };
+
+    if (webhookUrl) {
+      headers["X-Override-Notification"] = webhookUrl;
+    }
+
+    const midtransRes = await fetch(midtransUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (!midtransRes.ok) {
+      const errText = await midtransRes.text();
+      console.error("Midtrans Snap API Error:", errText);
+      return c.json(jsonFail(`Gagal menghubungi Midtrans: ${errText}`), 500);
+    }
+
+    const midtransData = await midtransRes.json();
+
+    const txObj = {
+      id: orderId,
+      org_id: user.org_id,
+      user_id: user.id,
+      user_email: user.email,
+      amount_tokens: tokens,
+      amount_idr: amount,
+      status: "pending",
+      created_at: new Date().toISOString(),
+      snap_token: midtransData.token,
+      snap_url: midtransData.redirect_url,
+    };
+
+    const { error: saveErr } = await supa
+      .from("key_info")
+      .upsert({
+        key: `midtrans_tx:${orderId}`,
+        value: txObj,
+      });
+
+    if (saveErr) {
+      console.error("Gagal menyimpan data transaksi midtrans ke key_info:", saveErr);
+      return c.json(jsonFail(saveErr.message), 500);
+    }
+
+    return c.json(jsonOk({
+      token: midtransData.token,
+      redirect_url: midtransData.redirect_url,
+      order_id: orderId,
+    }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
 // ===== MANUAL BILLING ENDPOINTS =====
 app.get(`${API_PREFIX}/billing/payment-settings`, requireAuth, async (c) => {
   try {
