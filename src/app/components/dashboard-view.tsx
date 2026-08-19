@@ -75,7 +75,22 @@ export function DashboardView({
   const activeNumbers = safeNum(stats?.activeNumbers);
 
   const totalTokenBase = tokensUsed + tokensRemaining;
-  const usagePercent = totalTokenBase > 0 ? (tokensRemaining / totalTokenBase) * 100 : 80;
+  const usagePercent = totalTokenBase > 0 ? (tokensRemaining / totalTokenBase) * 100 : 0;
+
+  // Dynamic token status
+  let tokenStatusTitle = "Token Ready";
+  let tokenStatusDesc = "Sistem Kuota Aman";
+  let progressColor = "#22c55e"; // Green
+
+  if (tokensRemaining === 0) {
+    tokenStatusTitle = "Token Habis";
+    tokenStatusDesc = "Silakan top-up saldo";
+    progressColor = "#ef4444"; // Red
+  } else if (tokensRemaining < 100) {
+    tokenStatusTitle = "Token Hampir Habis";
+    tokenStatusDesc = "Kuota menipis";
+    progressColor = "#f97316"; // Orange/Amber
+  }
 
   // Calendar State
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -352,14 +367,14 @@ export function DashboardView({
                 </div>
                 <div className="flex items-center gap-2 text-xs text-slate-600">
                   <MapPin className="w-4 h-4 text-slate-400" />
-                  <span className="truncate">{localStorage.getItem(addressKey) || "Jl. Raya Sekolah No. 123, Jakarta"}</span>
+                  <span className="truncate">{localStorage.getItem(addressKey) || "Alamat belum diatur"}</span>
                 </div>
               </div>
             </div>
 
             <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                {/* Circular Progress (Green) */}
+                {/* Circular Progress */}
                 <div className="relative flex items-center justify-center">
                   <svg className="w-14 h-14 transform -rotate-90">
                     <circle cx="28" cy="28" r="23" stroke="#f1f5f9" strokeWidth="4" fill="transparent" />
@@ -367,7 +382,7 @@ export function DashboardView({
                       cx="28"
                       cy="28"
                       r="23"
-                      stroke="#22c55e"
+                      stroke={progressColor}
                       strokeWidth="4"
                       fill="transparent"
                       strokeDasharray={2 * Math.PI * 23}
@@ -379,8 +394,8 @@ export function DashboardView({
                   <span className="absolute text-xs font-bold text-slate-700">{Math.round(usagePercent)}%</span>
                 </div>
                 <div>
-                  <p className="text-xs font-bold text-slate-700">Token Ready</p>
-                  <p className="text-xs text-slate-400">Sistem Kuota Aman</p>
+                  <p className="text-xs font-bold text-slate-700">{tokenStatusTitle}</p>
+                  <p className="text-xs text-slate-400">{tokenStatusDesc}</p>
                 </div>
               </div>
 

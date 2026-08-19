@@ -176,7 +176,7 @@ export function SuperadminDashboardView() {
   // Edit Org form state
   const [orgName, setOrgName] = useState("");
   const [orgSlug, setOrgSlug] = useState("");
-  const [orgPlan, setOrgPlan] = useState("free");
+  const [orgPlan, setOrgPlan] = useState("core");
   const [orgIsActive, setOrgIsActive] = useState(true);
   const [orgSupportEmail, setOrgSupportEmail] = useState("");
   const [orgSendDelay, setOrgSendDelay] = useState(2000);
@@ -781,8 +781,8 @@ export function SuperadminDashboardView() {
                 className="p-2 border rounded-lg text-xs bg-white font-medium text-slate-700 focus:outline-none"
               >
                 <option value="all">Semua Plan</option>
-                <option value="free">Free</option>
-                <option value="pro">Pro</option>
+                <option value="core">Core</option>
+                <option value="full">Full</option>
               </select>
               <Button onClick={loadOrgs} variant="outline" className="h-9 px-4 text-xs font-semibold flex items-center gap-1">
                 Refresh Data
@@ -828,9 +828,9 @@ export function SuperadminDashboardView() {
                         {/* Plan & Status */}
                         <td className="px-5 py-4">
                           <div className="flex flex-col gap-1.5">
-                            <span className={`inline-flex items-center w-fit px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${org.plan === "pro"
-                              ? "bg-purple-100 text-purple-700"
-                              : "bg-slate-100 text-slate-700"
+                            <span className={`inline-flex items-center w-fit px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${org.plan === "full"
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-blue-100 text-blue-700"
                               }`}>
                               {org.plan}
                             </span>
@@ -1495,11 +1495,19 @@ export function SuperadminDashboardView() {
                 <select
                   id="org-plan"
                   value={orgPlan}
-                  onChange={(e) => setOrgPlan(e.target.value)}
+                  onChange={(e) => {
+                    const nextPlan = e.target.value;
+                    setOrgPlan(nextPlan);
+                    if (nextPlan === "full") {
+                      setOrgTokenPrice(1250);
+                    } else if (nextPlan === "core") {
+                      setOrgTokenPrice(250);
+                    }
+                  }}
                   className="w-full mt-2 p-2.5 border rounded-lg text-sm bg-white font-semibold text-slate-700 focus:outline-none"
                 >
-                  <option value="free">FREE</option>
-                  <option value="pro">PRO</option>
+                  <option value="core">CORE (Platform Fee - Rp 250/token)</option>
+                  <option value="full">FULL (All-in Managed - Rp 1.250/token)</option>
                 </select>
               </div>
               <div>
@@ -1760,7 +1768,7 @@ export function SuperadminDashboardView() {
                   <h2 className="text-xl font-bold text-slate-800">{selectedDetailOrg.name}</h2>
                   <p className="text-sm text-slate-400 font-mono mt-0.5">Subdomain: /{selectedDetailOrg.slug}</p>
                 </div>
-                <Badge className={selectedDetailOrg.plan === "pro" ? "bg-purple-500 text-white animate-pulse" : "bg-slate-500 text-white"}>
+                 <Badge className={selectedDetailOrg.plan === "full" ? "bg-emerald-500 text-white" : "bg-blue-500 text-white"}>
                   PLAN: {selectedDetailOrg.plan.toUpperCase()}
                 </Badge>
               </div>

@@ -16,7 +16,7 @@ BEGIN
   -- 1. Create a new organization (org) for the registrant
   new_org_name := coalesce(new.raw_user_meta_data->>'org_name', 'Instansi Baru');
   INSERT INTO public.orgs (name, is_active, plan)
-  VALUES (new_org_name, false, 'pro')
+  VALUES (new_org_name, false, 'core')
   RETURNING id INTO new_org_id;
 
   -- 2. Create the user profile in app_users
@@ -34,7 +34,7 @@ BEGIN
 
   -- 3. Initialize billing balance for the new organization
   INSERT INTO public.billing_balance (org_id, tokens_balance, token_price_idr, updated_at)
-  VALUES (new_org_id, 0, 1500, now());
+  VALUES (new_org_id, 0, 250, now());
 
   -- NOTE: We NO LONGER insert into public.wa_numbers here!
   -- WABA numbers must be added via "Tambah Nomor" button in the dashboard,

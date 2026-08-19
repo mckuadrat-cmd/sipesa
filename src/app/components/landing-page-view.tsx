@@ -23,7 +23,8 @@ interface LandingPageViewProps {
 export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: LandingPageViewProps) {
   // Calculator state
   const [messageCount, setMessageCount] = useState<number>(5000);
-  const tokenPrice = 1500; // Rp 1.500 per message/token
+  const [selectedPlan, setSelectedPlan] = useState<"core" | "full">("full");
+  const tokenPrice = selectedPlan === "full" ? 1250 : 250;
   const monthlyCompetitorAvg = 450000; // Rp 450.000 / month subscription
 
   // FAQ state
@@ -47,7 +48,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
     },
     {
       q: "Bagaimana cara kerja skema 'Tanpa Biaya Bulanan'?",
-      a: "Di SIPESA, Anda tidak dibebani biaya sewa dashboard bulanan atau tahunan. Anda cukup melakukan top-up token (saldo). 1 token setara dengan 1 pesan terkirim. Saldo Anda hanya akan terpotong saat Anda benar-benar mengirim pesan. Saldo token tidak memiliki masa kedaluwarsa."
+      a: "Di SIPESA, Anda tidak dibebani biaya sewa dashboard bulanan/tahunan. Kami menawarkan dua paket fleksibel: Paket CORE (Rp 250 / token) untuk biaya platform jika Anda melakukan setup Meta WABA mandiri, dan Paket FULL (Rp 1.250 / token) untuk layanan terkelola penuh (all-in managed). Saldo token Anda tidak memiliki masa kedaluwarsa dan hanya terpotong saat mengirim pesan."
     },
     {
       q: "Apakah aman dari risiko blokir WhatsApp?",
@@ -396,69 +397,155 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
             </p>
           </div>
 
-          <div className="grid lg:grid-cols-12 gap-8 items-stretch mt-12">
+          <div className="grid lg:grid-cols-3 gap-8 items-stretch mt-12">
 
-            {/* Pricing Model Info */}
-            <div className="lg:col-span-5 flex flex-col justify-between bg-[#3C405B] text-white rounded-3xl p-8 lg:p-10 shadow-xl relative overflow-hidden">
-              <div className="absolute top-0 right-0 -mt-8 -mr-8 w-32 h-32 bg-white/5 rounded-full filter blur-xl"></div>
+            {/* CORE Plan */}
+            <div className="flex flex-col justify-between bg-slate-50 border border-slate-200/60 rounded-3xl p-8 shadow-md relative overflow-hidden text-left">
+              <div className="space-y-6">
+                <span className="inline-block text-xs font-bold bg-blue-100 text-blue-700 px-3 py-1.5 rounded-full uppercase tracking-wider">
+                  Paket CORE
+                </span>
+                <div>
+                  <h3 className="text-3xl font-extrabold text-[#3C405B]">Rp 250</h3>
+                  <p className="text-xs text-slate-500 font-semibold mt-1">/ pesan terkirim (token)</p>
+                </div>
 
-              <div className="space-y-6 text-left relative z-10">
-                <span className="text-xs font-bold bg-[#DF7A5E] text-white px-3 py-1.5 rounded-full uppercase tracking-wider">Skema Tarif</span>
-                <h3 className="text-3xl font-extrabold">Rp 1.500 <span className="text-sm font-normal text-white/70">/ pesan (token)</span></h3>
+                <p className="text-slate-600 text-sm leading-relaxed">
+                  Layanan biaya platform saja. Sangat cocok jika Anda memiliki tim teknis yang mengelola setup akun Meta WABA secara mandiri.
+                </p>
+
+                <div className="space-y-4 pt-4 border-t border-slate-100 text-sm text-slate-700">
+                  <div className="flex items-center gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
+                    <span>Meta WABA Setup Mandiri</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
+                    <span>Akses Seluruh Fitur Dashboard</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
+                    <span>Masa Aktif Saldo Selamanya</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
+                    <span>Biaya Hanya Per Pesan Sukses</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-8">
+                <a
+                  href={waAdminLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full inline-flex items-center justify-center gap-2 px-5 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl shadow-md transition-all duration-200 cursor-pointer text-sm"
+                >
+                  <MessageCircle className="w-4 h-4 fill-current" />
+                  Hubungi Admin CORE
+                </a>
+              </div>
+            </div>
+
+            {/* FULL Plan */}
+            <div className="flex flex-col justify-between bg-[#3C405B] text-white rounded-3xl p-8 shadow-xl relative overflow-hidden text-left border-2 border-emerald-400">
+              <div className="absolute top-0 right-0 -mt-6 -mr-6 w-24 h-24 bg-white/5 rounded-full filter blur-lg"></div>
+              
+              <div className="space-y-6">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-bold bg-[#DF7A5E] text-white px-3 py-1.5 rounded-full uppercase tracking-wider">
+                    Paket FULL
+                  </span>
+                  <span className="text-[10px] font-extrabold bg-emerald-500 text-white px-2 py-1 rounded-md uppercase tracking-wider animate-pulse">
+                    Populer / Managed
+                  </span>
+                </div>
+                <div>
+                  <h3 className="text-3xl font-extrabold">Rp 1.250</h3>
+                  <p className="text-xs text-white/70 font-semibold mt-1">/ pesan terkirim (token)</p>
+                </div>
 
                 <p className="text-white/80 text-sm leading-relaxed">
-                  Seluruh fitur premium SIPESA dapat diakses penuh secara gratis. Anda hanya membeli saldo pesan (token).
+                  Layanan All-in Managed. Tim SIPESA menangani seluruh setup pendaftaran Meta WABA, verifikasi, hingga persetujuan template Meta. Anda terima beres!
                 </p>
 
                 <div className="space-y-4 pt-4 border-t border-white/10 text-sm">
                   <div className="flex items-center gap-3">
                     <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                    <span>Tanpa Biaya Registrasi / Setup</span>
+                    <span>Setup & Pendaftaran WABA Penuh</span>
                   </div>
                   <div className="flex items-center gap-3">
                     <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                    <span>Masa Aktif Saldo Token Selamanya</span>
+                    <span>Pembuatan & Approval Template dibantu</span>
                   </div>
                   <div className="flex items-center gap-3">
                     <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                    <span>Akses Seluruh Fitur Tanpa Dibatasi</span>
+                    <span>Support Prioritas via WhatsApp</span>
                   </div>
                   <div className="flex items-center gap-3">
                     <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                    <span>Dukungan Teknis Integrasi Meta Gratis</span>
+                    <span>Masa Aktif Saldo Selamanya</span>
                   </div>
                 </div>
               </div>
 
-              <div className="pt-8 relative z-10">
+              <div className="pt-8">
                 <a
                   href={waAdminLink}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 bg-[#DF7A5E] hover:bg-[#DF7A5E]/90 text-white font-bold rounded-2xl shadow-lg transition-all duration-200 cursor-pointer"
+                  className="w-full inline-flex items-center justify-center gap-2 px-5 py-3.5 bg-[#DF7A5E] hover:bg-[#DF7A5E]/90 text-white font-bold rounded-2xl shadow-lg transition-all duration-200 cursor-pointer text-sm"
                 >
-                  <MessageCircle className="w-5 h-5 fill-current" />
-                  Hubungi Admin untuk Pemesanan
+                  <MessageCircle className="w-4 h-4 fill-current" />
+                  Hubungi Admin FULL
                 </a>
               </div>
             </div>
 
             {/* Interactive Calculator */}
-            <div className="lg:col-span-7 bg-slate-50 border border-slate-100 rounded-3xl p-8 lg:p-10 shadow-md flex flex-col justify-between">
-              <div className="space-y-6 text-left">
-                <div className="flex items-center gap-3">
-                  <span className="text-xl font-bold text-[#3C405B]">Kalkulator Simulasi Penghematan</span>
+            <div className="bg-slate-50 border border-slate-200/60 rounded-3xl p-8 shadow-md flex flex-col justify-between text-left">
+              <div className="space-y-6">
+                <div className="flex items-center gap-2">
+                  <Calculator className="w-5 h-5 text-[#3C405B]" />
+                  <span className="text-lg font-bold text-[#3C405B]">Simulasi Penghematan</span>
                 </div>
 
-                <p className="text-sm text-slate-600">
-                  Geser slider di bawah untuk mensimulasikan estimasi volume pesan bulanan Anda dan bandingkan biayanya dengan CRM berlangganan konvensional.
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Bandingkan efisiensi biaya SIPESA dengan sistem berlangganan bulanan di pasar.
                 </p>
 
+                {/* Plan Toggle in Calculator */}
+                <div className="p-1 bg-slate-200/80 rounded-xl grid grid-cols-2 text-center text-xs font-semibold">
+                  <button
+                    onClick={() => setSelectedPlan("core")}
+                    className={`py-2 rounded-lg transition-all ${
+                      selectedPlan === "core"
+                        ? "bg-white text-[#3C405B] shadow-sm"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    Paket CORE (Rp 250)
+                  </button>
+                  <button
+                    onClick={() => setSelectedPlan("full")}
+                    className={`py-2 rounded-lg transition-all ${
+                      selectedPlan === "full"
+                        ? "bg-white text-[#3C405B] shadow-sm"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    Paket FULL (Rp 1.250)
+                  </button>
+                </div>
+
                 {/* Slider */}
-                <div className="space-y-4 pt-4">
+                <div className="space-y-3 pt-2">
                   <div className="flex justify-between items-center">
-                    <span className="text-sm font-semibold text-slate-700">Volume Pesan Bulanan:</span>
-                    <span className="text-2xl font-black text-[#DF7A5E]">{messageCount.toLocaleString("id-ID")} <span className="text-xs font-normal text-slate-500">pesan</span></span>
+                    <span className="text-xs font-semibold text-slate-600">Pesan / Bulan:</span>
+                    <span className="text-xl font-black text-[#DF7A5E]">
+                      {messageCount.toLocaleString("id-ID")}{" "}
+                      <span className="text-xs font-normal text-slate-500">pesan</span>
+                    </span>
                   </div>
                   <input
                     type="range"
@@ -469,7 +556,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                     onChange={(e) => setMessageCount(Number(e.target.value))}
                     className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-[#DF7A5E]"
                   />
-                  <div className="flex justify-between text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  <div className="flex justify-between text-[9px] text-slate-400 font-bold uppercase tracking-wider">
                     <span>500</span>
                     <span>10.000</span>
                     <span>25.000</span>
@@ -478,35 +565,31 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                 </div>
 
                 {/* Cost Comparison */}
-                <div className="grid sm:grid-cols-2 gap-4 pt-6 border-t border-slate-200/80">
-                  <div className="p-4 bg-white rounded-2xl border border-slate-100">
-                    <div className="text-xs text-slate-500 font-semibold mb-1">Estimasi Biaya SIPESA</div>
-                    <div className="text-xl font-black text-[#3C405B]">Rp {formattedSipesaCost}</div>
-                    <div className="text-[10px] text-slate-400 mt-1">Hanya bayar sesuai pesan terkirim</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-4 border-t border-slate-200">
+                  <div className="p-3 bg-white rounded-xl border border-slate-100">
+                    <div className="text-[10px] text-slate-500 font-semibold mb-0.5">Biaya SIPESA</div>
+                    <div className="text-base font-black text-[#3C405B]">Rp {formattedSipesaCost}</div>
+                    <div className="text-[9px] text-slate-400 leading-tight">Hanya untuk pesan sukses</div>
                   </div>
 
-                  <div className="p-4 bg-white rounded-2xl border border-slate-100">
-                    <div className="text-xs text-slate-500 font-semibold mb-1">Rata-Rata Langganan Bulanan</div>
-                    <div className="text-xl font-black text-slate-400">Rp {formattedCompetitorCost}</div>
-                    <div className="text-[10px] text-slate-400 mt-1">Harus bayar tiap bulan, dipakai atau tidak</div>
+                  <div className="p-3 bg-white rounded-xl border border-slate-100">
+                    <div className="text-[10px] text-slate-500 font-semibold mb-0.5">Langganan Lain</div>
+                    <div className="text-base font-black text-slate-400">Rp {formattedCompetitorCost}</div>
+                    <div className="text-[9px] text-slate-400 leading-tight">Tetap dibayar meski sepi</div>
                   </div>
                 </div>
 
                 {/* Annual Savings Result */}
-                <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-2xl flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600 shrink-0">
-                    <Zap className="w-5 h-5 fill-current" />
-                  </div>
-                  <div className="text-left">
-                    <div className="text-[10px] font-bold uppercase text-emerald-700 tracking-wider">Estimasi Efisiensi</div>
-                    <div className="text-sm text-slate-700 leading-normal">
-                      Cocok untuk instansi yang tidak rutin mengirim pesan bulanan. Anda menghemat hingga <strong className="text-emerald-700 font-bold">Rp {formattedSaving}</strong> per tahun dibanding sistem berlangganan tetap!
-                    </div>
+                <div className="p-3.5 bg-emerald-50 border border-emerald-100 rounded-xl flex items-start gap-2.5">
+                  <Zap className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div className="text-left text-xs leading-normal">
+                    <span className="text-slate-700">
+                      Dengan model pay-per-message SIPESA, Anda dapat menghemat hingga{" "}
+                      <strong className="text-emerald-700 font-bold">Rp {formattedSaving}</strong> per tahun dibanding sistem iuran berlangganan bulanan!
+                    </span>
                   </div>
                 </div>
-
               </div>
-              <div></div>
             </div>
 
           </div>
