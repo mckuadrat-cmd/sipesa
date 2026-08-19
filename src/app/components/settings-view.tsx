@@ -4,15 +4,15 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Switch } from "./ui/switch";
-import { 
-  Settings as SettingsIcon, 
-  Save, 
-  UserRound, 
-  RefreshCw, 
-  Camera, 
-  Trash2, 
-  X, 
-  Lock 
+import {
+  Settings as SettingsIcon,
+  Save,
+  UserRound,
+  RefreshCw,
+  Camera,
+  Trash2,
+  X,
+  Lock
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
@@ -189,7 +189,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       const addressKey = org.id ? `sipesa_address_${org.id}` : "sipesa_address";
       localStorage.setItem(addressKey, address);
       toast.success("Profil dan data instansi berhasil disimpan");
-      
+
       if (onUpdateUser) {
         await onUpdateUser();
       }
@@ -289,7 +289,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       localStorage.setItem(avatarKey, base64);
       setAvatar(base64);
       window.dispatchEvent(new Event("sipesa-avatar-updated"));
-      
+
       try {
         await api.updateProfile({
           fullName: profile.fullName,
@@ -353,236 +353,236 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         {/* SECTION 1: Profil User */}
         <Card className="p-6 border border-slate-100 rounded-2xl shadow-sm bg-white">
-        <div className="flex items-center gap-3 mb-6">
-          <UserRound className="w-5 h-5 text-primary" />
-          <h3 className="font-bold text-slate-800">Profil User</h3>
-        </div>
+          <div className="flex items-center gap-3 mb-6">
+            <UserRound className="w-5 h-5 text-primary" />
+            <h3 className="font-bold text-slate-800">Profil User</h3>
+          </div>
 
-        <div className="space-y-6">
-          {/* Avatar Upload Container */}
-          <div className="flex flex-col sm:flex-row items-center gap-6 pb-6 border-b border-slate-100">
-            <div className="w-20 h-20 rounded-full border bg-slate-50 flex items-center justify-center text-xl font-bold text-slate-700 overflow-hidden relative shadow-inner">
-              {avatar ? (
-                <img src={avatar} alt="Profile" className="w-full h-full object-cover" />
-              ) : profile.fullName ? (
-                profile.fullName.slice(0, 2).toUpperCase()
-              ) : (
-                <UserRound className="w-8 h-8 text-slate-400" />
-              )}
-            </div>
-
-            <div className="flex flex-col items-center sm:items-start gap-2">
-              <span className="text-sm font-semibold text-slate-700">Foto Profil</span>
-              <div className="flex items-center gap-2">
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  onChange={handleAvatarChange} 
-                  accept="image/*" 
-                  className="hidden" 
-                />
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-1.5"
-                >
-                  <Camera className="w-4 h-4" />
-                  Ubah Foto
-                </Button>
-                {avatar && (
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    onClick={handleAvatarDelete}
-                    className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-100"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
+          <div className="space-y-6">
+            {/* Avatar Upload Container */}
+            <div className="flex flex-col sm:flex-row items-center gap-6 pb-6 border-b border-slate-100">
+              <div className="w-20 h-20 rounded-full border bg-slate-50 flex items-center justify-center text-xl font-bold text-slate-700 overflow-hidden relative shadow-inner">
+                {avatar ? (
+                  <img src={avatar} alt="Profile" className="w-full h-full object-cover" />
+                ) : profile.fullName ? (
+                  profile.fullName.slice(0, 2).toUpperCase()
+                ) : (
+                  <UserRound className="w-8 h-8 text-slate-400" />
                 )}
               </div>
-              <span className="text-xs text-slate-400">Rekomendasi rasio 1:1, maks 2MB.</span>
-            </div>
-          </div>
 
-          <div className="grid md:grid-cols-2 gap-5">
-            <div>
-              <Label className="text-slate-700 font-medium">Nama Lengkap</Label>
-              <Input
-                className="mt-2"
-                placeholder="Masukkan nama lengkap"
-                value={profile.fullName}
-                onChange={(e) => setProfile((p) => ({ ...p, fullName: e.target.value }))}
-              />
-            </div>
-
-            <div>
-              <Label className="text-slate-700 font-medium">Nama Instansi</Label>
-              <Input
-                className="mt-2"
-                placeholder="Masukkan nama instansi/sekolah"
-                value={org.name}
-                onChange={(e) => setOrg((o) => ({ ...o, name: e.target.value }))}
-              />
-            </div>
-
-            <div>
-              <Label className="text-slate-700 font-medium">Email</Label>
-              <Input
-                className="mt-2"
-                type="email"
-                placeholder="Masukkan email aktif"
-                value={profile.email}
-                onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
-              />
-            </div>
-
-            <div>
-              <Label className="text-slate-700 font-medium">Nomor WhatsApp Kontak</Label>
-              <Input
-                className="mt-2"
-                type="text"
-                placeholder="Contoh: 081234567890"
-                value={profile.waNumber || ""}
-                onChange={(e) => setProfile((p) => ({ ...p, waNumber: e.target.value }))}
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                Nomor WhatsApp pribadi atau kontak yang dapat dihubungi oleh admin.
-              </p>
-            </div>
-
-            <div>
-              <Label className="text-slate-700 font-medium">Nomor WABA Terdaftar</Label>
-              <Input 
-                className="mt-2 bg-slate-50/80" 
-                value={registeredWaNumber} 
-                disabled 
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                Nomor WhatsApp Business API resmi yang aktif di dashboard.
-              </p>
-            </div>
-
-            <div>
-              <Label className="text-slate-700 font-medium">Username</Label>
-              <Input
-                className="mt-2"
-                placeholder="Username"
-                value={profile.username}
-                onChange={(e) => setProfile((p) => ({ ...p, username: e.target.value.toLowerCase() }))}
-              />
-            </div>
-
-            <div>
-              <Label className="text-slate-700 font-medium">Password</Label>
-              <div className="flex gap-2 mt-2">
-                <Input 
-                  type="password" 
-                  value="xxxxxxxx" 
-                  disabled 
-                  className="bg-slate-50/80 flex-1" 
-                />
-                <Button 
-                  variant="outline" 
-                  onClick={() => setShowPasswordModal(true)}
-                  className="flex items-center gap-1.5 shrink-0"
-                >
-                  <Lock className="w-4 h-4" />
-                  Ganti Password
-                </Button>
+              <div className="flex flex-col items-center sm:items-start gap-2">
+                <span className="text-sm font-semibold text-slate-700">Foto Profil</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleAvatarChange}
+                    accept="image/*"
+                    className="hidden"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-1.5"
+                  >
+                    <Camera className="w-4 h-4" />
+                    Ubah Foto
+                  </Button>
+                  {avatar && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleAvatarDelete}
+                      className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-100"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  )}
+                </div>
+                <span className="text-xs text-slate-400">Rekomendasi rasio 1:1, maks 2MB.</span>
               </div>
             </div>
 
-            <div className="md:col-span-2">
-              <Label className="text-slate-700 font-medium">Alamat</Label>
+            <div className="grid md:grid-cols-2 gap-5">
+              <div>
+                <Label className="text-slate-700 font-medium">Nama Lengkap</Label>
+                <Input
+                  className="mt-2"
+                  placeholder="Masukkan nama lengkap"
+                  value={profile.fullName}
+                  onChange={(e) => setProfile((p) => ({ ...p, fullName: e.target.value }))}
+                />
+              </div>
+
+              <div>
+                <Label className="text-slate-700 font-medium">Nama Instansi</Label>
+                <Input
+                  className="mt-2"
+                  placeholder="Masukkan nama instansi/sekolah"
+                  value={org.name}
+                  onChange={(e) => setOrg((o) => ({ ...o, name: e.target.value }))}
+                />
+              </div>
+
+              <div>
+                <Label className="text-slate-700 font-medium">Email</Label>
+                <Input
+                  className="mt-2"
+                  type="email"
+                  placeholder="Masukkan email aktif"
+                  value={profile.email}
+                  onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
+                />
+              </div>
+
+              <div>
+                <Label className="text-slate-700 font-medium">Nomor WhatsApp Kontak</Label>
+                <Input
+                  className="mt-2"
+                  type="text"
+                  placeholder="Contoh: 081234567890"
+                  value={profile.waNumber || ""}
+                  onChange={(e) => setProfile((p) => ({ ...p, waNumber: e.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Nomor WhatsApp atau kontak aktif.
+                </p>
+              </div>
+
+              <div>
+                <Label className="text-slate-700 font-medium">Nomor WABA Terdaftar</Label>
+                <Input
+                  className="mt-2 bg-slate-50/80"
+                  value={registeredWaNumber}
+                  disabled
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Nomor WhatsApp Business API resmi.
+                </p>
+              </div>
+
+              <div>
+                <Label className="text-slate-700 font-medium">Username</Label>
+                <Input
+                  className="mt-2"
+                  placeholder="Username"
+                  value={profile.username}
+                  onChange={(e) => setProfile((p) => ({ ...p, username: e.target.value.toLowerCase() }))}
+                />
+              </div>
+
+              <div>
+                <Label className="text-slate-700 font-medium">Password</Label>
+                <div className="flex gap-2 mt-2">
+                  <Input
+                    type="password"
+                    value="xxxxxxxx"
+                    disabled
+                    className="bg-slate-50/80 flex-1"
+                  />
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowPasswordModal(true)}
+                    className="flex items-center gap-1.5 shrink-0"
+                  >
+                    <Lock className="w-4 h-4" />
+                    Ganti Password
+                  </Button>
+                </div>
+              </div>
+
+              <div className="md:col-span-2">
+                <Label className="text-slate-700 font-medium">Alamat</Label>
+                <textarea
+                  className="w-full mt-2 p-3 border rounded-lg min-h-[80px] text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary border-slate-200"
+                  placeholder="Masukkan alamat lengkap instansi/sekolah"
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100 flex justify-end">
+              <Button onClick={handleSaveProfile} disabled={saving} className="bg-primary hover:bg-primary/95 text-white">
+                <Save className="w-4 h-4 mr-2" />
+                {saving ? "Menyimpan..." : "Simpan Profil"}
+              </Button>
+            </div>
+          </div>
+        </Card>
+
+        {/* SECTION 2: Pengaturan Pengiriman */}
+        <Card className="p-6 border border-slate-100 rounded-2xl shadow-sm">
+          <div className="flex items-center gap-3 mb-6">
+            <SettingsIcon className="w-5 h-5 text-primary" />
+            <h3 className="font-bold text-slate-800">Pengaturan Pengiriman</h3>
+          </div>
+
+          <div className="space-y-6">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label className="text-slate-700 font-medium">Auto Reply Dalam 24 Jam</Label>
+                <p className="text-xs text-slate-400 mt-1">
+                  Balasan otomatis hanya aman dipakai dalam customer service window 24 jam
+                </p>
+              </div>
+              <Switch
+                checked={org.autoReplyEnabled}
+                onCheckedChange={(val) => setOrg((o) => ({ ...o, autoReplyEnabled: val }))}
+              />
+            </div>
+
+            <div>
+              <Label className="text-slate-700 font-medium">Pesan Auto Reply</Label>
               <textarea
-                className="w-full mt-2 p-3 border rounded-lg min-h-[80px] text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary border-slate-200"
-                placeholder="Masukkan alamat lengkap instansi/sekolah"
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
+                className="w-full mt-2 p-3 border rounded-lg min-h-[110px] text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                value={org.autoReplyMessage}
+                onChange={(e) => setOrg((o) => ({ ...o, autoReplyMessage: e.target.value }))}
               />
             </div>
-          </div>
 
-          <div className="pt-4 border-t border-slate-100 flex justify-end">
-            <Button onClick={handleSaveProfile} disabled={saving} className="bg-primary hover:bg-primary/95 text-white">
-              <Save className="w-4 h-4 mr-2" />
-              {saving ? "Menyimpan..." : "Simpan Profil"}
-            </Button>
-          </div>
-        </div>
-      </Card>
-
-      {/* SECTION 2: Pengaturan Pengiriman */}
-      <Card className="p-6 border border-slate-100 rounded-2xl shadow-sm">
-        <div className="flex items-center gap-3 mb-6">
-          <SettingsIcon className="w-5 h-5 text-primary" />
-          <h3 className="font-bold text-slate-800">Pengaturan Pengiriman</h3>
-        </div>
-
-        <div className="space-y-6">
-          <div className="flex items-center justify-between gap-4">
             <div>
-              <Label className="text-slate-700 font-medium">Auto Reply Dalam 24 Jam</Label>
-              <p className="text-xs text-slate-400 mt-1">
-                Balasan otomatis hanya aman dipakai dalam customer service window 24 jam
-              </p>
-            </div>
-            <Switch
-              checked={org.autoReplyEnabled}
-              onCheckedChange={(val) => setOrg((o) => ({ ...o, autoReplyEnabled: val }))}
-            />
-          </div>
-
-          <div>
-            <Label className="text-slate-700 font-medium">Pesan Auto Reply</Label>
-            <textarea
-              className="w-full mt-2 p-3 border rounded-lg min-h-[110px] text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-              value={org.autoReplyMessage}
-              onChange={(e) => setOrg((o) => ({ ...o, autoReplyMessage: e.target.value }))}
-            />
-          </div>
-
-          <div>
-            <Label className="text-slate-700 font-medium">Template Fallback di Luar 24 Jam</Label>
-            <Input
-              className="mt-2"
-              placeholder="Nama template approved di Meta"
-              value={org.fallbackTemplateName}
-              onChange={(e) => setOrg((o) => ({ ...o, fallbackTemplateName: e.target.value }))}
-            />
-          </div>
-
-          <div className="grid md:grid-cols-2 gap-4">
-            <div>
-              <Label className="text-slate-700 font-medium">Jeda Antar Pesan (ms)</Label>
+              <Label className="text-slate-700 font-medium">Template Fallback di Luar 24 Jam</Label>
               <Input
-                type="number"
                 className="mt-2"
-                value={org.sendDelayMs}
-                onChange={(e) => setOrg((o) => ({ ...o, sendDelayMs: Number(e.target.value || 0) }))}
+                placeholder="Nama template approved di Meta"
+                value={org.fallbackTemplateName}
+                onChange={(e) => setOrg((o) => ({ ...o, fallbackTemplateName: e.target.value }))}
               />
             </div>
 
-            <div>
-              <Label className="text-slate-700 font-medium">Max Pesan per Menit</Label>
-              <Input
-                type="number"
-                className="mt-2"
-                value={org.throttlePerMin}
-                onChange={(e) => setOrg((o) => ({ ...o, throttlePerMin: Number(e.target.value || 1) }))}
-              />
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <Label className="text-slate-700 font-medium">Jeda Antar Pesan (ms)</Label>
+                <Input
+                  type="number"
+                  className="mt-2"
+                  value={org.sendDelayMs}
+                  onChange={(e) => setOrg((o) => ({ ...o, sendDelayMs: Number(e.target.value || 0) }))}
+                />
+              </div>
+
+              <div>
+                <Label className="text-slate-700 font-medium">Max Pesan per Menit</Label>
+                <Input
+                  type="number"
+                  className="mt-2"
+                  value={org.throttlePerMin}
+                  onChange={(e) => setOrg((o) => ({ ...o, throttlePerMin: Number(e.target.value || 1) }))}
+                />
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100 flex justify-end">
+              <Button onClick={handleSaveMessaging} disabled={saving} className="bg-primary hover:bg-primary/95 text-white">
+                <Save className="w-4 h-4 mr-2" />
+                Simpan Pengaturan Pengiriman
+              </Button>
             </div>
           </div>
-
-          <div className="pt-4 border-t border-slate-100 flex justify-end">
-            <Button onClick={handleSaveMessaging} disabled={saving} className="bg-primary hover:bg-primary/95 text-white">
-              <Save className="w-4 h-4 mr-2" />
-              Simpan Pengaturan Pengiriman
-            </Button>
-          </div>
-        </div>
-      </Card>
+        </Card>
       </div>
 
       {/* Password Change Popup Modal */}
@@ -591,14 +591,14 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
           <div className="w-full max-w-md bg-white rounded-2xl shadow-xl flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b">
               <h3 className="font-bold text-slate-800">Ganti Password</h3>
-              <button 
+              <button
                 onClick={() => setShowPasswordModal(false)}
                 className="text-slate-400 hover:text-slate-600 transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            
+
             <div className="p-6 space-y-4">
               <div>
                 <Label className="text-slate-700 font-medium">Password Lama</Label>
@@ -639,17 +639,17 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
                 />
               </div>
             </div>
-            
+
             <div className="flex items-center gap-3 px-6 py-4 bg-slate-50 border-t justify-end">
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 onClick={() => setShowPasswordModal(false)}
                 disabled={saving}
               >
                 Batal
               </Button>
-              <Button 
-                onClick={handleChangePassword} 
+              <Button
+                onClick={handleChangePassword}
                 disabled={saving}
                 className="bg-primary hover:bg-primary/95 text-white"
               >

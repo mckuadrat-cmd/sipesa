@@ -534,6 +534,14 @@ export const api = {
     return ok(res.data);
   },
 
+  async deleteSuperadminManualRequest(id: string): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/superadmin/manual-requests/${id}`, {
+      method: "DELETE",
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
   async getSuperadminOrgStats(orgId: string): Promise<AppResult<any>> {
     const res = await apiFetch<any>(`${API_PREFIX}/superadmin/orgs/${orgId}/stats`, { method: "GET" });
     if (isApiFail(res)) return fail(res.error);

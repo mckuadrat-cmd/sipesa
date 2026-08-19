@@ -405,6 +405,28 @@ export function SuperadminDashboardView() {
     }
   };
 
+  const handleDeleteRequest = async (req: any) => {
+    if (!window.confirm(`Apakah Anda yakin ingin menghapus riwayat transaksi ${req.org_name} (${req.amount_tokens} token) ini? Tindakan ini tidak dapat dibatalkan.`)) {
+      return;
+    }
+    setSubmittingProcess(true);
+    try {
+      const res = await api.deleteSuperadminManualRequest(req.id);
+      if (res.success) {
+        toast.success("Riwayat transaksi berhasil dihapus.");
+        loadSuperadminRequests();
+      } else {
+        const errorMsg = !res.success ? res.error : "Gagal memproses";
+        toast.error("Gagal menghapus: " + errorMsg);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Terjadi kesalahan jaringan.");
+    } finally {
+      setSubmittingProcess(false);
+    }
+  };
+
   const handleOpenDetailModal = async (org: OrgItem) => {
     setSelectedDetailOrg(org);
     setOrgStats(null);
@@ -1118,7 +1140,7 @@ export function SuperadminDashboardView() {
                     </td>
                     <td className="px-5 py-4 text-right">
                       {req.payment_method === "Manual" && req.status === "pending" ? (
-                        <div className="flex justify-end gap-2">
+                        <div className="flex justify-end items-center gap-2">
                           <Button
                             size="sm"
                             onClick={() => handleApproveRequest(req)}
@@ -1136,18 +1158,38 @@ export function SuperadminDashboardView() {
                           >
                             Tolak
                           </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleDeleteRequest(req)}
+                            disabled={submittingProcess}
+                            className="h-8 text-xs font-semibold px-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                            title="Hapus Riwayat"
+                          >
+                            Hapus
+                          </Button>
                         </div>
                       ) : (
-                        <div className="text-xs text-slate-400">
+                        <div className="flex justify-end items-center gap-3 text-xs text-slate-400">
                           {req.payment_method === "Midtrans" ? (
                             <span>Otomatis (Sistem)</span>
                           ) : req.notes ? (
-                            <span className="truncate max-w-[150px] inline-block" title={req.notes}>
+                            <span className="truncate max-w-[120px] inline-block" title={req.notes}>
                               Catatan: {req.notes}
                             </span>
                           ) : (
                             <span>Oleh {req.approved_by}</span>
                           )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleDeleteRequest(req)}
+                            disabled={submittingProcess}
+                            className="h-7 text-[11px] px-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                            title="Hapus Riwayat"
+                          >
+                            Hapus
+                          </Button>
                         </div>
                       )}
                     </td>
