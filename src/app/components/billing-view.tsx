@@ -293,11 +293,11 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
     try {
       const amount = tokens * safe.tokenPrice;
       const res = await api.createMidtransPayment(amount, tokens);
-      
+
       if (res.success && res.data?.token) {
         const { token } = res.data;
         const snap = (window as any).snap;
-        
+
         if (snap) {
           snap.pay(token, {
             onSuccess: function (result: any) {
@@ -508,9 +508,8 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
                   key={tokens}
                   variant={isSelected ? "default" : "outline"}
                   onClick={() => handleQuickTopup(tokens)}
-                  className={`h-auto py-3 transition-all duration-200 ${
-                    isSelected ? "scale-[1.02] shadow-md opacity-90 border-primary" : "hover:border-primary/50"
-                  }`}
+                  className={`h-auto py-3 transition-all duration-200 ${isSelected ? "scale-[1.02] shadow-md opacity-90 border-primary" : "hover:border-primary/50"
+                    }`}
                 >
                   <div className="text-center">
                     <div className="font-medium">{tokens}</div>
@@ -581,11 +580,11 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
                               item.status === "success"
                                 ? "bg-green-500 text-white"
                                 : item.status === "failed"
-                                ? "bg-red-500 text-white"
-                                : "bg-yellow-500 text-black"
+                                  ? "bg-red-500 text-white"
+                                  : "bg-yellow-500 text-black"
                             }
                           >
-                            Pembayaran Instan ({item.status === "success" ? "Berhasil" : item.status === "failed" ? "Gagal" : "Menunggu Pembayaran"})
+                            Pembayaran ({item.status === "success" ? "Berhasil" : item.status === "failed" ? "Gagal" : "Menunggu Pembayaran"})
                           </Badge>
                           <span className="text-xs text-muted-foreground">
                             {formatDate(item.date)}
@@ -692,15 +691,15 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
                             item.status === "approved"
                               ? "bg-green-500 text-white"
                               : item.status === "rejected"
-                              ? "bg-red-500 text-white"
-                              : "bg-yellow-500 text-black"
+                                ? "bg-red-500 text-white"
+                                : "bg-yellow-500 text-black"
                           }
                         >
                           Top-up Manual ({item.status === "approved"
                             ? "Disetujui"
                             : item.status === "rejected"
-                            ? "Ditolak"
-                            : "Menunggu Approval"})
+                              ? "Ditolak"
+                              : "Menunggu Approval"})
                         </Badge>
                         <span className="text-xs text-muted-foreground">
                           {formatDate(item.created_at)}
@@ -788,13 +787,12 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
         }
       >
         <p
-          className={`text-sm leading-6 ${
-            notice.type === "success"
+          className={`text-sm leading-6 ${notice.type === "success"
               ? "text-green-700"
               : notice.type === "error"
-              ? "text-red-700"
-              : "text-slate-600"
-          }`}
+                ? "text-red-700"
+                : "text-slate-600"
+            }`}
         >
           {notice.message}
         </p>
