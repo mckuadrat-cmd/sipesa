@@ -3476,7 +3476,7 @@ const handleWebhookPost = async (c: any) => {
                 .insert({
                   org_id: numberRow.org_id,
                   phone_e164: from,
-                  display_name: null,
+                  display_name: displayName,
                   last_message_at: nowIso(),
                 })
                 .select("*")
