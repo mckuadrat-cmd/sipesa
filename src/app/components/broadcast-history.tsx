@@ -155,10 +155,10 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
   useEffect(() => {
     loadBroadcasts("initial");
 
-    // Poll every 5 seconds to keep the history table updated automatically
+    // Poll every 1 seconds to keep the history table updated automatically
     const interval = setInterval(() => {
       loadBroadcasts("silent");
-    }, 5000);
+    }, 1000);
 
     return () => clearInterval(interval);
   }, []);

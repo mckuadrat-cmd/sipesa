@@ -224,7 +224,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
       if (selectedContact) {
         pollMessages();
       }
-    }, 5000);
+    }, 1000);
 
     return () => clearInterval(interval);
   }, [selectedContact, numberId]);

@@ -118,9 +118,6 @@ export default function App() {
 
         setIsAuthenticated(true);
         setUser(session.data);
-        if (session.data?.email?.toLowerCase() === "mckuadratid@gmail.com") {
-          setActiveView("superadmin");
-        }
 
         const sData = session.data as any;
         const userIsActive = sData?.is_active ?? (sData?.status ? sData.status === "active" : true);
@@ -158,33 +155,17 @@ export default function App() {
 
     const interval = setInterval(async () => {
       try {
-        const [numbersRes, statsRes] = await Promise.all([
-          api.getNumbers(),
-          api.getStats(),
-        ]);
-
-        if (numbersRes.success) {
-          setWhatsappNumbers(numbersRes.data ?? []);
-        }
-        if (statsRes.success) {
-          const raw = statsRes.data ?? {};
-          setDashboardStats({
-            totalMessages: Number(raw.totalMessages ?? 0),
-            totalContacts: Number(raw.totalContacts ?? 0),
-            tokensRemaining: Number(raw.tokensRemaining ?? raw.tokenRemaining ?? 0),
-            tokensUsed: Number(raw.tokensUsed ?? 0),
-            activeNumbers: Number(raw.activeNumbers ?? 0),
-          });
-        }
+        await loadData();
       } catch (err) {
-        console.error("Error polling real-time unread messages:", err);
+        console.error("Error polling real-time data:", err);
       }
-    }, 10000);
+    }, 1000);
 
     return () => clearInterval(interval);
   }, [isAuthenticated]);
 
   useEffect(() => {
+    if (loading) return; // Prevent overwriting hash on initial load
     let hash = "";
     if (isAuthenticated) {
       hash = `#/${activeView}`;
@@ -210,7 +191,7 @@ export default function App() {
     if (window.location.hash !== hash) {
       window.location.hash = hash;
     }
-  }, [activeView, selectedNumber, selectedBroadcast, isAuthenticated]);
+  }, [activeView, selectedNumber, selectedBroadcast, isAuthenticated, loading]);
 
   useEffect(() => {
     if (isAuthenticated) {
