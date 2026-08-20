@@ -1075,8 +1075,6 @@ export function SuperadminDashboardView() {
                   <th className="px-5 py-3 text-left">Jumlah Token</th>
                   <th className="px-5 py-3 text-left">Nominal</th>
                   <th className="px-5 py-3 text-left">Metode</th>
-                  <th className="px-5 py-3 text-left">Diajukan Oleh</th>
-                  <th className="px-5 py-3 text-left">Bukti</th>
                   <th className="px-5 py-3 text-left">Status</th>
                   <th className="px-5 py-3 text-right">Aksi</th>
                 </tr>
@@ -1104,24 +1102,6 @@ export function SuperadminDashboardView() {
                         {req.payment_method || "Manual"}
                       </span>
                     </td>
-                    <td className="px-5 py-4 text-slate-600">
-                      {req.created_by_email}
-                    </td>
-                    <td className="px-5 py-4">
-                      {req.payment_method === "Manual" && req.receipt_url ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setReceiptZoom(req.receipt_url)}
-                          className="h-8 text-xs font-semibold flex items-center gap-1"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          Lihat Bukti
-                        </Button>
-                      ) : (
-                        <span className="text-xs text-slate-400">-</span>
-                      )}
-                    </td>
                     <td className="px-5 py-4">
                       <Badge
                         className={
@@ -1140,59 +1120,18 @@ export function SuperadminDashboardView() {
                       </Badge>
                     </td>
                     <td className="px-5 py-4 text-right">
-                      {req.payment_method === "Manual" && req.status === "pending" ? (
-                        <div className="flex justify-end items-center gap-2">
-                          <Button
-                            size="sm"
-                            onClick={() => handleApproveRequest(req)}
-                            disabled={submittingProcess}
-                            className="h-8 text-xs font-semibold px-3 bg-emerald-600 hover:bg-emerald-700 text-white"
-                          >
-                            Setujui
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleRejectRequest(req)}
-                            disabled={submittingProcess}
-                            className="h-8 text-xs font-semibold px-3 text-rose-600 border-rose-200 hover:bg-rose-50"
-                          >
-                            Tolak
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => handleDeleteRequest(req)}
-                            disabled={submittingProcess}
-                            className="h-8 text-xs font-semibold px-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                            title="Hapus Riwayat"
-                          >
-                            Hapus
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="flex justify-end items-center gap-3 text-xs text-slate-400">
-                          {req.payment_method === "Midtrans" ? (
-                            <span>Otomatis (Sistem)</span>
-                          ) : req.notes ? (
-                            <span className="truncate max-w-[120px] inline-block" title={req.notes}>
-                              Catatan: {req.notes}
-                            </span>
-                          ) : (
-                            <span>Oleh {req.approved_by}</span>
-                          )}
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => handleDeleteRequest(req)}
-                            disabled={submittingProcess}
-                            className="h-7 text-[11px] px-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                            title="Hapus Riwayat"
-                          >
-                            Hapus
-                          </Button>
-                        </div>
-                      )}
+                      <div className="flex justify-end items-center">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          onClick={() => handleDeleteRequest(req)}
+                          disabled={submittingProcess}
+                          className="w-8 h-8 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                          title="Hapus Riwayat"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
