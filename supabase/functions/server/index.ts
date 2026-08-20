@@ -4923,7 +4923,11 @@ app.get(`${API_PREFIX}/superadmin/manual-requests`, requireAuth, requireSuperadm
         amount_tokens: Number(v.amount_tokens),
         amount_idr: Number(v.amount_idr),
         payment_method: "Midtrans",
-        status: v.status === "success" ? "approved" : v.status === "failed" ? "rejected" : "pending",
+        status: (v.status === "success" || v.status === "settlement" || v.status === "capture")
+          ? "approved"
+          : (v.status === "failed" || v.status === "expire" || v.status === "cancel" || v.status === "deny")
+            ? "rejected"
+            : "pending",
         created_at: v.created_at,
         approved_at: v.updated_at || v.created_at,
         approved_by: "System (Midtrans)",
