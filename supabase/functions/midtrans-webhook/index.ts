@@ -107,7 +107,7 @@ app.post("/", async (c) => {
       if (tx.status === "pending") {
         tx.status = "success";
         tx.settled_at = new Date().toISOString();
-        const { error: keyErr } = await supa.from("key_info").upsert({ key: txKey, value: tx });
+        const { error: keyErr } = await supa.from("key_info").update({ value: tx }).eq("key", txKey);
         if (keyErr) console.error("Gagal update key_info pada bypass status:", keyErr);
       }
       
@@ -174,17 +174,20 @@ app.post("/", async (c) => {
         console.warn("Gagal menambahkan riwayat billing_transactions:", txErr);
       }
 
-      await supa.from("app_activity").insert({
+      const { error: actErr } = await supa.from("app_activity").insert({
         org_id: tx.org_id,
         actor_user_id: tx.user_id || null,
         type: "billing_topup",
         message: `Top-up token otomatis sukses (${tx.amount_tokens} token)`,
         meta: { order_id, amount_idr: tx.amount_idr, tokens: tx.amount_tokens },
-      }).catch(err => console.error("Failed to insert activity log:", err));
+      });
+      if (actErr) {
+        console.warn("Failed to insert activity log:", actErr.message);
+      }
 
       tx.status = "success";
       tx.settled_at = new Date().toISOString();
-      const { error: keyErr } = await supa.from("key_info").upsert({ key: txKey, value: tx });
+      const { error: keyErr } = await supa.from("key_info").update({ value: tx }).eq("key", txKey);
       if (keyErr) {
         console.error("Gagal update key_info:", keyErr);
         return c.json({ error: keyErr.message }, 500);
@@ -195,7 +198,7 @@ app.post("/", async (c) => {
     } else if (isFailure) {
       tx.status = "failed";
       tx.failed_at = new Date().toISOString();
-      const { error: keyErr } = await supa.from("key_info").upsert({ key: txKey, value: tx });
+      const { error: keyErr } = await supa.from("key_info").update({ value: tx }).eq("key", txKey);
       if (keyErr) {
         console.error("Gagal update key_info gagal status:", keyErr);
         return c.json({ error: keyErr.message }, 500);
