@@ -88,6 +88,32 @@ app.post("/", async (c) => {
     }
 
     const tx = txRow.value;
+
+    // Check if this transaction has already been added to billing_transactions (idempotency check)
+    const { data: existingTx, error: checkTxErr } = await supa
+      .from("billing_transactions")
+      .select("id")
+      .eq("ref_type", "midtrans")
+      .eq("ref_id", order_id)
+      .maybeSingle();
+
+    if (checkTxErr) {
+      console.error("Gagal memeriksa duplikasi transaksi:", checkTxErr);
+    }
+
+    if (existingTx || tx.status === "success" || tx.status === "settlement") {
+      console.log(`Transaksi ${order_id} sudah diproses sebelumnya.`);
+      
+      if (tx.status === "pending") {
+        tx.status = "success";
+        tx.settled_at = new Date().toISOString();
+        const { error: keyErr } = await supa.from("key_info").upsert({ key: txKey, value: tx });
+        if (keyErr) console.error("Gagal update key_info pada bypass status:", keyErr);
+      }
+      
+      return c.json({ message: "Transaction already processed" }, 200);
+    }
+
     if (tx.status !== "pending") {
       console.log(`Transaction ${order_id} is already processed with status: ${tx.status}`);
       return c.json({ message: "Transaction already processed" }, 200);
@@ -139,6 +165,8 @@ app.post("/", async (c) => {
           tokens_delta: Number(tx.amount_tokens),
           amount_idr: Number(tx.amount_idr),
           description: `Top-up otomatis (${tx.amount_tokens} token) - Order ID: ${order_id}`,
+          ref_type: "midtrans",
+          ref_id: order_id,
           created_by: tx.user_id || null,
         });
 
@@ -154,16 +182,24 @@ app.post("/", async (c) => {
         meta: { order_id, amount_idr: tx.amount_idr, tokens: tx.amount_tokens },
       }).catch(err => console.error("Failed to insert activity log:", err));
 
-      tx.status = "settlement";
+      tx.status = "success";
       tx.settled_at = new Date().toISOString();
-      await supa.from("key_info").upsert({ key: txKey, value: tx });
+      const { error: keyErr } = await supa.from("key_info").upsert({ key: txKey, value: tx });
+      if (keyErr) {
+        console.error("Gagal update key_info:", keyErr);
+        return c.json({ error: keyErr.message }, 500);
+      }
 
       console.log(`Payment successfully applied for order_id: ${order_id}. Added ${tx.amount_tokens} tokens.`);
 
     } else if (isFailure) {
-      tx.status = transaction_status;
+      tx.status = "failed";
       tx.failed_at = new Date().toISOString();
-      await supa.from("key_info").upsert({ key: txKey, value: tx });
+      const { error: keyErr } = await supa.from("key_info").upsert({ key: txKey, value: tx });
+      if (keyErr) {
+        console.error("Gagal update key_info gagal status:", keyErr);
+        return c.json({ error: keyErr.message }, 500);
+      }
 
       console.log(`Payment failed for order_id: ${order_id} with status: ${transaction_status}`);
     }
