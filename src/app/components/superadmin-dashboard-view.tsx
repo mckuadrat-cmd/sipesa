@@ -120,7 +120,13 @@ export function EWalletBrandLogo({ name }: { name: string }) {
 }
 
 export function SuperadminDashboardView() {
-  const [activeTab, setActiveTab] = useState<"orgs" | "signups" | "payments" | "settings">("orgs");
+  const [activeTab, setActiveTab] = useState<"orgs" | "signups" | "payments" | "settings">(
+    () => (sessionStorage.getItem("superadminActiveTab") as any) || "orgs"
+  );
+
+  useEffect(() => {
+    sessionStorage.setItem("superadminActiveTab", activeTab);
+  }, [activeTab]);
   const [orgs, setOrgs] = useState<OrgItem[]>([]);
   const [signups, setSignups] = useState<SignupItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -235,14 +241,22 @@ export function SuperadminDashboardView() {
   };
 
   useEffect(() => {
-    loadOrgs();
+    loadOrgs(true);
     loadSignups();
-    loadSuperadminRequests();
+    loadSuperadminRequests(true);
     loadSuperadminSettings();
+
+    const interval = setInterval(() => {
+      loadOrgs(false);
+      loadSignups();
+      loadSuperadminRequests(false);
+    }, 1000);
+
+    return () => clearInterval(interval);
   }, []);
 
-  const loadSuperadminRequests = async () => {
-    setLoadingRequests(true);
+  const loadSuperadminRequests = async (showLoading = true) => {
+    if (showLoading) setLoadingRequests(true);
     try {
       const res = await api.getSuperadminManualRequests();
       if (res.success) {
@@ -254,7 +268,7 @@ export function SuperadminDashboardView() {
       console.error(err);
       toast.error("Terjadi kesalahan koneksi saat mengambil pengajuan top-up.");
     } finally {
-      setLoadingRequests(false);
+      if (showLoading) setLoadingRequests(false);
     }
   };
 
@@ -490,8 +504,8 @@ export function SuperadminDashboardView() {
     }
   };
 
-  const loadOrgs = async () => {
-    setLoading(true);
+  const loadOrgs = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const res = await api.getSuperadminOrgs();
       if (res.success) {
@@ -504,7 +518,7 @@ export function SuperadminDashboardView() {
       console.error(err);
       toast.error("Terjadi kesalahan jaringan.");
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
@@ -800,7 +814,7 @@ export function SuperadminDashboardView() {
                 <option value="core">Core</option>
                 <option value="full">Full</option>
               </select>
-              <Button onClick={loadOrgs} variant="outline" className="h-9 px-4 text-xs font-semibold flex items-center gap-1">
+              <Button onClick={() => loadOrgs(true)} variant="outline" className="h-9 px-4 text-xs font-semibold flex items-center gap-1">
                 Refresh Data
               </Button>
             </div>
@@ -1063,7 +1077,7 @@ export function SuperadminDashboardView() {
         <Card className="p-6 space-y-6">
           <div className="flex justify-between items-center">
             <h3 className="text-lg font-bold text-slate-800">Riwayat Pembelian Token</h3>
-            <Button onClick={loadSuperadminRequests} variant="outline" className="h-8 text-xs">
+            <Button onClick={() => loadSuperadminRequests(true)} variant="outline" className="h-8 text-xs">
               Refresh Riwayat
             </Button>
           </div>

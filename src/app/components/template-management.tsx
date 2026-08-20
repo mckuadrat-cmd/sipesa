@@ -589,6 +589,51 @@ export function TemplateManagement() {
 
   useEffect(() => {
     loadTemplates();
+
+    const interval = setInterval(() => {
+      // Background poll without loading state flashing
+      api.getBroadcastTemplates().then(async (result) => {
+        if ("error" in result) return;
+        
+        const historyResult = await api.getBroadcastHistory();
+        const counts: Record<string, number> = {};
+        if (historyResult && !("error" in historyResult)) {
+          (historyResult.data ?? []).forEach((b) => {
+            if (b.templateId) {
+              counts[b.templateId] = (counts[b.templateId] || 0) + (b.totalSent || 0);
+            }
+          });
+        }
+        setSentCounts(counts);
+
+        const mapped: LocalTemplate[] = (result.data ?? []).map((tpl) => {
+          const header = extractHeaderInfo(tpl.components);
+          const handle = extractMediaSampleHandle(tpl.components);
+
+          return {
+            ...tpl,
+            headerType: header.type,
+            headerText: header.text || "",
+            footerText: extractFooterText(tpl.components),
+            buttons: extractButtons(tpl.components),
+            mediaSampleName: extractMediaSampleName(tpl.components, header.type),
+            mediaSampleHandle: handle,
+            previewExamples: extractPreviewExamples(tpl.components),
+          };
+        });
+
+        setTemplates(mapped);
+        setSelectedTemplate((prev) => {
+          const nextSorted = [...mapped].sort(compareTemplates);
+          if (prev) {
+            return nextSorted.find((x) => x.id === prev.id) ?? nextSorted[0] ?? null;
+          }
+          return nextSorted[0] ?? null;
+        });
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
   }, []);
 
   const loadTemplates = async () => {

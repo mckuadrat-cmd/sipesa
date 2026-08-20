@@ -176,4 +176,18 @@ app.post("/", async (c) => {
   }
 });
 
-Deno.serve((req) => app.fetch(req));
+Deno.serve((req) => {
+  const url = new URL(req.url);
+  let pathname = url.pathname;
+
+  if (pathname.startsWith("/functions/v1/midtrans-webhook")) {
+    pathname = pathname.replace(/^\/functions\/v1\/midtrans-webhook/, "") || "/";
+  } else if (pathname.startsWith("/midtrans-webhook")) {
+    pathname = pathname.replace(/^\/midtrans-webhook/, "") || "/";
+  }
+
+  const rewrittenUrl = new URL(req.url);
+  rewrittenUrl.pathname = pathname;
+
+  return app.fetch(new Request(rewrittenUrl.toString(), req));
+});

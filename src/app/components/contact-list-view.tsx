@@ -100,6 +100,17 @@ export function ContactListView({ user }: { user?: any }) {
   useEffect(() => {
     loadContacts();
     loadContactLabels();
+
+    const interval = setInterval(() => {
+      // Background poll without loading indicator
+      api.getOrgContacts().then((result) => {
+        if (result.success && Array.isArray(result.data)) {
+          setContacts(result.data);
+        }
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
   }, []);
 
   const loadContacts = async () => {

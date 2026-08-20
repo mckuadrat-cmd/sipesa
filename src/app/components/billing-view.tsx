@@ -138,6 +138,10 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
     loadManualRequests();
     onUpdate?.();
 
+    const interval = setInterval(() => {
+      loadManualRequests();
+    }, 1000);
+
     // 1. Load Midtrans Snap JS dynamically
     const isProduction = import.meta.env.VITE_MIDTRANS_IS_PRODUCTION === "true";
     const snapUrl = isProduction
@@ -197,6 +201,8 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
       }
       onUpdate?.();
     }
+
+    return () => clearInterval(interval);
   }, []);
 
   const mergedHistory = useMemo(() => {
@@ -327,7 +333,7 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
           }
         }
       } else {
-        const errorMsg = !res.success ? res.error : "Token transaksi tidak ditemukan.";
+        const errorMsg = "error" in res ? res.error : "Token transaksi tidak ditemukan.";
         openNotice("error", "Gagal Memproses Pembayaran", errorMsg);
       }
     } catch (err) {
@@ -495,19 +501,24 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
           <h3 className="mb-4">Top-up Token</h3>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            {[100, 250, 500, 1000].map((tokens) => (
-              <Button
-                key={tokens}
-                variant="outline"
-                onClick={() => handleQuickTopup(tokens)}
-                className="h-auto py-3"
-              >
-                <div className="text-center">
-                  <div className="font-medium">{tokens}</div>
-                  <div className="text-xs text-muted-foreground">token</div>
-                </div>
-              </Button>
-            ))}
+            {[100, 250, 500, 1000].map((tokens) => {
+              const isSelected = topupAmount === tokens.toString();
+              return (
+                <Button
+                  key={tokens}
+                  variant={isSelected ? "default" : "outline"}
+                  onClick={() => handleQuickTopup(tokens)}
+                  className={`h-auto py-3 transition-all duration-200 ${
+                    isSelected ? "scale-[1.02] shadow-md opacity-90 border-primary" : "hover:border-primary/50"
+                  }`}
+                >
+                  <div className="text-center">
+                    <div className="font-medium">{tokens}</div>
+                    <div className={`text-xs ${isSelected ? "text-primary-foreground/80" : "text-muted-foreground"}`}>token</div>
+                  </div>
+                </Button>
+              );
+            })}
           </div>
 
           <div className="space-y-4">
