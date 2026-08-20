@@ -406,10 +406,12 @@ export function SuperadminDashboardView() {
     }
   };
 
-  const handleDeleteRequest = async (req: any) => {
-    if (!window.confirm(`Apakah Anda yakin ingin menghapus riwayat transaksi ${req.org_name} (${req.amount_tokens} token) ini? Tindakan ini tidak dapat dibatalkan.`)) {
-      return;
-    }
+  const [deleteConfirmReq, setDeleteConfirmReq] = useState<any>(null);
+
+  const handleDeleteRequest = async () => {
+    if (!deleteConfirmReq) return;
+    const req = deleteConfirmReq;
+    setDeleteConfirmReq(null);
     setSubmittingProcess(true);
     try {
       const res = await api.deleteSuperadminManualRequest(req.id);
@@ -1124,7 +1126,7 @@ export function SuperadminDashboardView() {
                         <Button
                           size="icon"
                           variant="ghost"
-                          onClick={() => handleDeleteRequest(req)}
+                          onClick={() => setDeleteConfirmReq(req)}
                           disabled={submittingProcess}
                           className="w-8 h-8 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
                           title="Hapus Riwayat"
@@ -1709,6 +1711,40 @@ export function SuperadminDashboardView() {
           untuk <strong className="text-slate-800 font-bold">{requestToApprove?.org_name}</strong>?
         </p>
       </AppModal>
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmReq && (
+        <AppModal
+          open={true}
+          onClose={() => setDeleteConfirmReq(null)}
+          title="Konfirmasi Hapus"
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Apakah Anda yakin ingin menghapus riwayat transaksi <strong>{deleteConfirmReq.org_name}</strong> sejumlah <strong>{deleteConfirmReq.amount_tokens} token</strong> ini?
+            </p>
+            <p className="text-xs text-rose-600 bg-rose-50 p-2 rounded-lg border border-rose-100">
+              Tindakan ini tidak dapat dibatalkan dan akan menghapus riwayat dari sistem secara permanen.
+            </p>
+            <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+              <Button
+                variant="outline"
+                onClick={() => setDeleteConfirmReq(null)}
+                disabled={submittingProcess}
+              >
+                Batal
+              </Button>
+              <Button
+                onClick={handleDeleteRequest}
+                disabled={submittingProcess}
+                className="bg-rose-600 hover:bg-rose-700 text-white"
+              >
+                {submittingProcess ? "Menghapus..." : "Ya, Hapus"}
+              </Button>
+            </div>
+          </div>
+        </AppModal>
+      )}
     </div>
   );
 }
