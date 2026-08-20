@@ -5,6 +5,7 @@ import { Input } from "./ui/input";
 import { ArrowLeft, CheckCircle, Clock, XCircle, Search, Download, Eye, CheckCircle2, Send, Loader2, Clock3 } from "lucide-react";
 import { api } from "../lib/api";
 import { AppModal } from "./AppModal";
+import { supabase } from "../lib/supabaseClient";
 
 interface RecipientStatus {
   id: string;
@@ -94,67 +95,113 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
   const [error, setError] = useState("");
 
   useEffect(() => {
-    loadBroadcastDetail();
-    
-    // Poll every 3 seconds for real-time updates to reduce query storm
+    let active = true;
+
+    const loadDetail = async (showLoading = true) => {
+      if (!active) return;
+      if (showLoading) setLoading(true);
+      try {
+        const result = await api.getBroadcastDetail(broadcastId);
+        if (active) {
+          if ("error" in result) {
+            setError(result.error);
+          } else {
+            setBroadcast(result.data);
+            setError("");
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        if (active && showLoading) setError("Gagal memuat detail broadcast");
+      } finally {
+        if (active && showLoading) setLoading(false);
+      }
+    };
+
+    loadDetail(true);
+
+    const channelStatusRef = { current: "INITIAL" };
+    const channelName = `bc-detail-recipients-${broadcastId}-${Date.now()}`;
+    const channel = supabase
+      .channel(channelName)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "wa_broadcasts",
+          filter: `id=eq.${broadcastId}`,
+        },
+        () => {
+          if (!active) return;
+          loadDetail(false);
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "wa_broadcast_recipients",
+          filter: `broadcast_id=eq.${broadcastId}`,
+        },
+        (payload) => {
+          if (!active) return;
+          if (payload.eventType === "UPDATE" || payload.eventType === "INSERT") {
+            const updated = payload.new;
+            if (updated && updated.id) {
+              setBroadcast((prev: any) => {
+                if (!prev || !prev.recipients) return prev;
+                return {
+                  ...prev,
+                  recipients: prev.recipients.map((r: any) =>
+                    r.id === updated.id
+                      ? {
+                          ...r,
+                          status: updated.status || "pending",
+                          timestamp: updated.sent_at ?? updated.updated_at ?? updated.created_at ?? "-",
+                          errorMessage: updated.error ?? undefined,
+                        }
+                      : r
+                  ),
+                };
+              });
+            }
+          }
+        }
+      );
+
+    channel.subscribe((status) => {
+      if (!active) return;
+      channelStatusRef.current = status;
+      if (status === "SUBSCRIBED") {
+        loadDetail(false);
+      }
+    });
+
+    let tickCount = 0;
     const interval = setInterval(() => {
-      loadBroadcastDetail(false);
-    }, 3000);
-    
-    return () => clearInterval(interval);
+      if (!active) return;
+      if (document.visibilityState === "hidden") return;
+
+      tickCount++;
+      const isSubscribed = channelStatusRef.current === "SUBSCRIBED";
+      const pollInterval = isSubscribed ? 20 : 5;
+
+      if (tickCount % pollInterval === 0) {
+        loadDetail(false);
+      }
+    }, 1000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+      supabase.removeChannel(channel);
+    };
   }, [broadcastId]);
 
-  const isProcessingRef = useRef(false);
-
   const loadBroadcastDetail = async (showLoading = true) => {
-    if (showLoading) setLoading(true);
-
-    try {
-      const result = await api.getBroadcastDetail(broadcastId);
-
-      if ("error" in result) {
-        setError(result.error);
-        return;
-      }
-
-      setBroadcast(result.data);
-      setError("");
-
-      // Auto-trigger sequential processing
-      const hasPending = result.data.recipients.some((r: any) => 
-        (r.status || "").toLowerCase() === "pending"
-      );
-      
-      if (
-        (result.data.status === "sending" || result.data.status === "queued") &&
-        hasPending
-      ) {
-        if (!isProcessingRef.current) {
-          isProcessingRef.current = true;
-          // Process in background without blocking the initial loading spinner
-          (async () => {
-            try {
-              await api.processBroadcasts(5);
-              // Re-fetch after processing
-              const updated = await api.getBroadcastDetail(broadcastId);
-              if (!("error" in updated)) {
-                setBroadcast(updated.data);
-              }
-            } catch (err) {
-              console.error("Auto sequential processing error:", err);
-            } finally {
-              isProcessingRef.current = false;
-            }
-          })();
-        }
-      }
-
-    } catch (err) {
-      console.error(err);
-      if (showLoading) setError("Gagal memuat detail broadcast");
-    } finally {
-      if (showLoading) setLoading(false);
-    }
+    // Stub kept for compatibility
   };
 
   const stats = useMemo(() => {
@@ -218,7 +265,16 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       );
     }
 
-    if (s === "accepted" || s === "processing" || s === "sent") {
+    if (s === "processing") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-600" />
+          Processing
+        </span>
+      );
+    }
+
+    if (s === "accepted" || s === "sent") {
       return (
         <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
           <Send className="w-3 h-3" />
