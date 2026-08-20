@@ -176,10 +176,12 @@ export function BroadcastProgressModal({
   const [rows, setRows] = useState<RecipientRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [tick, setTick] = useState(0);
   const [isCancelling, setIsCancelling] = useState(false);
-  const isProcessingRef = useRef(false);
   const hasTriggeredComplete = useRef(false);
+  
+  const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
+  const lastScrolledRecipientIdRef = useRef<string | null>(null);
+  const channelStatusRef = useRef<string>("INITIAL");
 
   const fetchBroadcastData = async () => {
     if (!broadcastId) return;
@@ -189,56 +191,15 @@ export function BroadcastProgressModal({
       api.getBroadcastRecipients(broadcastId),
     ]);
 
-    let currentStats = stats;
     if ("error" in statsRes) {
       setError(statsRes.error);
     } else {
       setStats(statsRes.data);
-      currentStats = statsRes.data;
       setError("");
     }
 
-    let currentRecs: RecipientRow[] = [];
     if (!("error" in rowsRes)) {
-      currentRecs = rowsRes.data || [];
-      setRows(currentRecs);
-    }
-
-    const hasProcessing = currentRecs.some((r: any) => normalizeRecipientStatus(r.status) === "processing");
-    const hasPending = currentRecs.some((r: any) => normalizeRecipientStatus(r.status) === "pending");
-
-    // Auto-trigger sequential processing (one-by-one) if broadcast is sending or queued
-    // and no recipient is currently in 'processing' status to avoid duplicate processing.
-    if (
-      currentStats && 
-      (currentStats.status === "sending" || currentStats.status === "queued") &&
-      hasPending
-    ) {
-      if (!isProcessingRef.current) {
-        isProcessingRef.current = true;
-        // Process in background to avoid blocking the initial load spinner
-        (async () => {
-          try {
-            // Process 5 recipients per batch to reduce API roundtrips while maintaining responsiveness
-            await api.processBroadcasts(5);
-            // After processing, refetch data to update progress
-            const [updatedStatsRes, updatedRowsRes] = await Promise.all([
-              api.getBroadcastStats(broadcastId),
-              api.getBroadcastRecipients(broadcastId),
-            ]);
-            if (!("error" in updatedStatsRes)) {
-              setStats(updatedStatsRes.data);
-            }
-            if (!("error" in updatedRowsRes)) {
-              setRows(updatedRowsRes.data || []);
-            }
-          } catch (err) {
-            console.error("Auto sequential processing error:", err);
-          } finally {
-            isProcessingRef.current = false;
-          }
-        })();
-      }
+      setRows(rowsRes.data || []);
     }
   };
 
@@ -286,7 +247,7 @@ export function BroadcastProgressModal({
     };
     initialFetch();
 
-    const channelName = `bc-realtime-${broadcastId}-${Date.now()}`;
+    const channelName = `bc-recipients-realtime-${broadcastId}-${Date.now()}`;
     const channel = supabase
       .channel(channelName)
       .on(
@@ -298,19 +259,62 @@ export function BroadcastProgressModal({
           filter: `id=eq.${broadcastId}`,
         },
         () => {
-          fetchData();
+          if (!active) return;
+          // Only fetch stats to avoid heavy payload
+          api.getBroadcastStats(broadcastId).then((res) => {
+            if (active && !("error" in res)) {
+              setStats(res.data);
+            }
+          });
         }
       )
-      .subscribe();
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "wa_broadcast_recipients",
+          filter: `broadcast_id=eq.${broadcastId}`,
+        },
+        (payload) => {
+          if (!active) return;
+          if (payload.eventType === "UPDATE" || payload.eventType === "INSERT") {
+            const updated = payload.new as RecipientRow;
+            if (updated && updated.id) {
+              setRows((prev) =>
+                prev.map((row) => (row.id === updated.id ? { ...row, ...updated } : row))
+              );
+            }
+          }
+        }
+      );
 
+    channel.subscribe((status) => {
+      if (!active) return;
+      channelStatusRef.current = status;
+      if (status === "SUBSCRIBED") {
+        fetchBroadcastData();
+      }
+    });
+
+    let tickCount = 0;
     const interval = setInterval(() => {
-      fetchData();
-    }, 3000);
+      if (!active) return;
+      if (document.visibilityState === "hidden") return;
+
+      tickCount++;
+      const isSubscribed = channelStatusRef.current === "SUBSCRIBED";
+      const pollInterval = isSubscribed ? 20 : 5;
+
+      if (tickCount % pollInterval === 0) {
+        fetchData();
+      }
+    }, 1000);
 
     return () => {
       active = false;
       clearInterval(interval);
-      if (channel) supabase.removeChannel(channel);
+      supabase.removeChannel(channel);
     };
   }, [open, broadcastId]);
 
@@ -370,6 +374,21 @@ export function BroadcastProgressModal({
     }
   }, [isDone, open, broadcastId, onComplete]);
 
+  // Smooth scroll to the currently processing row
+  useEffect(() => {
+    const processingRec = rows.find((r) => normalizeRecipientStatus(r.status) === "processing");
+    if (processingRec && processingRec.id !== lastScrolledRecipientIdRef.current) {
+      const el = rowRefs.current.get(processingRec.id);
+      if (el) {
+        lastScrolledRecipientIdRef.current = processingRec.id;
+        el.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }
+    }
+  }, [rows]);
+
   return (
     <AppModal
       open={open}
@@ -406,11 +425,17 @@ export function BroadcastProgressModal({
           </div>
         )}
 
-        <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden">
-          <div
-            className={`h-2 rounded-full transition-all ${progressBarColorClass}`}
-            style={{ width: `${progressPct}%` }}
-          />
+        <div className="flex items-center gap-4">
+          <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+            <div
+              className={`h-2 rounded-full transition-all ${progressBarColorClass}`}
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 whitespace-nowrap">
+            {!isDone && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />}
+            <span>{processedCount} / {summary.total} ({progressPct}%)</span>
+          </div>
         </div>
 
         {error && (
@@ -450,17 +475,26 @@ export function BroadcastProgressModal({
                 return (
                   <tr
                     key={row.id || `${row.phone_e164}-${idx}`}
-                    className={
+                    ref={(el) => {
+                      if (el) {
+                        rowRefs.current.set(row.id, el);
+                      } else {
+                        rowRefs.current.delete(row.id);
+                      }
+                    }}
+                    className={`transition-all duration-300 ${
                       status === "read" || status === "delivered"
-                        ? "bg-green-50/50"
+                        ? "bg-green-50/20"
                         : status === "failed"
-                        ? "bg-red-50/50"
-                        : status === "sent" || status === "processing"
-                        ? "bg-amber-50/50"
+                        ? "bg-red-50/25"
+                        : status === "processing"
+                        ? "bg-amber-100/60 ring-2 ring-amber-500/30 font-medium animate-pulse"
+                        : status === "sent"
+                        ? "bg-amber-50/20"
                         : status === "cancelled"
                         ? "bg-slate-100/80"
                         : ""
-                    }
+                    }`}
                   >
                     <td className="px-3 py-2 text-center text-slate-500">{idx + 1}</td>
                     <td className="px-3 py-2 text-slate-800 font-mono">

@@ -15,6 +15,7 @@ import {
 import { api } from "../lib/api";
 import { AppModal } from "./AppModal";
 import { toast } from "sonner";
+import { supabase } from "../lib/supabaseClient";
 
 interface Broadcast {
   id: string;
@@ -155,12 +156,45 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
   useEffect(() => {
     loadBroadcasts("initial");
 
-    // Poll every 1 seconds to keep the history table updated automatically
+    const channelStatusRef = { current: "INITIAL" };
+    const channel = supabase
+      .channel("broadcast-history-list")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "wa_broadcasts",
+        },
+        () => {
+          loadBroadcasts("silent");
+        }
+      );
+
+    channel.subscribe((status) => {
+      channelStatusRef.current = status;
+      if (status === "SUBSCRIBED") {
+        loadBroadcasts("silent");
+      }
+    });
+
+    let tickCount = 0;
     const interval = setInterval(() => {
-      loadBroadcasts("silent");
+      if (document.visibilityState === "hidden") return;
+
+      tickCount++;
+      const isSubscribed = channelStatusRef.current === "SUBSCRIBED";
+      const pollInterval = isSubscribed ? 20 : 5;
+
+      if (tickCount % pollInterval === 0) {
+        loadBroadcasts("silent");
+      }
     }, 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   useEffect(() => {
@@ -584,17 +618,19 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
 
                   const total = Number(log.totalRecipients || 0);
                   const sent = Number(log.sent || 0);
+                  const delivered = Number(log.delivered || 0);
+                  const read = Number(log.read || 0);
                   const failed = Number(log.failed || 0);
-                  const pending = Math.max(total - (sent + failed), 0);
 
-                  const rate = total ? (sent / total) * 100 : 0;
+                  const processed = sent + delivered + read + failed;
+                  const pending = Math.max(total - processed, 0);
+
+                  const rate = total ? (processed / total) * 100 : 0;
                   const rateColor =
                     rate < 30 ? "bg-red-500" : rate < 70 ? "bg-yellow-500" : "bg-green-500";
 
-                  const shownDonePct = Math.min(rate, 100);
-                  const shownFailedPct = total
-                    ? Math.min(Math.max(0, 100 - shownDonePct), (failed / total) * 100)
-                    : 0;
+                  const shownDonePct = total ? ((sent + delivered + read) / total) * 100 : 0;
+                  const shownFailedPct = total ? (failed / total) * 100 : 0;
 
                   return (
                     <tr key={log.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
@@ -651,7 +687,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                         <div className="min-w-[140px]">
                           <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
                             <span>
-                              {sent}/{total}
+                              {processed}/{total}
                             </span>
                             <span className="text-slate-700 font-medium">{rate.toFixed(1)}%</span>
                           </div>
