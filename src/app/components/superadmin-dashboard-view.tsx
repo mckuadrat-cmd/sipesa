@@ -1129,10 +1129,10 @@ export function SuperadminDashboardView() {
                         }
                       >
                         {req.status === "approved"
-                          ? "Disetujui"
+                          ? "SUKSES"
                           : req.status === "rejected"
-                            ? "Ditolak"
-                            : "Menunggu"}
+                            ? "GAGAL"
+                            : "PENDING"}
                       </Badge>
                     </td>
                     <td className="px-5 py-4 text-right">
