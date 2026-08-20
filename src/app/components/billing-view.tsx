@@ -202,9 +202,9 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
         timestamp: new Date(tx.date).getTime(),
         description: tx.description,
         status: tx.status,
-        snap_token: tx.snap_token,
-        snap_url: tx.snap_url,
-        amount_idr: tx.amount_idr,
+        snap_token: tx.snapToken || tx.snap_token,
+        snap_url: tx.snapUrl || tx.snap_url,
+        amount_idr: tx.amountIdr || tx.amount_idr,
       });
     });
 
