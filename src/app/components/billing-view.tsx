@@ -154,37 +154,48 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
     }
 
     // 2. Detect redirect callback from Midtrans
-    const hash = window.location.hash;
-    if (hash.includes("?")) {
-      const queryStr = hash.split("?")[1];
-      const params = new URLSearchParams(queryStr);
-      const status = params.get("status") || params.get("transaction_status");
-      const orderId = params.get("order_id");
+    const searchParams = new URLSearchParams(window.location.search);
+    let status = searchParams.get("status") || searchParams.get("transaction_status");
+    let orderId = searchParams.get("order_id");
 
-      if (status && orderId) {
-        if (status === "success" || status === "settlement" || status === "capture") {
-          openNotice(
-            "success",
-            "Pembayaran Berhasil",
-            `Terima kasih! Pembayaran untuk transaksi #${orderId} telah berhasil diselesaikan. Saldo token Anda akan bertambah secara otomatis.`
-          );
-        } else if (status === "pending") {
-          openNotice(
-            "info",
-            "Pembayaran Pending",
-            `Transaksi #${orderId} sedang menunggu pembayaran. Harap selesaikan pembayaran Anda sesuai dengan petunjuk.`
-          );
-        } else if (status === "error" || status === "failure") {
-          openNotice(
-            "error",
-            "Pembayaran Gagal",
-            `Transaksi #${orderId} gagal atau dibatalkan. Silakan coba kembali.`
-          );
-        }
-        // Clean hash query params to prevent double notification on page refresh
-        window.location.hash = "#/billing";
-        onUpdate?.();
+    if (!status || !orderId) {
+      const hash = window.location.hash;
+      if (hash.includes("?")) {
+        const queryStr = hash.split("?")[1];
+        const params = new URLSearchParams(queryStr);
+        status = params.get("status") || params.get("transaction_status");
+        orderId = params.get("order_id");
       }
+    }
+
+    if (status && orderId) {
+      if (status === "success" || status === "settlement" || status === "capture") {
+        openNotice(
+          "success",
+          "Pembayaran Berhasil",
+          `Terima kasih! Pembayaran untuk transaksi #${orderId} telah berhasil diselesaikan. Saldo token Anda akan bertambah secara otomatis.`
+        );
+      } else if (status === "pending") {
+        openNotice(
+          "info",
+          "Pembayaran Pending",
+          `Transaksi #${orderId} sedang menunggu pembayaran. Harap selesaikan pembayaran Anda sesuai dengan petunjuk.`
+        );
+      } else if (status === "error" || status === "failure") {
+        openNotice(
+          "error",
+          "Pembayaran Gagal",
+          `Transaksi #${orderId} gagal atau dibatalkan. Silakan coba kembali.`
+        );
+      }
+
+      if (window.location.search) {
+        const newUrl = window.location.origin + window.location.pathname + window.location.hash;
+        window.history.replaceState({}, document.title, newUrl);
+      } else {
+        window.location.hash = "#/billing";
+      }
+      onUpdate?.();
     }
   }, []);
 
@@ -193,6 +204,7 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
 
     // Add transactions
     (transactions || []).forEach((tx) => {
+      const rawTx = tx as any;
       list.push({
         id: tx.id,
         itemType: "transaction",
@@ -201,10 +213,10 @@ export function BillingView({ billingData, transactions, onUpdate }: BillingView
         date: tx.date,
         timestamp: new Date(tx.date).getTime(),
         description: tx.description,
-        status: tx.status,
-        snap_token: tx.snapToken || tx.snap_token,
-        snap_url: tx.snapUrl || tx.snap_url,
-        amount_idr: tx.amountIdr || tx.amount_idr,
+        status: rawTx.status,
+        snap_token: rawTx.snap_token,
+        snap_url: rawTx.snap_url,
+        amount_idr: rawTx.amount_idr,
       });
     });
 
