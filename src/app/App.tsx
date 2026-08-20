@@ -36,10 +36,14 @@ type BillingData = {
 
 type Transaction = {
   id: string;
-  type: "topup" | "usage" | "adjustment" | "refund";
+  type: "topup" | "usage" | "adjustment" | "refund" | "midtrans";
   amount: number;
   date: string;
   description: string;
+  status?: string;
+  snapToken?: string;
+  snapUrl?: string;
+  amountIdr?: number;
 };
 
 function parseHash() {
@@ -372,7 +376,9 @@ export default function App() {
           const typeRaw = String(r.type ?? r.txn_type ?? r.kind ?? "");
           let type: Transaction["type"] = "usage";
 
-          if (typeRaw === "topup" || typeRaw === "credit" || amount > 0) {
+          if (typeRaw === "midtrans") {
+            type = "midtrans";
+          } else if (typeRaw === "topup" || typeRaw === "credit" || amount > 0) {
             type = "topup";
           } else if (typeRaw === "refund") {
             type = "refund";
@@ -392,6 +398,10 @@ export default function App() {
             amount: Math.abs(amount),
             date: dateIso,
             description,
+            status: r.status,
+            snapToken: r.snapToken ?? r.snap_token,
+            snapUrl: r.snapUrl ?? r.snap_url,
+            amountIdr: r.amountIdr ?? r.amount_idr,
           };
         });
 
