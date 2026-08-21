@@ -341,8 +341,33 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
   return (
     <AppModal
       open={true}
-      title="Detail Broadcast"
-      description={broadcast ? "Status pengiriman per nomor" : ""}
+      title={
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 w-full pr-2">
+          <span>Detail Broadcast</span>
+          {broadcast && (
+            <div className="flex items-center gap-2">
+              <div className="relative w-full sm:w-64">
+                <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                <Input
+                  placeholder="Cari nama atau nomor..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9 h-9 text-xs font-normal bg-white"
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={exportCsv}
+                className="h-9 flex items-center justify-center gap-1.5 border-slate-200 hover:bg-slate-50 text-xs font-medium text-slate-700"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Export
+              </Button>
+            </div>
+          )}
+        </div>
+      }
       onClose={onBack}
       maxWidthClassName="max-w-4xl"
     >
@@ -391,76 +416,54 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
           </Card>
 
           {/* Statistik */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5">
             <Card
-              className={`p-4 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "all" ? "border-slate-800 bg-slate-50/50 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              className={`p-2.5 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "all" ? "border-slate-800 bg-slate-50/50 shadow-sm ring-1 ring-slate-800/10" : "border-slate-100 hover:border-slate-300 hover:bg-slate-50/50"
                 }`}
               onClick={() => setFilterStatus("all")}
             >
-              <div className="text-xs text-slate-500 font-semibold mb-1">Total</div>
-              <div className="text-xl font-bold text-slate-800">{stats.total}</div>
+              <div className="text-[11px] text-slate-500 font-semibold mb-0.5 uppercase tracking-wider">Total</div>
+              <div className="text-lg font-bold text-slate-800">{stats.total}</div>
             </Card>
             <Card
-              className={`p-4 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "sent" ? "border-amber-800 bg-amber-50/30 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              className={`p-2.5 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "sent" ? "border-amber-700 bg-amber-50/40 shadow-sm ring-1 ring-amber-700/10" : "border-slate-100 hover:border-amber-200 hover:bg-amber-50/20"
                 }`}
               onClick={() => setFilterStatus("sent")}
             >
-              <div className="text-xs text-amber-600 font-semibold mb-1">Sent</div>
-              <div className="text-xl font-bold text-amber-700">{stats.sent}</div>
+              <div className="text-[11px] text-amber-600 font-semibold mb-0.5 uppercase tracking-wider">Sent</div>
+              <div className="text-lg font-bold text-amber-700">{stats.sent}</div>
             </Card>
             <Card
-              className={`p-4 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "delivered" ? "border-green-800 bg-green-50/30 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              className={`p-2.5 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "delivered" ? "border-green-700 bg-green-50/40 shadow-sm ring-1 ring-green-700/10" : "border-slate-100 hover:border-green-200 hover:bg-green-50/20"
                 }`}
               onClick={() => setFilterStatus("delivered")}
             >
-              <div className="text-xs text-green-600 font-semibold mb-1">Delivered</div>
-              <div className="text-xl font-bold text-green-700">{stats.delivered}</div>
+              <div className="text-[11px] text-green-600 font-semibold mb-0.5 uppercase tracking-wider">Deliv</div>
+              <div className="text-lg font-bold text-green-700">{stats.delivered}</div>
             </Card>
             <Card
-              className={`p-4 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "read" ? "border-blue-800 bg-blue-50/30 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              className={`p-2.5 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "read" ? "border-blue-700 bg-blue-50/40 shadow-sm ring-1 ring-blue-700/10" : "border-slate-100 hover:border-blue-200 hover:bg-blue-50/20"
                 }`}
               onClick={() => setFilterStatus("read")}
             >
-              <div className="text-xs text-blue-600 font-semibold mb-1">Read</div>
-              <div className="text-xl font-bold text-blue-700">{stats.read}</div>
+              <div className="text-[11px] text-blue-600 font-semibold mb-0.5 uppercase tracking-wider">Read</div>
+              <div className="text-lg font-bold text-blue-700">{stats.read}</div>
             </Card>
             <Card
-              className={`p-4 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "failed" ? "border-red-800 bg-red-50/30 shadow-sm" : "border-slate-100 hover:border-slate-300"
+              className={`p-2.5 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "failed" ? "border-red-700 bg-red-50/40 shadow-sm ring-1 ring-red-700/10" : "border-slate-100 hover:border-red-200 hover:bg-red-50/20"
                 }`}
               onClick={() => setFilterStatus("failed")}
             >
-              <div className="text-xs text-red-600 font-semibold mb-1">Failed</div>
-              <div className="text-xl font-bold text-red-700">{stats.failed}</div>
+              <div className="text-[11px] text-red-600 font-semibold mb-0.5 uppercase tracking-wider">Failed</div>
+              <div className="text-lg font-bold text-red-700">{stats.failed}</div>
             </Card>
           </div>
 
           {/* Tabel detail */}
-          <Card className="overflow-hidden border border-slate-100 rounded-xl">
-            <div className="p-4 bg-slate-50/50 border-b flex flex-col sm:flex-row gap-4 items-center justify-between">
-              <div className="relative w-full sm:w-72">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                <Input
-                  placeholder="Cari nama atau nomor..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-9 bg-white"
-                />
-              </div>
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={exportCsv}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 border-slate-200 hover:bg-slate-50"
-              >
-                <Download className="w-4 h-4" />
-                Export CSV
-              </Button>
-            </div>
-
-            <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
+          <Card className="overflow-hidden border border-slate-200 shadow-sm rounded-xl flex-1 flex flex-col min-h-[300px]">
+            <div className="overflow-x-auto max-h-[50vh] overflow-y-auto flex-1">
               <table className="w-full min-w-[600px]">
-                <thead className="bg-slate-50 border-b text-slate-600 text-xs font-semibold uppercase tracking-wider sticky top-0 z-10 shadow-sm ring-1 ring-slate-100">
+                <thead className="bg-slate-100 border-b border-slate-200 text-slate-700 text-[11px] font-bold uppercase tracking-wider sticky top-0 z-10 shadow-sm">
                   <tr>
                     <th className="px-6 py-3 text-left">Nama Kontak</th>
                     <th className="px-6 py-3 text-left">Nomor WhatsApp</th>
