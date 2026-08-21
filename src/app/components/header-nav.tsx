@@ -43,9 +43,7 @@ export function HeaderNav({
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [avatar, setAvatar] = useState<string | null>(null);
-  const [hasNewMessages, setHasNewMessages] = useState(false);
   const [hasNewNotifs, setHasNewNotifs] = useState(false);
-  const [prevTotalUnread, setPrevTotalUnread] = useState(0);
   const [prevLatestNotifId, setPrevLatestNotifId] = useState<string | null>(null);
 
   const profileRef = useRef<HTMLDivElement>(null);
@@ -55,14 +53,7 @@ export function HeaderNav({
 
   const totalUnread = numbers.reduce((acc, curr) => acc + (curr.unreadCount || 0), 0);
 
-  useEffect(() => {
-    if (totalUnread > prevTotalUnread) {
-      setHasNewMessages(true);
-    } else if (totalUnread === 0) {
-      setHasNewMessages(false);
-    }
-    setPrevTotalUnread(totalUnread);
-  }, [totalUnread]);
+
 
   useEffect(() => {
     const latestId = activities[0]?.id || activities[0]?.created_at || null;
@@ -223,13 +214,12 @@ export function HeaderNav({
                 onViewChange("inbox");
                 setShowNotifDropdown(false);
                 setShowProfileDropdown(false);
-                setHasNewMessages(false); // Clear red dot when opened
               }}
               className="relative p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors"
               title="Kotak Masuk"
             >
               <MessageSquare className="w-5 h-5" />
-              {hasNewMessages && (
+              {totalUnread > 0 && (
                 <span className="absolute top-1.5 right-1.5 flex h-2.5 w-2.5">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>

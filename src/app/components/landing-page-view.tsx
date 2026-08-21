@@ -393,7 +393,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               Bayar Hanya untuk Apa yang Anda Kirim
             </h2>
             <p className="text-slate-600">
-              Tidak ada biaya tersembunyi. Tidak ada iuran bulanan. Saldo Anda dipotong per pesan sukses, dengan harga token yang sangat terjangkau.
+              Tidak ada biaya tersembunyi. Tidak ada iuran bulanan. Saldo Anda dipotong per pesan terkirim, dengan harga token yang sangat terjangkau.
             </p>
           </div>
 
@@ -569,7 +569,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                   <div className="p-3 bg-white rounded-xl border border-slate-100">
                     <div className="text-[10px] text-slate-500 font-semibold mb-0.5">Biaya SIPESA</div>
                     <div className="text-base font-black text-[#3C405B]">Rp {formattedSipesaCost}</div>
-                    <div className="text-[9px] text-slate-400 leading-tight">Hanya untuk pesan sukses</div>
+                    <div className="text-[9px] text-slate-400 leading-tight">Per pesan terkirim</div>
                   </div>
 
                   <div className="p-3 bg-white rounded-xl border border-slate-100">
