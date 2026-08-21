@@ -4,8 +4,8 @@ import { X } from "lucide-react";
 
 type AppModalProps = {
   open: boolean;
-  title?: string;
-  description?: string;
+  title?: string | ReactNode;
+  description?: string | ReactNode;
   onClose?: () => void;
   closeOnBackdrop?: boolean;
   closeDisabled?: boolean;
@@ -55,7 +55,7 @@ export function AppModal({
       >
         {(title || description || onClose) && (
           <div className="border-b px-6 py-4 flex items-start justify-between gap-4">
-            <div>
+            <div className="flex-1 min-w-0">
               {title && <h3 className="text-lg font-semibold text-slate-900">{title}</h3>}
               {description && <p className="mt-1 text-sm text-slate-500">{description}</p>}
             </div>
