@@ -93,6 +93,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
   const [filterStatus, setFilterStatus] = useState("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
 
   useEffect(() => {
     let active = true;

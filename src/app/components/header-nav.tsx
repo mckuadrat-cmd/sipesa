@@ -41,7 +41,6 @@ export function HeaderNav({
 }: HeaderNavProps) {
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
-  const [showMailDropdown, setShowMailDropdown] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [avatar, setAvatar] = useState<string | null>(null);
   const [hasNewMessages, setHasNewMessages] = useState(false);
@@ -51,7 +50,6 @@ export function HeaderNav({
 
   const profileRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
-  const mailRef = useRef<HTMLDivElement>(null);
   const mobileMenuRef = useRef<HTMLDivElement>(null);
   const burgerBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -100,9 +98,7 @@ export function HeaderNav({
       if (notifRef.current && !notifRef.current.contains(event.target as Node)) {
         setShowNotifDropdown(false);
       }
-      if (mailRef.current && !mailRef.current.contains(event.target as Node)) {
-        setShowMailDropdown(false);
-      }
+
       if (
         mobileMenuRef.current &&
         !mobileMenuRef.current.contains(event.target as Node) &&
@@ -124,13 +120,10 @@ export function HeaderNav({
       { id: "rules", label: "Peraturan", icon: Scale },
     ]
     : [
-      { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
       { id: "contacts", label: "Daftar Kontak", icon: Users },
       { id: "templates", label: "Template Pesan", icon: FileText },
       { id: "broadcast", label: "Broadcast", icon: Send },
-      { id: "inbox", label: "Kotak Masuk", icon: MessageSquare },
       { id: "history", label: "Riwayat Broadcast", icon: History },
-      { id: "billing", label: "Billing & Token", icon: CreditCard },
       { id: "rules", label: "Peraturan", icon: Scale },
     ];
 
@@ -157,13 +150,7 @@ export function HeaderNav({
     read: false,
   }));
 
-  // Get mail/numbers mock info
-  const activeNumberItems = numbers.slice(0, 3).map((num) => ({
-    id: num.id,
-    name: num.name || "WhatsApp Business",
-    phone: num.number || "-",
-    unread: num.unreadCount || 0,
-  }));
+
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-slate-100 bg-white/80 backdrop-blur-md">
@@ -194,7 +181,6 @@ export function HeaderNav({
                   onViewChange(item.id);
                   setShowProfileDropdown(false);
                   setShowNotifDropdown(false);
-                  setShowMailDropdown(false);
                 }}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 relative ${isActive
                   ? "bg-slate-100 text-slate-900"
@@ -230,74 +216,26 @@ export function HeaderNav({
             </Button>
           )}
 
-          {/* Mail Dropdown (Inbox shortcuts) */}
+          {/* Inbox Shortcut */}
           {!isSuperadmin && (
-            <div className="md:relative" ref={mailRef}>
-              <button
-                onClick={() => {
-                  setShowMailDropdown(!showMailDropdown);
-                  setShowNotifDropdown(false);
-                  setShowProfileDropdown(false);
-                  setHasNewMessages(false); // Clear red dot when opened
-                }}
-                className="relative p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors"
-              >
-                <Mail className="w-5 h-5" />
-                {hasNewMessages && (
-                  <span className="absolute top-1.5 right-1.5 flex h-2.5 w-2.5">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
-                  </span>
-                )}
-              </button>
-
-              {showMailDropdown && (
-                <div className="absolute left-4 right-4 md:left-auto md:right-0 mx-auto md:mx-0 max-w-sm md:max-w-none mt-2 md:w-80 rounded-xl border border-slate-100 bg-white p-2 shadow-xl ring-1 ring-black/5 animate-in fade-in slide-in-from-top-2 duration-200">
-                  <div className="px-3 py-2 border-b border-slate-50 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    Kotak Masuk WhatsApp
-                  </div>
-                  <div className="divide-y divide-slate-50 max-h-60 overflow-y-auto mt-1">
-                    {activeNumberItems.length === 0 ? (
-                      <div className="px-4 py-6 text-center text-sm text-slate-400">
-                        Belum ada nomor WA terdaftar
-                      </div>
-                    ) : (
-                      activeNumberItems.map((item) => (
-                        <button
-                          key={item.id}
-                          onClick={() => {
-                            onViewChange("inbox");
-                            setShowMailDropdown(false);
-                          }}
-                          className="w-full flex items-center justify-between text-left px-3 py-2.5 hover:bg-slate-50 rounded-lg transition-colors"
-                        >
-                          <div className="min-w-0 flex-1 pr-2">
-                            <div className="text-sm font-medium text-slate-800 truncate">{item.name}</div>
-                            <div className="text-xs text-slate-400 truncate">{item.phone}</div>
-                          </div>
-                          {item.unread > 0 && (
-                            <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium text-white">
-                              {item.unread}
-                            </span>
-                          )}
-                        </button>
-                      ))
-                    )}
-                  </div>
-                  <div className="mt-1 pt-1 border-t border-slate-50">
-                    <button
-                      onClick={() => {
-                        onViewChange("inbox");
-                        setShowMailDropdown(false);
-                      }}
-                      className="w-full text-center text-xs font-medium text-primary hover:text-primary/90 py-2"
-                    >
-                      Buka Semua Kotak Masuk
-                    </button>
-                  </div>
-                </div>
+            <button
+              onClick={() => {
+                onViewChange("inbox");
+                setShowNotifDropdown(false);
+                setShowProfileDropdown(false);
+                setHasNewMessages(false); // Clear red dot when opened
+              }}
+              className="relative p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors"
+              title="Kotak Masuk"
+            >
+              <MessageSquare className="w-5 h-5" />
+              {hasNewMessages && (
+                <span className="absolute top-1.5 right-1.5 flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
+                </span>
               )}
-            </div>
+            </button>
           )}
 
           {/* Notifications Dropdown */}
@@ -306,7 +244,6 @@ export function HeaderNav({
               <button
                 onClick={() => {
                   setShowNotifDropdown(!showNotifDropdown);
-                  setShowMailDropdown(false);
                   setShowProfileDropdown(false);
                   setHasNewNotifs(false); // Clear red dot when opened
                 }}
@@ -361,7 +298,6 @@ export function HeaderNav({
             <button
               onClick={() => {
                 setShowProfileDropdown(!showProfileDropdown);
-                setShowMailDropdown(false);
                 setShowNotifDropdown(false);
               }}
               className="flex items-center gap-1.5 p-1 rounded-full hover:bg-slate-50 border border-slate-100 transition-colors"
@@ -407,6 +343,19 @@ export function HeaderNav({
                     >
                       <Settings className="w-4 h-4 text-slate-400" />
                       Pengaturan Akun
+                    </button>
+                  )}
+
+                  {!isSuperadmin && (
+                    <button
+                      onClick={() => {
+                        onViewChange("billing");
+                        setShowProfileDropdown(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors"
+                    >
+                      <CreditCard className="w-4 h-4 text-slate-400" />
+                      Billing & Token
                     </button>
                   )}
 
