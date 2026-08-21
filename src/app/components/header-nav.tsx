@@ -18,9 +18,11 @@ import {
   Scale,
   Menu,
   X,
+  Timer
 } from "lucide-react";
 import { Button } from "./ui/button";
 import logoFull from "/logo-sipesa.png";
+import { supabase } from "../lib/supabaseClient";
 
 interface HeaderNavProps {
   activeView: string;
@@ -45,6 +47,8 @@ export function HeaderNav({
   const [avatar, setAvatar] = useState<string | null>(null);
   const [hasNewNotifs, setHasNewNotifs] = useState(false);
   const [prevLatestNotifId, setPrevLatestNotifId] = useState<string | null>(null);
+  const [sessionExpiry, setSessionExpiry] = useState<number | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
 
   const profileRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -102,6 +106,52 @@ export function HeaderNav({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    const fetchSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.expires_at) {
+        setSessionExpiry(session.expires_at);
+      }
+    };
+    fetchSession();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.expires_at) {
+        setSessionExpiry(session.expires_at);
+      }
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionExpiry) return;
+
+    const updateTimer = () => {
+      const now = Math.floor(Date.now() / 1000);
+      const diff = sessionExpiry - now;
+      setTimeLeft(diff > 0 ? diff : 0);
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [sessionExpiry]);
+
+  const formatTimeLeft = (seconds: number | null) => {
+    if (seconds === null) return "";
+    if (seconds <= 0) return "Habis";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    
+    const pad = (n: number) => n.toString().padStart(2, "0");
+    if (h > 0) return `${h}:${pad(m)}:${pad(s)}`;
+    return `${pad(m)}:${pad(s)}`;
+  };
 
   const isSuperadmin = user?.email?.toLowerCase() === "mckuadratid@gmail.com";
 
@@ -195,6 +245,18 @@ export function HeaderNav({
 
         {/* Right Action Menu */}
         <div className="flex items-center gap-3">
+          {/* Session Timer */}
+          {timeLeft !== null && (
+            <div className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+              timeLeft < 300 
+                ? "bg-red-50 text-red-600 border-red-200 animate-pulse" 
+                : "bg-slate-50 text-slate-600 border-slate-200"
+            }`} title="Sisa waktu sesi aktif Anda">
+              <Timer className="w-3.5 h-3.5" />
+              <span className="tabular-nums min-w-[42px] text-center">{formatTimeLeft(timeLeft)}</span>
+            </div>
+          )}
+
           {/* Tambah Nomor WA Shortcut */}
           {!isSuperadmin && (
             <Button
