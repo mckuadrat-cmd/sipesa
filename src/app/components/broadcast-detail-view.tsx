@@ -158,11 +158,11 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
                   recipients: prev.recipients.map((r: any) =>
                     r.id === updated.id
                       ? {
-                          ...r,
-                          status: updated.status || "pending",
-                          timestamp: updated.sent_at ?? updated.updated_at ?? updated.created_at ?? "-",
-                          errorMessage: updated.error ?? undefined,
-                        }
+                        ...r,
+                        status: updated.status || "pending",
+                        timestamp: updated.sent_at ?? updated.updated_at ?? updated.created_at ?? "-",
+                        errorMessage: updated.error ?? undefined,
+                      }
                       : r
                   ),
                 };
@@ -313,14 +313,13 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
   const exportCsv = () => {
     if (!broadcast) return;
 
-    const header = ["Nama", "Nomor", "Status", "Waktu", "Error"];
+    const header = ["Nama Kontak", "Nomor WA", "Status", "Keterangan"];
 
     const rows = filteredRecipients.map((r) => [
       r.contactName,
       r.contactPhone,
       r.status,
       r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp),
-      r.errorMessage || "",
     ]);
 
     const csv = [header, ...rows]
@@ -466,9 +465,8 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
                 <thead className="bg-slate-100 border-b border-slate-200 text-slate-700 text-[11px] font-bold uppercase tracking-wider sticky top-0 z-10 shadow-sm">
                   <tr>
                     <th className="px-6 py-3 text-left">Nama Kontak</th>
-                    <th className="px-6 py-3 text-left">Nomor WhatsApp</th>
+                    <th className="px-6 py-3 text-left">Nomor WA</th>
                     <th className="px-6 py-3 text-left">Status</th>
-                    <th className="px-6 py-3 text-left">Waktu</th>
                     <th className="px-6 py-3 text-left">Keterangan</th>
                   </tr>
                 </thead>
@@ -493,14 +491,11 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
                           : ""
                           }`}
                       >
-                        <td className="px-6 py-4 font-medium text-slate-900">{r.contactName}</td>
+                        <td className="px-6 py-4 font-medium text-slate-900 max-w-[200px] truncate" title={r.contactName}>{r.contactName}</td>
                         <td className="px-6 py-4 font-mono text-slate-600">{r.contactPhone}</td>
                         <td className="px-6 py-4">{renderStatusBadge(r.status)}</td>
-                        <td className="px-6 py-4 text-slate-500 whitespace-nowrap">
+                        <td className="px-6 py-4 text-slate-500 max-w-[250px] truncate" title={r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp)}>
                           {r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp)}
-                        </td>
-                        <td className="px-6 py-4 text-slate-500 max-w-xs truncate">
-                          {r.errorMessage || "-"}
                         </td>
                       </tr>
                     );
@@ -508,7 +503,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
                   {filteredRecipients.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="p-8 text-center text-slate-400 text-sm font-medium">
+                      <td colSpan={4} className="p-8 text-center text-slate-400 text-sm font-medium">
                         Tidak ada data penerima ditemukan
                       </td>
                     </tr>
