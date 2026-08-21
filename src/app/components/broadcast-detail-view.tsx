@@ -460,7 +460,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
             <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
               <table className="w-full min-w-[600px]">
-                <thead className="bg-slate-50/80 border-b text-slate-600 text-xs font-semibold uppercase tracking-wider sticky top-0 z-10">
+                <thead className="bg-slate-50 border-b text-slate-600 text-xs font-semibold uppercase tracking-wider sticky top-0 z-10 shadow-sm ring-1 ring-slate-100">
                   <tr>
                     <th className="px-6 py-3 text-left">Nama Kontak</th>
                     <th className="px-6 py-3 text-left">Nomor WhatsApp</th>

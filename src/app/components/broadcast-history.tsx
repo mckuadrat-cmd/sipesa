@@ -586,9 +586,9 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
             </div>
           </div>
 
-          <div className="overflow-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50">
+          <div className="overflow-auto max-h-[60vh] border-b border-slate-100 rounded-b-lg">
+            <table className="w-full relative">
+              <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm ring-1 ring-slate-100">
                 <tr>
                   <th className="px-3 py-3 w-10 text-center">
                     <input

@@ -854,7 +854,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
 
               <div className="flex justify-between items-center px-2">
                 <span className="text-[11px] text-gray-400 font-medium">
-                  💰 Setiap pesan memotong 1 token (Rp 1.500)
+                  💰 Setiap pengiriman memotong 1 token (Rp 1.500)
                 </span>
                 {tokenBalance <= 10 && tokenBalance > 0 && (
                   <span className="text-[11px] text-amber-600 font-semibold animate-pulse">

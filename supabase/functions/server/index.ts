@@ -1313,14 +1313,12 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
         })
         .eq("id", msg.id);
 
-      await refundOneToken(user.org_id);
-
       await supa.from("billing_transactions").insert({
         org_id: user.org_id,
-        type: "refund",
-        tokens_delta: 1,
+        type: "usage",
+        tokens_delta: -1,
         amount_idr: 1500,
-        description: `Refund token pesan gagal ke ${contact.phone_e164}`,
+        description: `Pemakaian token chat manual ke ${contact.phone_e164} (gagal)`,
         ref_type: "message",
         ref_id: msg.id,
         created_by: user.id,
@@ -2553,32 +2551,7 @@ app.get(`${API_PREFIX}/broadcasts/:id/recipients`, requireAuth, async (c) => {
 
     if (recErr) return c.json(jsonFail(recErr.message), 500);
 
-    const messageIds = (recipients ?? []).map((r: any) => r.wa_message_id).filter(Boolean);
-    
-    let messagesMap = new Map();
-    if (messageIds.length > 0) {
-      const { data: messages } = await supa
-        .from("wa_messages")
-        .select("id, status")
-        .in("id", messageIds);
-      
-      (messages ?? []).forEach((m: any) => {
-        messagesMap.set(m.id, m.status);
-      });
-    }
-
-    const mapped = (recipients ?? []).map((r: any) => {
-      let finalStatus = r.status || "pending";
-      if (r.wa_message_id && messagesMap.has(r.wa_message_id)) {
-        finalStatus = messagesMap.get(r.wa_message_id);
-      }
-      return {
-        ...r,
-        status: finalStatus,
-      };
-    });
-
-    return c.json(jsonOk(mapped));
+    return c.json(jsonOk(recipients ?? []));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -3012,14 +2985,12 @@ async function runBroadcastWorker(
           })
           .eq("id", rec.id);
 
-        await refundOneToken(orgId);
-
         await supa.from("billing_transactions").insert({
           org_id: orgId,
-          type: "refund",
-          tokens_delta: 1,
+          type: "usage",
+          tokens_delta: -1,
           amount_idr: 1500,
-          description: `Refund token broadcast gagal ke ${rec.phone_e164}`,
+          description: `Pemakaian token broadcast: ${broadcast.title} -> ${rec.phone_e164} (gagal)`,
           ref_type: "broadcast_recipient",
           ref_id: rec.id,
           created_by: actorUserId,
