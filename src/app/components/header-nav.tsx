@@ -47,7 +47,6 @@ export function HeaderNav({
   const [avatar, setAvatar] = useState<string | null>(null);
   const [hasNewNotifs, setHasNewNotifs] = useState(false);
   const [prevLatestNotifId, setPrevLatestNotifId] = useState<string | null>(null);
-  const [sessionExpiry, setSessionExpiry] = useState<number | null>(null);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
 
   const profileRef = useRef<HTMLDivElement>(null);
@@ -108,38 +107,28 @@ export function HeaderNav({
   }, []);
 
   useEffect(() => {
-    const fetchSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.expires_at) {
-        setSessionExpiry(session.expires_at);
-      }
-    };
-    fetchSession();
-
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.expires_at) {
-        setSessionExpiry(session.expires_at);
-      }
-    });
-
-    return () => {
-      authListener.subscription.unsubscribe();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!sessionExpiry) return;
-
     const updateTimer = () => {
-      const now = Math.floor(Date.now() / 1000);
-      const diff = sessionExpiry - now;
-      setTimeLeft(diff > 0 ? diff : 0);
+      const token = localStorage.getItem("SIPESA_SESSION");
+      if (token) {
+        try {
+          const base64Url = token.split(".")[1];
+          const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+          const payload = JSON.parse(atob(base64));
+          if (payload.exp) {
+            const now = Math.floor(Date.now() / 1000);
+            const diff = payload.exp - now;
+            setTimeLeft(diff > 0 ? diff : 0);
+          }
+        } catch (e) {
+          console.error("Failed to parse token expiry", e);
+        }
+      }
     };
 
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, [sessionExpiry]);
+  }, []);
 
   const formatTimeLeft = (seconds: number | null) => {
     if (seconds === null) return "";

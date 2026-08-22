@@ -313,9 +313,10 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
   const exportCsv = () => {
     if (!broadcast) return;
 
-    const header = ["Nama Kontak", "Nomor WA", "Status", "Keterangan"];
+    const header = ["No", "Nama Kontak", "Nomor WhatsApp", "Status", "Keterangan"];
 
-    const rows = filteredRecipients.map((r) => [
+    const rows = filteredRecipients.map((r, index) => [
+      index + 1,
       r.contactName,
       r.contactPhone,
       r.status,
@@ -464,14 +465,15 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
               <table className="w-full min-w-[600px]">
                 <thead className="bg-slate-100 border-b border-slate-200 text-slate-700 text-[11px] font-bold uppercase tracking-wider sticky top-0 z-10 shadow-sm">
                   <tr>
+                    <th className="px-6 py-3 text-center w-12">No</th>
                     <th className="px-6 py-3 text-left">Nama Kontak</th>
-                    <th className="px-6 py-3 text-left">Nomor WA</th>
+                    <th className="px-6 py-3 text-left">Nomor WhatsApp</th>
                     <th className="px-6 py-3 text-left">Status</th>
                     <th className="px-6 py-3 text-left">Keterangan</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
-                  {filteredRecipients.map((r) => {
+                  {filteredRecipients.map((r, idx) => {
                     const rowId = `rec-row-${r.id}`;
                     const isProcessing = r.status === "processing";
 
@@ -491,6 +493,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
                           : ""
                           }`}
                       >
+                        <td className="px-6 py-4 text-center font-medium text-slate-500">{idx + 1}</td>
                         <td className="px-6 py-4 font-medium text-slate-900 max-w-[200px] truncate" title={r.contactName}>{r.contactName}</td>
                         <td className="px-6 py-4 font-mono text-slate-600">{r.contactPhone}</td>
                         <td className="px-6 py-4">{renderStatusBadge(r.status)}</td>
@@ -503,7 +506,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
                   {filteredRecipients.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="p-8 text-center text-slate-400 text-sm font-medium">
+                      <td colSpan={5} className="p-8 text-center text-slate-400 text-sm font-medium">
                         Tidak ada data penerima ditemukan
                       </td>
                     </tr>
