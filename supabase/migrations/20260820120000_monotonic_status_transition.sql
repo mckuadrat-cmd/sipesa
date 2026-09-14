@@ -1,3 +1,8 @@
+-- Alter broadcast_recipient_status enum to add delivered, read, cancelled
+ALTER TYPE public.broadcast_recipient_status ADD VALUE IF NOT EXISTS 'delivered';
+ALTER TYPE public.broadcast_recipient_status ADD VALUE IF NOT EXISTS 'read';
+ALTER TYPE public.broadcast_recipient_status ADD VALUE IF NOT EXISTS 'cancelled';
+
 -- Add columns to wa_broadcasts if they do not exist
 ALTER TABLE public.wa_broadcasts ADD COLUMN IF NOT EXISTS total_delivered integer DEFAULT 0;
 ALTER TABLE public.wa_broadcasts ADD COLUMN IF NOT EXISTS total_read integer DEFAULT 0;

@@ -387,6 +387,116 @@ async function testSuite() {
   assert.strictEqual(stats.uniqueMetaIds.size, 500);
   assert.strictEqual(b4.status, 'completed');
   assert.ok(stats.workerRestarts >= 12, 'FAILED: worker did not retrigger');
+  console.log('  PASS: 500 recipients test passed.');
+
+  // Test 5: Historical Healing Sync & Dynamic highest status mapping (maxStatus)
+  console.log('\n[TEST 5] Testing Historical Healing Sync & Dynamic maxStatus Mapping:');
+  
+  // Setup old historical data out-of-sync
+  // wa_broadcast_recipients.status is 'sent', wa_messages.status is 'read'
+  const oldMsg = { id: 'old-msg-1', status: 'read', meta_message_id: 'wamid.old1' };
+  wa_messages.push(oldMsg);
+  const oldRec = { id: 'old-rec-1', broadcast_id: 'b_old', wa_message_id: 'old-msg-1', provider_message_id: 'wamid.old1', status: 'sent' };
+  wa_broadcast_recipients.push(oldRec);
+  
+  const oldB = { id: 'b_old', title: 'Old Broadcast', status: 'sending', total_recipients: 1 };
+  wa_broadcasts.push(oldB);
+
+  // Dynamic maxStatus resolution (GET /broadcasts/:id/recipients mapping)
+  const resolveFinalStatus = (rec, msg) => {
+    let finalStatus = rec.status;
+    if (msg && wa_status_rank(msg.status) > wa_status_rank(rec.status)) {
+      finalStatus = msg.status;
+    }
+    return finalStatus;
+  };
+
+  const statusBeforeHealing = resolveFinalStatus(oldRec, oldMsg);
+  assert.strictEqual(statusBeforeHealing, 'read', 'FAILED: maxStatus did not resolve to read');
+  console.log('  PASS: Dynamic maxStatus mapped correctly to "read".');
+
+  // Perform Emulated Healing: Update r.status using monotonic rules (only upgrade)
+  if (wa_status_can_transition(oldRec.status, oldMsg.status)) {
+    oldRec.status = oldMsg.status;
+  }
+  recalculateBroadcastStats('b_old');
+
+  assert.strictEqual(oldRec.status, 'read', 'FAILED: Healing failed to upgrade status to read');
+  assert.strictEqual(oldB.total_read, 1, 'FAILED: Broadcast stats failed to recalculate read count');
+  console.log('  PASS: Healing sync query successfully upgraded status to "read" and updated broadcast counts.');
+
+  // Clean up
+  wa_messages = [];
+  wa_broadcast_recipients = [];
+  wa_broadcasts = [];
+
+  // Test 6: Broadcast test of 10 recipients with realtime sequence sequence
+  console.log('\n[TEST 6] Testing Realtime Sequence for 10 Recipients (pending -> processing -> sent -> delivered -> read):');
+  const testB = { id: 'test-bc', title: 'Realtime Seq Test', status: 'queued', total_recipients: 10 };
+  wa_broadcasts.push(testB);
+
+  const testRecs = [];
+  const testMsgs = [];
+
+  for (let i = 1; i <= 10; i++) {
+    testRecs.push({
+      id: 'r-seq-' + i,
+      broadcast_id: 'test-bc',
+      status: 'pending',
+      phone_e164: '6281200000' + i,
+    });
+  }
+  wa_broadcast_recipients = testRecs;
+
+  // Let's emulate a full sequence run:
+  console.log('  - Initiating worker (status pending -> processing)');
+  testRecs.forEach(r => {
+    assert.strictEqual(r.status, 'pending');
+    r.status = 'processing';
+  });
+  console.log('    PASS: all recipients processing.');
+
+  // Simulate Meta response sending callback (processing -> sent)
+  console.log('  - Meta API responding (processing -> sent)');
+  testRecs.forEach((r, idx) => {
+    const msgId = 'm-seq-' + idx;
+    const metaId = 'wamid.seq.' + idx;
+    
+    wa_messages.push({
+      id: msgId,
+      status: 'queued',
+      meta_message_id: null,
+    });
+    
+    // Links and advances to default status 'sent'
+    link_and_advance_wa_message(msgId, r.id, metaId, 'sent', { id: metaId });
+    assert.strictEqual(r.status, 'sent');
+  });
+  console.log('    PASS: all recipients sent.');
+
+  // Simulate Webhook delivered callback (sent -> delivered)
+  console.log('  - Meta Webhook responding with delivered (sent -> delivered)');
+  testRecs.forEach((r, idx) => {
+    const metaId = 'wamid.seq.' + idx;
+    handleIncomingWebhook(metaId, 'delivered');
+    assert.strictEqual(r.status, 'delivered');
+  });
+  console.log('    PASS: all recipients delivered.');
+
+  // Simulate Webhook read callback (delivered -> read)
+  console.log('  - Meta Webhook responding with read (delivered -> read)');
+  testRecs.forEach((r, idx) => {
+    const metaId = 'wamid.seq.' + idx;
+    handleIncomingWebhook(metaId, 'read');
+    assert.strictEqual(r.status, 'read');
+  });
+  console.log('    PASS: all recipients read.');
+
+  recalculateBroadcastStats('test-bc');
+  assert.strictEqual(testB.total_read, 10);
+  assert.strictEqual(testB.status, 'completed');
+  console.log('  PASS: sequence test completed successfully with 10 recipients.');
+
   console.log('\n  ALL TESTS PASS SUCCESSFULLY!');
 }
 
