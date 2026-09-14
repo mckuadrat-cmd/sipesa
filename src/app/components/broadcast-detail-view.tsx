@@ -210,14 +210,16 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
 
     const r = broadcast.recipients;
 
-    const sentCount = r.filter((x) => x.status === "accepted" || x.status === "processing" || x.status === "sent").length;
+    const rawSentCount = r.filter((x) => x.status === "accepted" || x.status === "processing" || x.status === "sent").length;
     const deliveredCount = r.filter((x) => x.status === "delivered").length;
     const readCount = r.filter((x) => x.status === "read").length;
     const failedCount = r.filter((x) => x.status === "failed").length;
 
+    const totalSentAccumulation = rawSentCount + deliveredCount + readCount;
+
     return {
       total: r.length,
-      sent: sentCount,
+      sent: totalSentAccumulation,
       delivered: deliveredCount,
       read: readCount,
       failed: failedCount,
@@ -236,7 +238,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       if (filterStatus === "all") {
         filter = true;
       } else if (filterStatus === "sent") {
-        filter = r.status === "accepted" || r.status === "processing" || r.status === "sent";
+        filter = r.status === "accepted" || r.status === "processing" || r.status === "sent" || r.status === "delivered" || r.status === "read";
       } else {
         filter = r.status === filterStatus;
       }
