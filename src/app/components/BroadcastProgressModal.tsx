@@ -409,7 +409,7 @@ export function BroadcastProgressModal({
     <AppModal
       open={open}
       title="Proses Broadcast"
-      description={`Total: ${summary.total} • Sent: ${summary.sent} • Delivered: ${summary.delivered} • Read: ${summary.read} • Failed: ${summary.failed}`}
+      description={`Total: ${summary.total} • Sent: ${summary.sent + summary.delivered + summary.read} • Delivered: ${summary.delivered} • Read: ${summary.read} • Failed: ${summary.failed}`}
       onClose={onClose}
       closeOnBackdrop={isDone}
       closeDisabled={!isDone}
