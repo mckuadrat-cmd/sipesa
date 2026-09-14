@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { HeaderNav } from "./components/header-nav";
 import { DashboardView } from "./components/dashboard-view";
 import { InboxView } from "./components/inbox-view";
