@@ -2416,6 +2416,7 @@ app.get(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
         totalRecipients: r.total_recipients ?? 0,
         totalSent: r.total_sent ?? 0,
         totalFailed: r.total_failed ?? 0,
+        cancelled: r.total_cancelled ?? 0,
         sent: Math.max(0, Number(r.total_sent ?? 0) - Number(r.total_delivered ?? 0)),
         delivered: Math.max(0, Number(r.total_delivered ?? 0) - Number(r.total_read ?? 0)),
         read: Number(r.total_read ?? 0),
@@ -3173,9 +3174,10 @@ async function recalculateBroadcastStats(supa: any, broadcastId: string) {
     const totalDelivered = statsRows.filter((x: any) => x.status === "delivered" || x.status === "read").length;
     const totalRead = statsRows.filter((x: any) => x.status === "read").length;
     const totalFailed = statsRows.filter((x: any) => x.status === "failed").length;
+    const totalCancelled = statsRows.filter((x: any) => x.status === "cancelled" || x.status === "canceled").length;
     const totalPending = statsRows.filter((x: any) => x.status === "pending" || x.status === "processing").length;
 
-    const nextStatus = totalPending === 0 ? "completed" : "sending";
+    const nextStatus = totalPending === 0 ? (totalCancelled > 0 && totalSent === 0 ? "cancelled" : "completed") : "sending";
 
     await supa
       .from("wa_broadcasts")
@@ -3186,6 +3188,7 @@ async function recalculateBroadcastStats(supa: any, broadcastId: string) {
         total_delivered: totalDelivered,
         total_read: totalRead,
         total_failed: totalFailed,
+        total_cancelled: totalCancelled,
         finished_at: totalPending === 0 ? nowIso() : null,
         updated_at: nowIso(),
       })
