@@ -10,7 +10,10 @@ CREATE TABLE kv_store_1efc2210 (
 // View at https://supabase.com/dashboard/project/gwokwhznesggqoqrzaet/database/tables
 
 // This file provides a simple key-value interface for storing Figma Make data. It should be adequate for most small-scale use cases.
+// @ts-ignore
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
+
+declare const Deno: any;
 
 const client = () => createClient(
   Deno.env.get("SUPABASE_URL"),
@@ -64,7 +67,7 @@ export const mget = async (keys: string[]): Promise<any[]> => {
   if (error) {
     throw new Error(error.message);
   }
-  return data?.map((d) => d.value) ?? [];
+  return data?.map((d: any) => d.value) ?? [];
 };
 
 // Deletes multiple key-value pairs from the database.
@@ -83,5 +86,5 @@ export const getByPrefix = async (prefix: string): Promise<any[]> => {
   if (error) {
     throw new Error(error.message);
   }
-  return data?.map((d) => d.value) ?? [];
+  return data?.map((d: any) => d.value) ?? [];
 };
