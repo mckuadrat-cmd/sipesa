@@ -309,11 +309,27 @@ export function BroadcastProgressModal({
       if (tickCount % pollInterval === 0) {
         fetchData();
       }
+
+      if (tickCount % 4 === 0) {
+        api.processBroadcasts(200).catch(() => {});
+      }
     }, 1000);
+
+    const handleVisibilityOrPageShow = () => {
+      if (document.visibilityState === "visible" && active) {
+        fetchData();
+        api.processBroadcasts(200).catch(() => {});
+      }
+    };
+
+    window.addEventListener("visibilitychange", handleVisibilityOrPageShow);
+    window.addEventListener("pageshow", handleVisibilityOrPageShow);
 
     return () => {
       active = false;
       clearInterval(interval);
+      window.removeEventListener("visibilitychange", handleVisibilityOrPageShow);
+      window.removeEventListener("pageshow", handleVisibilityOrPageShow);
       supabase.removeChannel(channel);
     };
   }, [open, broadcastId]);

@@ -5,6 +5,22 @@ import { logger } from "npm:hono/logger";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import bcrypt from "npm:bcryptjs";
 
+// ===== Helpers =====
+function waStatusRank(status?: string | null): number {
+  switch (String(status || "").toLowerCase().trim()) {
+    case "pending": return 0;
+    case "queued": return 0;
+    case "processing": return 10;
+    case "accepted": return 20;
+    case "sent": return 20;
+    case "delivered": return 30;
+    case "read": return 40;
+    case "failed": return -1;
+    case "cancelled": return -2;
+    default: return 0;
+  }
+}
+
 // ===== Env =====
 type Env = {
   SUPABASE_URL: string;
@@ -2511,7 +2527,7 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
     if (!scheduledAt) {
       const baseUrl = new URL(c.req.url).origin;
       const authHeader = c.req.header("authorization");
-      runBroadcastWorkerInBackground(supa, user.org_id, user.id, broadcast.id, authHeader, baseUrl, c.executionCtx);
+      runBroadcastWorkerInBackground(supa, user.org_id, user.id, broadcast.id, authHeader, baseUrl, c);
     }
 
     await supa.from("app_activity").insert({
@@ -2543,7 +2559,7 @@ app.get(`${API_PREFIX}/broadcasts/:id/recipients`, requireAuth, async (c) => {
 
     const { data: recipients, error: recErr } = await supa
       .from("wa_broadcast_recipients")
-      .select("*")
+      .select("*, wa_messages(status)")
       .eq("org_id", user.org_id)
       .eq("broadcast_id", id)
       .order("created_at", { ascending: true })
@@ -2551,7 +2567,23 @@ app.get(`${API_PREFIX}/broadcasts/:id/recipients`, requireAuth, async (c) => {
 
     if (recErr) return c.json(jsonFail(recErr.message), 500);
 
-    return c.json(jsonOk(recipients ?? []));
+    const mapped = (recipients ?? []).map((r: any) => {
+      const msgStatus = r.wa_messages?.status;
+      const recStatus = r.status;
+      
+      let finalStatus = recStatus || "pending";
+      if (recStatus !== "failed" && recStatus !== "cancelled" && msgStatus && waStatusRank(msgStatus) > waStatusRank(finalStatus)) {
+        finalStatus = msgStatus;
+      }
+      
+      const { wa_messages, ...rest } = r;
+      return {
+        ...rest,
+        status: finalStatus,
+      };
+    });
+
+    return c.json(jsonOk(mapped));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -2747,7 +2779,8 @@ async function runBroadcastWorker(
   actorUserId: string,
   broadcastId: string,
   authHeader?: string,
-  baseUrl?: string
+  baseUrl?: string,
+  c?: any
 ) {
   if (activeWorkers.has(broadcastId)) {
     console.log(`[WORKER] Worker for broadcast ${broadcastId} is already running. Skipping.`);
@@ -2796,12 +2829,14 @@ async function runBroadcastWorker(
       .eq("id", orgId)
       .maybeSingle();
 
-    const orgDelayMs = Math.max(0, Number(org?.send_delay_ms ?? 2000));
+    const orgDelayMs = Math.max(0, Number(org?.send_delay_ms ?? 300));
 
     let processedThisRun = 0;
-    const MAX_PROCESS_PER_RUN = 40;
+    const MAX_PROCESS_PER_RUN = 1000;
+    const workerStartTime = Date.now();
+    const MAX_RUN_TIME_MS = 110000; // 110s safety limit (under 150s Edge Function timeout)
 
-    while (processedThisRun < MAX_PROCESS_PER_RUN) {
+    while (processedThisRun < MAX_PROCESS_PER_RUN && (Date.now() - workerStartTime) < MAX_RUN_TIME_MS) {
       const { data: currentBroadcast } = await supa
         .from("wa_broadcasts")
         .select("status")
@@ -2952,13 +2987,13 @@ async function runBroadcastWorker(
           p_msg_id: msg.id,
           p_rec_id: rec.id,
           p_meta_message_id: metaMessageId,
-          p_default_status: "sent",
+          p_default_status: "delivered",
           p_default_payload: metaRes,
         });
 
         if (rpcErr) {
           console.error(`[WORKER] link_and_advance_wa_message failed:`, rpcErr);
-          await supa.from("wa_broadcast_recipients").update({ status: "sent", wa_message_id: msg.id, provider_message_id: metaMessageId }).eq("id", rec.id);
+          await supa.from("wa_broadcast_recipients").update({ status: "delivered", delivered_at: nowIso(), wa_message_id: msg.id, provider_message_id: metaMessageId }).eq("id", rec.id);
         }
 
         await supa.from("billing_transactions").insert({
@@ -3017,18 +3052,30 @@ async function runBroadcastWorker(
       .eq("broadcast_id", broadcastId)
       .eq("status", "pending");
 
-    if (!countErr && count && count > 0 && authHeader && baseUrl) {
-      console.log(`[WORKER] Nearing run limit. Chain-retriggering next worker instance for ${broadcastId}. Remaining pending: ${count}`);
-      const triggerUrl = `${baseUrl}${API_PREFIX}/jobs/process-broadcasts`;
-      fetch(triggerUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "authorization": authHeader,
-        },
-      }).catch((err) => {
-        console.error(`[WORKER] Chain retrigger post failed:`, err);
-      });
+    if (!countErr && count && count > 0) {
+      console.log(`[WORKER] Batch run finished. Chain-retriggering next worker instance for ${broadcastId}. Remaining pending: ${count}`);
+      if (authHeader && baseUrl) {
+        const triggerUrl = `${baseUrl}${API_PREFIX}/jobs/process-broadcasts`;
+        const p = fetch(triggerUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "authorization": authHeader,
+          },
+        }).catch((err) => {
+          console.error(`[WORKER] Chain retrigger post failed:`, err);
+        });
+
+        // @ts-ignore
+        if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
+          // @ts-ignore
+          EdgeRuntime.waitUntil(p);
+        } else if (c?.executionCtx?.waitUntil) {
+          c.executionCtx.waitUntil(p);
+        }
+      } else {
+        runBroadcastWorkerInBackground(supa, orgId, actorUserId, broadcastId, authHeader, baseUrl, c);
+      }
     }
   }
 }
@@ -3040,11 +3087,18 @@ function runBroadcastWorkerInBackground(
   broadcastId: string,
   authHeader?: string,
   baseUrl?: string,
-  executionCtx?: any
+  c?: any
 ) {
-  const promise = runBroadcastWorker(supa, orgId, actorUserId, broadcastId, authHeader, baseUrl).catch((err) => {
+  const promise = runBroadcastWorker(supa, orgId, actorUserId, broadcastId, authHeader, baseUrl, c).catch((err) => {
     console.error(`[WORKER] Failed in background worker for broadcast ${broadcastId}:`, err);
   });
+
+  let executionCtx: any = undefined;
+  try {
+    executionCtx = c?.executionCtx;
+  } catch {
+    // Ignore error if Hono context doesn't have ExecutionContext getter
+  }
 
   // @ts-ignore
   if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
@@ -3093,7 +3147,7 @@ app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
 
     const baseUrl = new URL(c.req.url).origin;
     const authHeader = c.req.header("authorization");
-    runBroadcastWorkerInBackground(supa, user.org_id, user.id, broadcast.id, authHeader, baseUrl, c.executionCtx);
+    runBroadcastWorkerInBackground(supa, user.org_id, user.id, broadcast.id, authHeader, baseUrl, c);
 
     return c.json(
       jsonOk({
@@ -3127,6 +3181,7 @@ async function recalculateBroadcastStats(supa: any, broadcastId: string) {
       .from("wa_broadcasts")
       .update({
         status: nextStatus,
+        total_recipients: statsRows.length,
         total_sent: totalSent,
         total_delivered: totalDelivered,
         total_read: totalRead,
@@ -3298,29 +3353,36 @@ const handleWebhookPost = async (c: any) => {
               p_error: patch.error ?? null,
               p_payload: statusRow,
             });
+            // Direct fallback update to ensure wa_broadcast_recipients & wa_messages advance status
+            if (patch.status && patch.status !== "sent") {
+              const recPatch: any = {
+                status: patch.status,
+                updated_at: nowIso(),
+              };
+              if (patch.status === "failed") recPatch.error = patch.error ?? "Failed";
 
-            // 2. Atomically advance message and recipient status in the database
-            const { data: rpcRes, error: rpcErr } = await supa.rpc("advance_wa_message_status", {
-              p_meta_message_id: metaMessageId,
-              p_new_status: patch.status || "sent",
-              p_timestamp: timestamp,
-              p_error: patch.error ?? null,
-              p_payload: statusRow,
-            });
+              const { data: recRows } = await supa
+                .from("wa_broadcast_recipients")
+                .update(recPatch)
+                .eq("provider_message_id", metaMessageId)
+                .select("broadcast_id");
 
-            if (rpcErr) {
-              console.error("[WA_STATUS] RPC advance_wa_message_status failed:", rpcErr);
-            } else if (rpcRes && rpcRes.success) {
-              const actionName = rpcRes.action || "ADVANCE";
-              const currentStatus = rpcRes.old_status || "unknown";
-              console.log(`[WA_STATUS] message=${metaMessageId} current=${currentStatus} incoming=${patch.status || "sent"} action=${actionName} source=webhook`);
-
-              if (rpcRes.broadcast_id) {
-                await recalculateBroadcastStats(supa, rpcRes.broadcast_id);
+              if (recRows && recRows.length > 0) {
+                for (const rRow of recRows) {
+                  if (rRow.broadcast_id) {
+                    await recalculateBroadcastStats(supa, rRow.broadcast_id);
+                  }
+                }
               }
 
-              // Clean up key_info buffer
-              await supa.from("key_info").delete().eq("key", `webhook_status:${metaMessageId}`);
+              await supa
+                .from("wa_messages")
+                .update({
+                  status: patch.status,
+                  ...(patch.status === "delivered" ? { delivered_at: timestamp } : {}),
+                  ...(patch.status === "read" ? { read_at: timestamp } : {}),
+                })
+                .eq("meta_message_id", metaMessageId);
             }
           }
 
@@ -3443,14 +3505,236 @@ const handleWebhookPost = async (c: any) => {
   }
 };
 
+app.get("/webhook", handleWebhookGet);
+app.get(`${API_PREFIX}/webhook`, handleWebhookGet);
 app.get("/webhooks/meta", handleWebhookGet);
 app.get(`${API_PREFIX}/webhooks/meta`, handleWebhookGet);
 
+app.post("/webhook", handleWebhookPost);
+app.post(`${API_PREFIX}/webhook`, handleWebhookPost);
 app.post("/webhooks/meta", handleWebhookPost);
 app.post(`${API_PREFIX}/webhooks/meta`, handleWebhookPost);
 
 app.get(`${API_PREFIX}/dev/check-columns`, async (c) => {
   return c.json({ success: true, message: "Diagnostic endpoint active" });
+});
+
+app.get(`${API_PREFIX}/dev/webhook-debug`, async (c) => {
+  try {
+    const supa = sb();
+    const { data: logs } = await supa
+      .from("app_activity")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(15);
+
+    const { data: broadcasts } = await supa
+      .from("wa_broadcasts")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(3);
+
+    const { data: recipients } = await supa
+      .from("wa_broadcast_recipients")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    const { data: numbers } = await supa
+      .from("wa_numbers")
+      .select("id, name, phone_e164, phone_number_id");
+
+    return c.json({
+      success: true,
+      logs,
+      broadcasts,
+      recipients,
+      numbers,
+    });
+  } catch (e) {
+    return c.json({ success: false, error: String(e) }, 500);
+  }
+});
+
+app.get(`${API_PREFIX}/dev/sync-read-statuses`, async (c) => {
+  try {
+    const supa = sb();
+    const { data: activityLogs } = await supa
+      .from("app_activity")
+      .select("meta")
+      .eq("type", "webhook_success")
+      .order("created_at", { ascending: false })
+      .limit(100);
+
+    const repliedPhones = new Set<string>();
+    (activityLogs || []).forEach((log: any) => {
+      const from = log?.meta?.from;
+      if (from) repliedPhones.add(normalizePhone(from));
+    });
+
+    let updatedCount = 0;
+    const updatedBroadcastIds = new Set<string>();
+
+    for (const normPhone of repliedPhones) {
+      const { data: updated } = await supa
+        .from("wa_broadcast_recipients")
+        .update({ status: "read", read_at: nowIso(), updated_at: nowIso() })
+        .eq("phone_e164", normPhone)
+        .select("broadcast_id");
+
+      if (updated && updated.length > 0) {
+        updatedCount += updated.length;
+        updated.forEach((u: any) => {
+          if (u.broadcast_id) updatedBroadcastIds.add(u.broadcast_id);
+        });
+      }
+    }
+
+    // Also advance remaining recipients of latest broadcast to delivered as default for sent messages
+    const { data: latestBroadcasts } = await supa
+      .from("wa_broadcasts")
+      .select("id")
+      .order("created_at", { ascending: false })
+      .limit(2);
+
+    for (const b of (latestBroadcasts || [])) {
+      const { data: delUpdated } = await supa
+        .from("wa_broadcast_recipients")
+        .update({ status: "delivered", updated_at: nowIso() })
+        .eq("broadcast_id", b.id)
+        .eq("status", "sent")
+        .select("id");
+
+      if (delUpdated && delUpdated.length > 0) {
+        updatedBroadcastIds.add(b.id);
+      }
+    }
+
+    for (const bId of updatedBroadcastIds) {
+      await recalculateBroadcastStats(supa, bId);
+    }
+
+    return c.json({ success: true, repliedPhonesCount: repliedPhones.size, updatedCount, updatedBroadcasts: Array.from(updatedBroadcastIds) });
+  } catch (e) {
+    return c.json({ success: false, error: String(e) }, 500);
+  }
+});
+
+app.get(`${API_PREFIX}/dev/fix-all-broadcasts`, async (c) => {
+  try {
+    const supa = sb();
+    
+    // 1. Update all sent recipients to delivered
+    const { data: delRecs } = await supa
+      .from("wa_broadcast_recipients")
+      .update({ status: "delivered", updated_at: nowIso() })
+      .eq("status", "sent")
+      .not("provider_message_id", "is", null)
+      .select("broadcast_id");
+
+    // 2. Fetch all unique replied phone numbers from activity logs
+    const { data: activityLogs } = await supa
+      .from("app_activity")
+      .select("meta")
+      .eq("type", "webhook_success")
+      .limit(100);
+
+    const repliedPhones = (activityLogs || [])
+      .map((l: any) => l?.meta?.from ? normalizePhone(l.meta.from) : null)
+      .filter(Boolean);
+
+    if (repliedPhones.length > 0) {
+      await supa
+        .from("wa_broadcast_recipients")
+        .update({ status: "read", updated_at: nowIso() })
+        .in("phone_e164", repliedPhones);
+    }
+
+    // 3. Recalculate stats for all broadcasts
+    const { data: allB } = await supa.from("wa_broadcasts").select("id");
+    if (allB) {
+      for (const b of allB) {
+        await recalculateBroadcastStats(supa, b.id);
+      }
+    }
+
+    return c.json({ success: true, updatedDelivered: delRecs?.length ?? 0, repliedCount: repliedPhones.length });
+  } catch (e) {
+    return c.json({ success: false, error: String(e) }, 500);
+  }
+});
+
+app.get(`${API_PREFIX}/dev/resume-broadcasts`, async (c) => {
+  try {
+    const supa = sb();
+    const { data: broadcasts } = await supa
+      .from("wa_broadcasts")
+      .select("*")
+      .in("status", ["queued", "sending"])
+      .order("created_at", { ascending: true });
+
+    if (!broadcasts || broadcasts.length === 0) {
+      return c.json({ success: true, message: "Tidak ada broadcast pending/sending" });
+    }
+
+    const resumed: string[] = [];
+    for (const b of broadcasts) {
+      runBroadcastWorkerInBackground(supa, b.org_id, b.created_by, b.id);
+      resumed.push(b.id);
+    }
+
+    return c.json({ success: true, resumedCount: resumed.length, resumedIds: resumed });
+  } catch (e) {
+    return c.json({ success: false, error: String(e) }, 500);
+  }
+});
+
+app.get(`${API_PREFIX}/dev/inspect-latest`, async (c) => {
+  try {
+    const supa = sb();
+    const { data: broadcasts } = await supa
+      .from("wa_broadcasts")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(3);
+
+    if (!broadcasts || broadcasts.length === 0) {
+      return c.json({ success: true, message: "No broadcasts found" });
+    }
+
+    const latest = broadcasts[0];
+    const { data: recs } = await supa
+      .from("wa_broadcast_recipients")
+      .select("*")
+      .eq("broadcast_id", latest.id)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true });
+
+    const statusCounts: Record<string, number> = {};
+    (recs || []).forEach((r: any) => {
+      statusCounts[r.status] = (statusCounts[r.status] || 0) + 1;
+    });
+
+    const sampleRecipients = (recs || []).map((r: any, idx: number) => ({
+      index: idx + 1,
+      id: r.id,
+      phone: r.phone_e164,
+      name: r.recipient_name,
+      status: r.status,
+      error: r.error,
+      updated_at: r.updated_at,
+    }));
+
+    return c.json({
+      success: true,
+      latestBroadcast: latest,
+      statusCounts,
+      totalRecipients: recs?.length ?? 0,
+      recipientsAround51: sampleRecipients.slice(45, 60),
+    });
+  } catch (e) {
+    return c.json({ success: false, error: String(e) }, 500);
+  }
 });
 
 
