@@ -50,19 +50,23 @@ export function BroadcastHistoryView({ onBack, onViewDetail }: BroadcastHistoryV
         return;
       }
 
-      const normalized: Broadcast[] = (result.data ?? []).map((b: any) => ({
-        id: b.id,
-        numberId: b.numberId ?? "",
-        numberName: b.numberName ?? "Nomor WA",
-        message: b.message ?? "",
-        totalRecipients: Number(b.totalRecipients ?? 0),
-        sent: Number(b.sent ?? b.totalSent ?? 0),
-        delivered: Number(b.delivered ?? 0),
-        read: Number(b.read ?? 0),
-        failed: Number(b.failed ?? b.totalFailed ?? 0),
-        createdAt: b.createdAt ?? "-",
-        status: b.status ?? "completed",
-      }));
+      const normalized: Broadcast[] = (result.data ?? []).map((b: any) => {
+        const totalSentCount = Number(b.totalSent ?? (Number(b.sent ?? 0) + Number(b.delivered ?? 0) + Number(b.read ?? 0)));
+        return {
+          id: b.id,
+          numberId: b.numberId ?? "",
+          numberName: b.numberName ?? "Nomor WA",
+          message: b.message ?? "",
+          totalRecipients: Number(b.totalRecipients ?? 0),
+          sent: totalSentCount,
+          delivered: Number(b.delivered ?? 0),
+          read: Number(b.read ?? 0),
+          failed: Number(b.failed ?? b.totalFailed ?? 0),
+          cancelled: Number(b.cancelled ?? b.totalCancelled ?? 0),
+          createdAt: b.createdAt ?? "-",
+          status: b.status ?? "completed",
+        };
+      });
 
       setError("");
       setBroadcasts(normalized);

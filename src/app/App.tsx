@@ -135,15 +135,25 @@ export default function App() {
     initializeApp();
   }, []);
 
+  const isManualLoggingOutRef = useRef(false);
+  const lastUnauthorizedToastRef = useRef(0);
+
   useEffect(() => {
     const handleUnauthorized = () => {
+      if (isManualLoggingOutRef.current) return;
+
+      const now = Date.now();
+      if (now - lastUnauthorizedToastRef.current > 10000) {
+        lastUnauthorizedToastRef.current = now;
+        toast.error("Sesi Anda telah berakhir. Silakan masuk kembali.");
+      }
+
       setIsAuthenticated(false);
       setUser(null);
       setSelectedNumber(null);
       setSelectedBroadcast(null);
       setActiveView("dashboard");
       window.location.hash = "";
-      toast.error("Sesi Anda telah berakhir. Silakan masuk kembali.");
     };
 
     window.addEventListener("sipesa-unauthorized", handleUnauthorized);
@@ -289,6 +299,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    isManualLoggingOutRef.current = true;
     try {
       await api.logout();
     } finally {
@@ -298,6 +309,10 @@ export default function App() {
       setSelectedBroadcast(null);
       setActiveView("dashboard");
       window.location.hash = "";
+      toast.success("Berhasil keluar dari akun.");
+      setTimeout(() => {
+        isManualLoggingOutRef.current = false;
+      }, 3000);
     }
   };
 

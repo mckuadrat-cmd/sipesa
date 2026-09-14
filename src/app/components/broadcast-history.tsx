@@ -25,10 +25,12 @@ interface Broadcast {
   title?: string;
   message: string;
   totalRecipients: number;
+  totalSent: number;
   sent: number;
   delivered: number;
   read: number;
   failed: number;
+  cancelled: number;
   createdAt: string;
   scheduledAt?: string;
   status: "sending" | "scheduled" | "completed" | "failed" | "queued" | "cancelled" | string;
@@ -213,22 +215,27 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
         return;
       }
 
-      const normalized: Broadcast[] = (result.data ?? []).map((b: any) => ({
-        id: b.id,
-        numberId: b.numberId ?? "",
-        numberName: b.numberName ?? "Nomor WA",
-        templateName: b.templateName ?? b.title ?? "Broadcast",
-        title: b.title ?? b.templateName ?? "Broadcast",
-        message: b.message ?? "",
-        totalRecipients: Number(b.totalRecipients ?? 0),
-        sent: Number(b.sent ?? b.totalSent ?? 0),
-        delivered: Number(b.delivered ?? 0),
-        read: Number(b.read ?? 0),
-        failed: Number(b.failed ?? b.totalFailed ?? 0),
-        createdAt: b.createdAt ?? "",
-        scheduledAt: b.scheduledAt,
-        status: b.status ?? "completed",
-      }));
+      const normalized: Broadcast[] = (result.data ?? []).map((b: any) => {
+        const rawTotalSent = Number(b.totalSent ?? (Number(b.sent ?? 0) + Number(b.delivered ?? 0) + Number(b.read ?? 0)));
+        return {
+          id: b.id,
+          numberId: b.numberId ?? "",
+          numberName: b.numberName ?? "Nomor WA",
+          templateName: b.templateName ?? b.title ?? "Broadcast",
+          title: b.title ?? b.templateName ?? "Broadcast",
+          message: b.message ?? "",
+          totalRecipients: Number(b.totalRecipients ?? 0),
+          totalSent: rawTotalSent,
+          sent: rawTotalSent,
+          delivered: Number(b.delivered ?? 0),
+          read: Number(b.read ?? 0),
+          failed: Number(b.failed ?? b.totalFailed ?? 0),
+          cancelled: Number(b.cancelled ?? b.totalCancelled ?? 0),
+          createdAt: b.createdAt ?? "",
+          scheduledAt: b.scheduledAt,
+          status: b.status ?? "completed",
+        };
+      });
 
       setBroadcasts(normalized);
       setError("");
@@ -617,20 +624,24 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                   const whenLabel = log.scheduledAt ? "Scheduled" : "Direct";
 
                   const total = Number(log.totalRecipients || 0);
-                  const sent = Number(log.sent || 0);
+                  const sent = Number(log.sent || log.totalSent || 0);
                   const delivered = Number(log.delivered || 0);
                   const read = Number(log.read || 0);
                   const failed = Number(log.failed || 0);
+                  const cancelled = Number(log.cancelled || 0);
 
-                  const processed = sent + delivered + read + failed;
+                  const processed = sent + failed + cancelled;
                   const pending = Math.max(total - processed, 0);
 
-                  const rate = total ? (processed / total) * 100 : 0;
-                  const rateColor =
-                    rate < 30 ? "bg-red-500" : rate < 70 ? "bg-yellow-500" : "bg-green-500";
+                  const successRate = total ? (sent / total) * 100 : 0;
+                  const processedRate = total ? (processed / total) * 100 : 0;
 
-                  const shownDonePct = total ? ((sent + delivered + read) / total) * 100 : 0;
+                  const rateColor =
+                    successRate < 30 ? "bg-red-500" : successRate < 70 ? "bg-yellow-500" : "bg-green-500";
+
+                  const shownDonePct = total ? (sent / total) * 100 : 0;
                   const shownFailedPct = total ? (failed / total) * 100 : 0;
+                  const shownCancelledPct = total ? (cancelled / total) * 100 : 0;
 
                   return (
                     <tr key={log.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
@@ -671,15 +682,15 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
 
                       <td className="px-3 py-3 text-gray-600 text-xs">{log.numberName}</td>
 
-                      <td className="px-3 py-3 text-gray-900 text-xs text-center">
+                      <td className="px-3 py-3 text-gray-900 text-xs text-center font-medium">
                         {log.totalRecipients.toLocaleString()}
                       </td>
 
-                      <td className="px-3 py-3 text-orange-600 text-xs text-center font-medium">
-                        {log.sent.toLocaleString()}
+                      <td className="px-3 py-3 text-green-600 text-xs text-center font-semibold">
+                        {sent.toLocaleString()}
                       </td>
 
-                      <td className="px-3 py-3 text-red-600 text-xs text-center">
+                      <td className="px-3 py-3 text-red-600 text-xs text-center font-medium">
                         {log.failed.toLocaleString()}
                       </td>
 
@@ -687,19 +698,23 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                         <div className="min-w-[140px]">
                           <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
                             <span>
-                              {processed}/{total}
+                              {sent}/{total}
                             </span>
-                            <span className="text-slate-700 font-medium">{rate.toFixed(1)}%</span>
+                            <span className="text-slate-700 font-medium">
+                              {failed > 0 || cancelled > 0 ? `${successRate.toFixed(1)}% Berhasil` : `${processedRate.toFixed(1)}%`}
+                            </span>
                           </div>
 
                           <div className="h-2 rounded-full bg-gray-200 overflow-hidden flex">
                             <div className={`h-full ${rateColor}`} style={{ width: `${shownDonePct}%` }} />
                             <div className="h-full bg-red-500" style={{ width: `${shownFailedPct}%` }} />
+                            <div className="h-full bg-slate-400" style={{ width: `${shownCancelledPct}%` }} />
                             <div className="h-full flex-1 bg-gray-300/60" />
                           </div>
 
-                          <div className="mt-1 text-xs text-slate-500">
-                            Pending {pending}
+                          <div className="mt-1 text-xs text-slate-500 flex justify-between gap-1">
+                            <span>{pending > 0 ? `Pending ${pending}` : `Selesai`}</span>
+                            {cancelled > 0 && <span className="text-slate-400 font-medium">Batal {cancelled}</span>}
                           </div>
                         </div>
                       </td>
