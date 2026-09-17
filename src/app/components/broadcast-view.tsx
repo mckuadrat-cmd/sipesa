@@ -17,6 +17,14 @@ import {
   X,
   Plus,
   Trash2,
+  ShieldCheck,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  Search,
+  Download,
+  RefreshCw,
+  Filter,
 } from "lucide-react";
 import { api, TemplateItem } from "../lib/api";
 import { BroadcastProgressModal } from "./BroadcastProgressModal";
@@ -30,6 +38,22 @@ interface Contact {
   mediaUrl?: string;
   fileName?: string;
   rowNumber?: number;
+}
+
+export interface DetailedNumberValidation {
+  rowNumber: number;
+  name: string;
+  phone: string;
+  normalizedPhone: string;
+  status: "valid" | "format_invalid" | "wa_not_found" | "duplicate" | "data_missing";
+  statusText: string;
+  formatValid: boolean;
+  formatReason?: string;
+  waExists: boolean | null;
+  waStatus: string;
+  isDuplicate: boolean;
+  duplicateOfRow?: number;
+  missingDataReason?: string;
 }
 
 interface UploadIssue {
@@ -461,9 +485,8 @@ function WhatsAppBubblePreview({
                 <button
                   key={`${btn.text}-${idx}`}
                   type="button"
-                  className={`w-full flex items-center justify-center gap-2 px-3 py-3 text-[13px] font-medium text-[#1677f2] ${
-                    idx !== 0 ? "border-t" : ""
-                  }`}
+                  className={`w-full flex items-center justify-center gap-2 px-3 py-3 text-[13px] font-medium text-[#1677f2] ${idx !== 0 ? "border-t" : ""
+                    }`}
                 >
                   <MessageSquare className="w-4 h-4" />
                   <span>{btn.text}</span>
@@ -477,12 +500,116 @@ function WhatsAppBubblePreview({
   );
 }
 
+function evaluateContactsValidation(
+  contactsList: Contact[],
+  selectedTemplate: LocalTemplate | null,
+  metaResultsMap: Record<string, { waExists: boolean | null; waStatus: string }> = {},
+): DetailedNumberValidation[] {
+  const phoneRowMap = new Map<string, number[]>();
+  const requiresMedia = ["image", "video", "document"].includes(selectedTemplate?.headerType || "none");
+
+  // First pass: collect normalized keys and their row numbers to detect ALL duplicates
+  contactsList.forEach((c, index) => {
+    const rowNumber = c.rowNumber ?? index + 1;
+    const rawPhone = String(c.phone || "").trim();
+    const digitsOnly = rawPhone.replace(/\D/g, "");
+    const normalizedPhone = normalizePhoneForImport(rawPhone);
+    const normKey = digitsOnly.startsWith("62") ? digitsOnly : normalizedPhone;
+
+    if (normKey) {
+      if (!phoneRowMap.has(normKey)) {
+        phoneRowMap.set(normKey, []);
+      }
+      phoneRowMap.get(normKey)!.push(rowNumber);
+    }
+  });
+
+  // Second pass: evaluate each contact
+  return contactsList.map((c, index) => {
+    const rowNumber = c.rowNumber ?? index + 1;
+    const rawPhone = String(c.phone || "").trim();
+    const digitsOnly = rawPhone.replace(/\D/g, "");
+    const normalizedPhone = normalizePhoneForImport(rawPhone);
+
+    let formatValid = true;
+    let formatReason: string | undefined = undefined;
+
+    if (!rawPhone) {
+      formatValid = false;
+      formatReason = "Nomor telepon kosong";
+    } else if (digitsOnly.length < 9 || digitsOnly.length > 15) {
+      formatValid = false;
+      formatReason = `Panjang nomor (${digitsOnly.length} digit) tidak standar (minimal 9, maksimal 15 digit)`;
+    } else if (!/^62\d{8,13}$/.test(normalizedPhone) && !/^\d{9,15}$/.test(normalizedPhone)) {
+      formatValid = false;
+      formatReason = "Format nomor tidak sesuai standar (harus 628... / +628...)";
+    } else if (/^628000|^62000|^00000/.test(digitsOnly)) {
+      formatValid = false;
+      formatReason = "Terdeteksi sebagai nomor fiktif / dummy";
+    }
+
+    const normKey = digitsOnly.startsWith("62") ? digitsOnly : normalizedPhone;
+    const duplicateRows = normKey ? (phoneRowMap.get(normKey) || []).filter((r) => r !== rowNumber) : [];
+    const isDuplicate = duplicateRows.length > 0;
+    const duplicateOfRow = duplicateRows[0];
+
+    let missingDataReason: string | undefined = undefined;
+    if (requiresMedia && !String(c.mediaUrl || "").trim()) {
+      missingDataReason = "follow_media wajib diisi karena template menggunakan media header";
+    }
+
+    const metaInfo = metaResultsMap[normalizedPhone] || metaResultsMap[`+${normalizedPhone}`] || metaResultsMap[digitsOnly];
+    const waExists = metaInfo ? metaInfo.waExists : null;
+    const waStatus = metaInfo ? metaInfo.waStatus : "unknown";
+
+    let status: "valid" | "format_invalid" | "wa_not_found" | "duplicate" | "data_missing" = "valid";
+    let statusText = "Valid & Siap Dikirim";
+
+    if (!formatValid) {
+      status = "format_invalid";
+      statusText = formatReason || "Format Tidak Valid";
+    } else if (isDuplicate) {
+      status = "duplicate";
+      statusText = `Nomor Duplikat (Sama dengan baris #${duplicateRows.join(", #")})`;
+    } else if (missingDataReason) {
+      status = "data_missing";
+      statusText = missingDataReason;
+    } else if (waExists === false) {
+      status = "wa_not_found";
+      statusText = "Nomor tidak terdaftar di WhatsApp";
+    } else if (waExists === true) {
+      status = "valid";
+      statusText = "Terverifikasi di WhatsApp (Aktif)";
+    }
+
+    return {
+      rowNumber,
+      name: c.name || rawPhone,
+      phone: rawPhone,
+      normalizedPhone,
+      status,
+      statusText,
+      formatValid,
+      formatReason,
+      waExists,
+      waStatus,
+      isDuplicate,
+      duplicateOfRow,
+      missingDataReason,
+    };
+  });
+}
+
 export function BroadcastView({ onViewHistory, onBroadcastSent, user }: BroadcastViewProps) {
   const labelsKey = user?.org_id ? `sipesa_contact_labels_${user.org_id}` : "sipesa_contact_labels";
   const [selectedNumber, setSelectedNumber] = useState("");
   const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
   const [templates, setTemplates] = useState<LocalTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const selectedTemplate = useMemo(
+    () => templates.find((t) => t.id === selectedTemplateId) || null,
+    [templates, selectedTemplateId],
+  );
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [uploadMethod, setUploadMethod] = useState<UploadMethod>("csv");
@@ -497,7 +624,19 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   const [uploadIssues, setUploadIssues] = useState<UploadIssue[]>([]);
   const [duplicateCount, setDuplicateCount] = useState(0);
   const [manualRecipients, setManualRecipients] = useState<ManualRecipient[]>([]);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);  
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Validation States
+  const [validationDetails, setValidationDetails] = useState<DetailedNumberValidation[]>([]);
+  const [isValidatingNumbers, setIsValidatingNumbers] = useState(false);
+  const [validationModalOpen, setValidationModalOpen] = useState(false);
+  const [validationFilterTab, setValidationFilterTab] = useState<
+    "all" | "valid" | "format_invalid" | "wa_not_found" | "duplicate" | "data_missing"
+  >("all");
+  const [validationSearchQuery, setValidationSearchQuery] = useState("");
+  const [showValidationDetailsTable, setShowValidationDetailsTable] = useState(false);
+  const [metaChecked, setMetaChecked] = useState(false);
+  const [metaErrorMsg, setMetaErrorMsg] = useState<string | null>(null);
 
   const [allOrgContacts, setAllOrgContacts] = useState<any[]>([]);
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
@@ -526,58 +665,224 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     broadcastId: null,
   });
 
-  const [duplicateCheckModal, setDuplicateCheckModal] = useState<{
-    open: boolean;
-    contacts: Contact[];
-    issues: UploadIssue[];
-    duplicateCount: number;
-  }>({
-    open: false,
-    contacts: [],
-    issues: [],
-    duplicateCount: 0,
-  });
+  useEffect(() => {
+    if (contacts.length > 0) {
+      setValidationDetails((prev) => {
+        const existingMetaMap: Record<string, { waExists: boolean | null; waStatus: string }> = {};
+        prev.forEach((item) => {
+          if (item.waExists !== null) {
+            existingMetaMap[item.normalizedPhone] = { waExists: item.waExists, waStatus: item.waStatus };
+          }
+        });
+        return evaluateContactsValidation(contacts, selectedTemplate, existingMetaMap);
+      });
+    } else {
+      setValidationDetails([]);
+      setMetaChecked(false);
+      setMetaErrorMsg(null);
+    }
+  }, [contacts, selectedTemplate]);
+
+  const validationSummary = useMemo(() => {
+    const total = validationDetails.length;
+    const validCount = validationDetails.filter((v) => v.status === "valid").length;
+    const formatInvalidCount = validationDetails.filter((v) => v.status === "format_invalid").length;
+    const waNotFoundCount = validationDetails.filter((v) => v.status === "wa_not_found").length;
+    const duplicateCountVal = validationDetails.filter((v) => v.status === "duplicate").length;
+    const dataMissingCount = validationDetails.filter((v) => v.status === "data_missing").length;
+
+    return {
+      total,
+      validCount,
+      formatInvalidCount,
+      waNotFoundCount,
+      duplicateCount: duplicateCountVal,
+      dataMissingCount,
+      hasErrors: formatInvalidCount + waNotFoundCount + duplicateCountVal + dataMissingCount > 0,
+    };
+  }, [validationDetails]);
+
+  const filteredValidationList = useMemo(() => {
+    return validationDetails.filter((item) => {
+      if (validationFilterTab !== "all" && item.status !== validationFilterTab) {
+        return false;
+      }
+      if (validationSearchQuery.trim()) {
+        const q = validationSearchQuery.toLowerCase();
+        return (
+          item.name.toLowerCase().includes(q) ||
+          item.phone.toLowerCase().includes(q) ||
+          item.statusText.toLowerCase().includes(q)
+        );
+      }
+      return true;
+    });
+  }, [validationDetails, validationFilterTab, validationSearchQuery]);
+
+  const handleValidateWithMeta = async () => {
+    if (contacts.length === 0) {
+      toast.error("Belum ada kontak yang diimpor.");
+      return;
+    }
+
+    setIsValidatingNumbers(true);
+    try {
+      const phones = contacts.map((c) => c.phone);
+      const res = await api.validateNumbers(selectedNumber, phones);
+
+      if (!res.success) {
+        toast.error("Gagal melakukan validasi nomor: " + ("error" in res ? res.error : "Unknown error"));
+      } else {
+        const metaResultsMap: Record<string, { waExists: boolean | null; waStatus: string }> = {};
+        (res.data?.results || []).forEach((item) => {
+          metaResultsMap[item.normalized] = {
+            waExists: item.waExists,
+            waStatus: item.waStatus,
+          };
+          if (item.input) {
+            metaResultsMap[item.input] = {
+              waExists: item.waExists,
+              waStatus: item.waStatus,
+            };
+          }
+        });
+
+        setMetaChecked(res.data?.checkedWithMeta ?? false);
+        setMetaErrorMsg(res.data?.metaError || null);
+
+        const evaluated = evaluateContactsValidation(contacts, selectedTemplate, metaResultsMap);
+        setValidationDetails(evaluated);
+
+        const invalidCount = evaluated.filter((v) => v.status !== "valid").length;
+        if (invalidCount === 0) {
+          toast.success(`Semua ${contacts.length} nomor berhasil divalidasi & terdaftar di WA!`);
+        } else {
+          toast.warning(
+            `Validasi selesai: ${evaluated.filter((v) => v.status === "valid").length} valid, ${invalidCount} nomor bermasalah. Klik 'Detail & Filter' untuk melihat.`,
+          );
+        }
+      }
+    } catch (err: any) {
+      toast.error("Terjadi kesalahan saat memvalidasi nomor: " + err.message);
+    } finally {
+      setIsValidatingNumbers(false);
+    }
+  };
+
+  const handleRemoveProblematicNumbers = () => {
+    const validDetails = validationDetails.filter((v) => v.status === "valid");
+    const removedCount = validationDetails.length - validDetails.length;
+
+    if (removedCount === 0) {
+      toast.info("Tidak ada nomor bermasalah yang perlu dihapus.");
+      return;
+    }
+
+    const validPhones = new Set(validDetails.map((v) => v.phone));
+    const newContacts = contacts.filter((c) => validPhones.has(c.phone));
+
+    setContacts(newContacts);
+    setValidationDetails(validDetails);
+    setDuplicateCount(0);
+    setUploadIssues([]);
+    toast.success(`Berhasil menghapus ${removedCount} nomor bermasalah. Menyisakan ${newContacts.length} kontak valid.`);
+  };
+
+  const handleExportValidationCSV = () => {
+    if (validationDetails.length === 0) return;
+
+    const headers = ["Row", "Nama", "Nomor", "Status", "Keterangan", "WhatsApp Terdaftar"];
+    const rows = validationDetails.map((v) => [
+      v.rowNumber,
+      `"${(v.name || "").replace(/"/g, '""')}"`,
+      `"${v.phone}"`,
+      `"${v.status}"`,
+      `"${(v.statusText || "").replace(/"/g, '""')}"`,
+      v.waExists === true ? "Ya" : v.waExists === false ? "Tidak" : "Belum Diperiksa",
+    ]);
+
+    const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `laporan-validasi-nomor-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+    toast.success("Laporan validasi berhasil diunduh.");
+  };
 
   const handleImportedContacts = (
     importedContacts: Contact[],
     issues: UploadIssue[],
-    duplicateCount: number,
+    dupCount: number,
   ) => {
-    if (duplicateCount > 0) {
-      setDuplicateCheckModal({
-        open: true,
-        contacts: importedContacts,
-        issues,
-        duplicateCount,
-      });
-    } else {
-      applyContactsResult({ contacts: importedContacts, issues, duplicateCount: 0 });
-    }
+    applyContactsResult({ contacts: importedContacts, issues, duplicateCount: dupCount });
+    const evaluated = evaluateContactsValidation(importedContacts, selectedTemplate);
+    setValidationDetails(evaluated);
+    setValidationFilterTab("all");
+    setShowValidationDetailsTable(false); // Default to collapsed summary info
+    setValidationModalOpen(true);
   };
 
-  const handleKeepUnique = () => {
-    const seen = new Set<string>();
-    const uniqueContacts = duplicateCheckModal.contacts.filter((c) => {
-      const norm = String(c.phone).replace(/\D/g, "");
-      if (seen.has(norm)) return false;
-      seen.add(norm);
-      return true;
-    });
-    applyContactsResult({
-      contacts: uniqueContacts,
-      issues: duplicateCheckModal.issues,
-      duplicateCount: duplicateCheckModal.duplicateCount,
-    });
-    setDuplicateCheckModal((prev) => ({ ...prev, open: false }));
+  // 1. Tombol "Pertahankan" (Pertahankan nomor valid dan nomor duplikat)
+  const handleKeepValidAndDuplicate = () => {
+    const validOrDupDetails = validationDetails.filter(
+      (v) => v.status === "valid" || v.status === "duplicate" || v.isDuplicate
+    );
+    const validOrDupRowNumbers = new Set(validOrDupDetails.map((v) => v.rowNumber));
+    const keptContacts = contacts.filter((c, idx) =>
+      validOrDupRowNumbers.has(c.rowNumber ?? idx + 1)
+    );
+
+    setContacts(keptContacts);
+    setValidationModalOpen(false);
+    toast.info(`Mempertahankan ${keptContacts.length} kontak (nomor valid & duplikat).`);
   };
 
-  const handleKeepAll = () => {
-    applyContactsResult({
-      contacts: duplicateCheckModal.contacts,
-      issues: duplicateCheckModal.issues,
-      duplicateCount: 0,
+  // 2. Tombol "Hapus" (Hapus semua nomor bermasalah: duplikat berlebih, format salah, data kurang, bukan WA)
+  const handleRemoveAllProblematic = () => {
+    const seenPhones = new Set<string>();
+    const cleanContacts: Contact[] = [];
+
+    contacts.forEach((c, index) => {
+      const rowNum = c.rowNumber ?? index + 1;
+      const detail = validationDetails.find((v) => v.rowNumber === rowNum);
+      if (!detail) {
+        cleanContacts.push(c);
+        return;
+      }
+
+      // Filter out invalid format, missing data, or not on WA
+      if (
+        !detail.formatValid ||
+        detail.status === "format_invalid" ||
+        detail.status === "data_missing" ||
+        detail.waExists === false
+      ) {
+        return;
+      }
+
+      // Deduplicate: keep only 1st valid instance of duplicate numbers
+      const phoneKey = detail.normalizedPhone || detail.phone;
+      if (seenPhones.has(phoneKey)) {
+        return;
+      }
+      seenPhones.add(phoneKey);
+      cleanContacts.push(c);
     });
-    setDuplicateCheckModal((prev) => ({ ...prev, open: false }));
+
+    const removedCount = contacts.length - cleanContacts.length;
+
+    setContacts(cleanContacts);
+    const newEvaluated = evaluateContactsValidation(cleanContacts, selectedTemplate);
+    setValidationDetails(newEvaluated);
+    setDuplicateCount(0);
+    setUploadIssues([]);
+    setValidationModalOpen(false);
+    toast.success(
+      `Berhasil membersihkan kontak. Menghapus ${removedCount} nomor bermasalah/duplikat. Menyisakan ${cleanContacts.length} kontak unik valid.`
+    );
   };
 
   const openResultModal = (
@@ -602,11 +907,6 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   useEffect(() => {
     loadInitialData();
   }, []);
-
-  const selectedTemplate = useMemo(
-    () => templates.find((t) => t.id === selectedTemplateId) || null,
-    [templates, selectedTemplateId],
-  );
 
   const variableCount = useMemo(() => {
     if (!selectedTemplate) return 0;
@@ -728,7 +1028,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         if (labelsStr) {
           try {
             setContactLabels(JSON.parse(labelsStr));
-          } catch {}
+          } catch { }
         }
 
         const res = await api.getContactLabels();
@@ -816,7 +1116,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       }
 
       setCsvFile(null);
-      
+
       const seen = new Set<string>();
       let dupCount = 0;
       result.data.forEach((c) => {
@@ -988,8 +1288,8 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
 
   const estimatedCost = contacts.length * 1500;
   const scheduleInfoText = scheduleEnabled
-  ? `${scheduleDate} ${scheduleTime}`
-  : "Kirim sekarang";
+    ? `${scheduleDate} ${scheduleTime}`
+    : "Kirim sekarang";
 
   const handleSendBroadcast = async () => {
     if (!selectedNumber || !selectedTemplate || contacts.length === 0) {
@@ -1267,23 +1567,23 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                     />
 
                     <div className="flex items-center justify-center">
-                    <label
-                      htmlFor="csv-upload"
-                      className="flex items-center justify-center w-full py-10 rounded-lg hover:border-indigo-500 hover:bg-gray-50 transition-all cursor-pointer group"
-                    >
-                      <Upload className="w-5 h-5 text-gray-600 group-hover:scale-110 transition-transform" />
-                      <div className="text-center">
-                        <span className="text-gray-700">
-                          Upload
-                        </span>
-                      </div>
-                    </label>
+                      <label
+                        htmlFor="csv-upload"
+                        className="flex items-center justify-center w-full py-10 rounded-lg hover:border-indigo-500 hover:bg-gray-50 transition-all cursor-pointer group"
+                      >
+                        <Upload className="w-5 h-5 text-gray-600 group-hover:scale-110 transition-transform" />
+                        <div className="text-center">
+                          <span className="text-gray-700">
+                            Upload
+                          </span>
+                        </div>
+                      </label>
                     </div>
                   </div>
                 )}
-                    <p className="text-sm text-muted-foreground text-center mt-2">
-                      Format: Nomor, Var1, Var2, Var3, Var4, Var5, follow_media, filename, contactname
-                    </p>
+                <p className="text-sm text-muted-foreground text-center mt-2">
+                  Format: Nomor, Var1, Var2, Var3, Var4, Var5, follow_media, filename, contactname
+                </p>
                 <Button variant="ghost" onClick={downloadSampleCSV} className="w-full">
                   Download Sample CSV
                 </Button>
@@ -1431,7 +1731,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                                 onChange={(e) => {
                                   let nextLabels = [...selectedLabels];
                                   let nextContactIds = [...selectedContactIds];
-                                  
+
                                   const labelContacts = allOrgContacts.filter(c => contactLabels[c.phone] === labelName);
 
                                   if (e.target.checked) {
@@ -1500,7 +1800,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                               />
                               <div className="flex-1 min-w-0">
                                 <p className="truncate">{c.name}</p>
-                                 <p className="text-xs text-slate-400 font-medium">{c.phone.startsWith("+") ? c.phone : `+${c.phone}`}</p>
+                                <p className="text-xs text-slate-400 font-medium">{c.phone.startsWith("+") ? c.phone : `+${c.phone}`}</p>
                               </div>
                               {contactLabels[c.phone] && (
                                 <span className="text-xs font-bold text-primary bg-primary/10 border border-primary/20 px-1.5 py-0.5 rounded-full">{contactLabels[c.phone]}</span>
@@ -1551,31 +1851,31 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
               </div>
             )}
 
-            {uploadStatus === "success" && (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-4 mt-4">
-                <div className="flex items-center justify-between text-green-700">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="w-5 h-5" />
-                    <p className="font-medium">{contacts.length} kontak berhasil dimuat</p>
+            {/* Laporan Final Penerima Broadcast */}
+            {contacts.length > 0 && (
+              <div className="mt-5 border border-slate-200 rounded-xl bg-slate-50/80 p-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-lg bg-emerald-100 flex items-center justify-center shrink-0">
+                    <CheckCircle className="w-5 h-5 text-emerald-600" />
                   </div>
-                  <button
-                    type="button"
-                    onClick={resetImportedContacts}
-                    className="w-7 h-7 rounded-full flex items-center justify-center text-green-700 hover:bg-green-100 transition-colors"
-                    title="Batalkan / Hapus Penerima"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+                  <div>
+                    <h4 className="font-bold text-slate-900 text-sm">
+                      Laporan Penerima: {contacts.length} Kontak Siap Broadcast
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Semua kontak terverifikasi &amp; siap dikirim.
+                    </p>
+                  </div>
                 </div>
-              </div>
-            )}
 
-            {duplicateCount > 0 && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mt-4">
-                <div className="flex items-center gap-2 text-amber-700">
-                  <AlertCircle className="w-5 h-5" />
-                  <p className="font-medium">{duplicateCount} nomor duplikat dilewati</p>
-                </div>
+                <button
+                  type="button"
+                  onClick={resetImportedContacts}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors shrink-0"
+                  title="Batalkan / Hapus Penerima"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
             )}
 
@@ -1792,48 +2092,276 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         }
       >
         <p
-          className={`text-sm leading-6 ${
-            resultModal.type === "success"
-              ? "text-green-700"
-              : resultModal.type === "error"
+          className={`text-sm leading-6 ${resultModal.type === "success"
+            ? "text-green-700"
+            : resultModal.type === "error"
               ? "text-red-700"
               : "text-slate-600"
-          }`}
+            }`}
         >
           {resultModal.message}
         </p>
       </AppModal>
 
       <AppModal
-        open={duplicateCheckModal.open}
-        title="Nomor Duplikat Ditemukan"
-        description="Beberapa nomor telepon penerima yang sama ditemukan dalam daftar."
-        onClose={() => setDuplicateCheckModal((prev) => ({ ...prev, open: false }))}
+        open={validationModalOpen}
+        title={
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-indigo-600" />
+            <span>Hasil Import & Validasi Penerima</span>
+          </div>
+        }
+        description={`Pemeriksaan otomatis data dari ${validationSummary.total} kontak yang baru diimpor.`}
+        onClose={() => setValidationModalOpen(false)}
+        maxWidthClassName="max-w-4xl"
         footer={
-          <div className="flex justify-end gap-3">
-            <Button
-              variant="outline"
-              onClick={handleKeepUnique}
-              className="border-slate-200 text-slate-700 hover:bg-slate-50"
-            >
-              Hapus Nomor Duplikat
-            </Button>
-            <Button onClick={handleKeepAll} className="bg-primary hover:bg-primary/95 text-white">
-              Lanjutkan dengan Duplikat
-            </Button>
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 w-full">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleExportValidationCSV}
+                className="text-xs font-semibold gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Export CSV
+              </Button>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap justify-end w-full sm:w-auto">
+              {/* Tombol 1: Pertahankan (Pertahankan nomor valid dan duplikat) */}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleKeepValidAndDuplicate}
+                className="text-xs font-semibold border-slate-300 text-slate-700 hover:bg-slate-100"
+              >
+                Pertahankan ({validationSummary.validCount + validationSummary.duplicateCount})
+              </Button>
+
+              {/* Tombol 2: Hapus (Hapus semua nomor bermasalah: duplikat, format salah, dll) */}
+              {validationSummary.hasErrors && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleRemoveAllProblematic}
+                  className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Hapus ({validationSummary.total - validationSummary.validCount})
+                </Button>
+              )}
+            </div>
           </div>
         }
       >
-        <div className="space-y-3">
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 flex items-start gap-2">
-            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-amber-600" />
-            <div>
-              <p className="font-semibold">Terdapat {duplicateCheckModal.duplicateCount} nomor duplikat/sama.</p>
-              <p className="mt-1 text-xs text-amber-700 leading-normal">
-                Pilih <strong>Hapus Nomor Duplikat</strong> jika ingin menyaring daftar sehingga setiap nomor hanya dikirimi pesan satu kali. Atau pilih <strong>Lanjutkan dengan Duplikat</strong> jika ingin tetap mengirim pesan ke semua baris data.
-              </p>
+        <div className="space-y-4">
+          {/* Info Summary Box */}
+          {validationSummary.hasErrors ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 space-y-2">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-bold text-base text-amber-950">
+                    Terdapat {validationSummary.total - validationSummary.validCount} nomor bermasalah
+                  </p>
+                  <p className="mt-1 text-xs text-amber-800 leading-relaxed">
+                    Rincian:{" "}
+                    {[
+                      validationSummary.duplicateCount > 0 && `${validationSummary.duplicateCount} nomor duplikat`,
+                      validationSummary.formatInvalidCount > 0 && `${validationSummary.formatInvalidCount} format salah`,
+                      validationSummary.dataMissingCount > 0 && `${validationSummary.dataMissingCount} data kurang`,
+                      validationSummary.waNotFoundCount > 0 && `${validationSummary.waNotFoundCount} bukan WA`,
+                    ]
+                      .filter(Boolean)
+                      .join(", ")}
+                    .
+                  </p>
+
+                  <div className="mt-3 pt-2.5 border-t border-amber-200/70 flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setShowValidationDetailsTable((prev) => !prev)}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-900 hover:text-amber-950 underline cursor-pointer"
+                    >
+                      <Search className="w-3.5 h-3.5" />
+                      {showValidationDetailsTable ? "Sembunyikan Detail Nomor" : "Cek Detail Nomor Mana Saja"}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleValidateWithMeta}
+                      disabled={isValidatingNumbers || !selectedNumber}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-700 hover:text-indigo-900 underline cursor-pointer"
+                      title={!selectedNumber ? "Pilih nomor pengirim terlebih dahulu" : "Cek ketersediaan nomor di Meta WA"}
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isValidatingNumbers ? "animate-spin" : ""}`} />
+                      {isValidatingNumbers ? "Memeriksa WA..." : "Cek Validasi Nomor"}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900 flex items-start gap-2.5">
+              <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="font-bold text-base text-emerald-950">Semua {validationSummary.total} nomor terimpor terverifikasi valid!</p>
+                <p className="mt-1 text-xs text-emerald-800">Tidak ditemukan nomor duplikat maupun kesalahan format.</p>
+
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowValidationDetailsTable((prev) => !prev)}
+                    className="inline-flex items-center gap-1 text-xs font-bold text-emerald-800 hover:text-emerald-950 underline cursor-pointer"
+                  >
+                    <Search className="w-3.5 h-3.5" />
+                    {showValidationDetailsTable ? "Sembunyikan Detail" : "Cek Detail Tabel Kontak"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Section Detail Nomor (Expanded when Cek Detail clicked or toggled) */}
+          {showValidationDetailsTable && (
+            <div className="space-y-4 pt-2 border-t border-slate-200">
+              {/* Search & Filter Tabs */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                  <Input
+                    placeholder="Cari nama atau nomor..."
+                    value={validationSearchQuery}
+                    onChange={(e) => setValidationSearchQuery(e.target.value)}
+                    className="pl-9 h-9 text-xs"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
+                  <button
+                    type="button"
+                    onClick={() => setValidationFilterTab("all")}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors ${validationFilterTab === "all" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      }`}
+                  >
+                    Semua ({validationSummary.total})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setValidationFilterTab("valid")}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors ${validationFilterTab === "valid" ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                      }`}
+                  >
+                    Valid ({validationSummary.validCount})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setValidationFilterTab("format_invalid")}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors ${validationFilterTab === "format_invalid" ? "bg-red-600 text-white" : "bg-red-50 text-red-700 hover:bg-red-100"
+                      }`}
+                  >
+                    Format Salah ({validationSummary.formatInvalidCount})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setValidationFilterTab("wa_not_found")}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors ${validationFilterTab === "wa_not_found" ? "bg-orange-600 text-white" : "bg-orange-50 text-orange-700 hover:bg-orange-100"
+                      }`}
+                  >
+                    Bukan WA ({validationSummary.waNotFoundCount})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setValidationFilterTab("duplicate")}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors ${validationFilterTab === "duplicate" ? "bg-amber-600 text-white" : "bg-amber-50 text-amber-700 hover:bg-amber-100"
+                      }`}
+                  >
+                    Duplikat ({validationSummary.duplicateCount})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setValidationFilterTab("data_missing")}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors ${validationFilterTab === "data_missing" ? "bg-purple-600 text-white" : "bg-purple-50 text-purple-700 hover:bg-purple-100"
+                      }`}
+                  >
+                    Data Kurang ({validationSummary.dataMissingCount})
+                  </button>
+                </div>
+              </div>
+
+              {/* Table list */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[320px] overflow-x-auto overflow-y-auto">
+                <table className="w-full text-xs text-left table-fixed min-w-[700px]">
+                  <thead className="bg-slate-100 text-slate-700 font-semibold sticky top-0 border-b border-slate-200 z-10">
+                    <tr>
+                      <th className="p-2.5 w-16 text-center whitespace-nowrap">Baris</th>
+                      <th className="p-2.5 w-44 whitespace-nowrap">Nama</th>
+                      <th className="p-2.5 w-36 whitespace-nowrap">Nomor Telepon</th>
+                      <th className="p-2.5 w-32 whitespace-nowrap">Status</th>
+                      <th className="p-2.5 w-64 whitespace-nowrap">Keterangan / Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {filteredValidationList.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="p-8 text-center text-slate-400 italic whitespace-nowrap">
+                          Tidak ada nomor yang sesuai dengan filter atau pencarian.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredValidationList.map((item) => {
+                        let badgeBg = "bg-slate-100 text-slate-700 border-slate-200";
+                        let statusLabel = item.statusText;
+
+                        if (item.status === "valid") {
+                          badgeBg = "bg-emerald-100 text-emerald-800 border-emerald-200";
+                          statusLabel = "Valid";
+                        } else if (item.status === "format_invalid") {
+                          badgeBg = "bg-red-100 text-red-800 border-red-200";
+                          statusLabel = "Format Salah";
+                        } else if (item.status === "wa_not_found") {
+                          badgeBg = "bg-orange-100 text-orange-800 border-orange-200";
+                          statusLabel = "Bukan WA";
+                        } else if (item.status === "duplicate") {
+                          badgeBg = "bg-amber-100 text-amber-800 border-amber-200";
+                          statusLabel = "Duplikat";
+                        } else if (item.status === "data_missing") {
+                          badgeBg = "bg-purple-100 text-purple-800 border-purple-200";
+                          statusLabel = "Data Kurang";
+                        }
+
+                        return (
+                          <tr key={`${item.rowNumber}-${item.phone}`} className="hover:bg-slate-50 transition-colors">
+                            <td className="p-2.5 font-semibold text-slate-500 text-center whitespace-nowrap">#{item.rowNumber}</td>
+                            <td className="p-2.5 font-medium text-slate-800 truncate max-w-[176px] whitespace-nowrap" title={item.name}>
+                              {item.name}
+                            </td>
+                            <td className="p-2.5 font-mono text-slate-700 whitespace-nowrap">{item.phone}</td>
+                            <td className="p-2.5 whitespace-nowrap">
+                              <span className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${badgeBg}`}>
+                                {statusLabel}
+                              </span>
+                            </td>
+                            <td className="p-2.5 text-slate-600 truncate max-w-[256px] whitespace-nowrap" title={item.statusText}>
+                              {item.statusText}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       </AppModal>
 

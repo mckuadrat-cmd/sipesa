@@ -617,13 +617,36 @@ app.get(`${API_PREFIX}/numbers`, requireAuth, async (c) => {
       .eq("status", "delivered");
 
     const unreadCountsMap: Record<string, number> = {};
-    if (!countErr && unreadMessages) {
-      for (const msg of unreadMessages) {
-        if (msg.number_id) {
-          unreadCountsMap[msg.number_id] = (unreadCountsMap[msg.number_id] || 0) + 1;
+    if (Array.isArray(unreadMessages)) {
+      for (const m of unreadMessages) {
+        if (m.number_id) {
+          unreadCountsMap[m.number_id] = (unreadCountsMap[m.number_id] || 0) + 1;
         }
       }
     }
+
+    // Fetch per-number auto reply settings from key_info
+    const { data: numberAutoReplyRows } = await supa
+      .from("key_info")
+      .select("key, value")
+      .like("key", "autoreply_num_%");
+
+    const numberAutoRepliesMap: Record<string, { autoReplyEnabled: boolean; autoReplyMessage: string }> = {};
+    if (Array.isArray(numberAutoReplyRows)) {
+      for (const item of numberAutoReplyRows) {
+        const numId = String(item.key || "").replace("autoreply_num_", "");
+        if (numId && item.value) {
+          numberAutoRepliesMap[numId] = {
+            autoReplyEnabled: item.value.autoReplyEnabled !== false,
+            autoReplyMessage:
+              item.value.autoReplyMessage ||
+              "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.",
+          };
+        }
+      }
+    }
+
+    const defaultMsg = "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.";
 
     const mapped = (data ?? []).map((r: any) => ({
       id: r.id,
@@ -636,6 +659,8 @@ app.get(`${API_PREFIX}/numbers`, requireAuth, async (c) => {
       wabaId: r.waba_id ?? null,
       phoneNumberId: r.phone_number_id ?? null,
       hasAccessToken: !!r.access_token,
+      autoReplyEnabled: numberAutoRepliesMap[r.id]?.autoReplyEnabled ?? true,
+      autoReplyMessage: numberAutoRepliesMap[r.id]?.autoReplyMessage || defaultMsg,
     }));
 
     return c.json(jsonOk(mapped));
@@ -739,6 +764,165 @@ app.post(`${API_PREFIX}/numbers/:id/test`, requireAuth, async (c) => {
 
     const meta = await testMetaNumber(row.access_token, row.phone_number_id);
     return c.json(jsonOk({ connected: true, meta }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/numbers/validate`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const body = await c.req.json();
+    const numberId = body.numberId;
+    const phones = body.phones;
+    const supa = sb();
+
+    if (!Array.isArray(phones) || phones.length === 0) {
+      return c.json(jsonFail("Daftar nomor telepon wajib diisi"), 400);
+    }
+
+    let waNumberRow = null;
+    if (numberId) {
+      const { data } = await supa
+        .from("wa_numbers")
+        .select("*")
+        .eq("org_id", user.org_id)
+        .eq("id", numberId)
+        .maybeSingle();
+      waNumberRow = data;
+    }
+
+    const formattedNumbers: Array<{
+      input: string;
+      normalized: string;
+      formatValid: boolean;
+      formatReason?: string;
+    }> = [];
+
+    for (const rawPhone of phones) {
+      const inputStr = String(rawPhone || "").trim();
+      const normalized = normalizePhone(inputStr);
+      const digitsOnly = normalized.replace(/\D/g, "");
+
+      let formatValid = true;
+      let formatReason: string | undefined = undefined;
+
+      if (!inputStr) {
+        formatValid = false;
+        formatReason = "Nomor kosong";
+      } else if (!digitsOnly || digitsOnly.length < 9 || digitsOnly.length > 15) {
+        formatValid = false;
+        formatReason = `Panjang nomor (${digitsOnly.length} digit) tidak standar (minimal 9, maksimal 15 digit)`;
+      } else if (!/^62\d{8,13}$/.test(digitsOnly) && !/^\d{9,15}$/.test(digitsOnly)) {
+        formatValid = false;
+        formatReason = "Format E.164 tidak valid";
+      } else if (/^628000|^62000|^00000/.test(digitsOnly)) {
+        formatValid = false;
+        formatReason = "Nomor terindikasi nomor fiktif / dummy";
+      }
+
+      formattedNumbers.push({
+        input: inputStr,
+        normalized: digitsOnly ? `+${digitsOnly}` : inputStr,
+        formatValid,
+        formatReason,
+      });
+    }
+
+    let checkedWithMeta = false;
+    let metaError: string | null = null;
+    const metaResultsMap: Record<string, { waExists: boolean | null; waStatus: string; waId?: string }> = {};
+
+    if (waNumberRow?.access_token && waNumberRow?.phone_number_id) {
+      try {
+        const validPhonesToCheck = formattedNumbers
+          .filter((n) => n.formatValid)
+          .map((n) => n.normalized);
+
+        if (validPhonesToCheck.length > 0) {
+          const chunkSize = 50;
+          for (let i = 0; i < validPhonesToCheck.length; i += chunkSize) {
+            const chunk = validPhonesToCheck.slice(i, i + chunkSize);
+            try {
+              const res = await metaFetch(`${waNumberRow.phone_number_id}/contacts`, waNumberRow.access_token, {
+                method: "POST",
+                body: JSON.stringify({
+                  blocking: "wait",
+                  contacts: chunk,
+                  force_check: true,
+                }),
+              });
+
+              const contactsData = Array.isArray(res?.data) ? res.data : (Array.isArray(res?.contacts) ? res.contacts : []);
+              if (contactsData.length > 0) {
+                checkedWithMeta = true;
+                for (const item of contactsData) {
+                  const inputNum = String(item.input || "").trim();
+                  const normKey = inputNum.startsWith("+") ? inputNum : `+${inputNum}`;
+                  const status = String(item.status || "").toLowerCase();
+                  if (status === "valid") {
+                    metaResultsMap[normKey] = {
+                      waExists: true,
+                      waStatus: "valid",
+                      waId: item.wa_id,
+                    };
+                  } else if (status === "invalid" || status === "failed") {
+                    metaResultsMap[normKey] = {
+                      waExists: false,
+                      waStatus: "invalid",
+                    };
+                  } else {
+                    metaResultsMap[normKey] = {
+                      waExists: null,
+                      waStatus: status || "unknown",
+                    };
+                  }
+                }
+              }
+            } catch (chunkErr: any) {
+              console.warn("Meta contacts check error for chunk:", chunkErr.message);
+              metaError = chunkErr.message || "Meta API error";
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn("Meta contacts check total error:", err.message);
+        metaError = err.message || "Gagal menghubungi Meta API";
+      }
+    }
+
+    const results = formattedNumbers.map((item) => {
+      const metaInfo = metaResultsMap[item.normalized];
+      let waExists = metaInfo ? metaInfo.waExists : null;
+      let waStatus = metaInfo ? metaInfo.waStatus : "unknown";
+
+      if (!item.formatValid) {
+        waExists = false;
+        waStatus = "invalid_format";
+      }
+
+      return {
+        input: item.input,
+        normalized: item.normalized,
+        formatValid: item.formatValid,
+        formatReason: item.formatReason,
+        waExists,
+        waStatus,
+      };
+    });
+
+    let userFriendlyMetaError = metaError;
+    if (metaError && /unsupported post request|does not exist|permission|not support/i.test(metaError)) {
+      userFriendlyMetaError = "Akun WhatsApp Cloud API ini tidak diizinkan Meta untuk cek status nomor aktif secara massal via API. Namun validasi format & duplikat lokal tetap 100% aktif & akurat.";
+    }
+
+    return c.json(
+      jsonOk({
+        checkedWithMeta,
+        metaError: userFriendlyMetaError,
+        results,
+      }),
+    );
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -1211,8 +1395,13 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
     const contactId = c.req.param("contactId");
     const body = await c.req.json();
 
-    const content = String(body.content ?? body.message ?? body.text ?? "").trim();
-    if (!content) return c.json(jsonFail("content wajib"), 400);
+    const isTemplate = body.messageType === "template" || !!body.templateName;
+    const templateName = String(body.templateName ?? "").trim();
+    const language = String(body.language ?? "id").trim();
+    const bodyVariables = Array.isArray(body.bodyVariables) ? body.bodyVariables.map((x: any) => String(x ?? "")) : [];
+    const content = String(body.content ?? body.message ?? body.text ?? (isTemplate ? `[Template: ${templateName}]` : "")).trim();
+
+    if (!content && !isTemplate) return c.json(jsonFail("Pesan tidak boleh kosong"), 400);
 
     const supa = sb();
 
@@ -1240,9 +1429,28 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
       return c.json(jsonFail("Nomor WA belum terkoneksi lengkap ke Meta"), 400);
     }
 
-    const tokenResult = await consumeOneToken(user.org_id);
-    if (!tokenResult.success) {
-      return c.json(jsonFail(tokenResult.message || "Token tidak cukup"), 400);
+    // Check if client sent an incoming message within the last 24 hours (Meta CS Window)
+    const { data: lastIncomingMsg } = await supa
+      .from("wa_messages")
+      .select("created_at")
+      .eq("org_id", user.org_id)
+      .eq("number_id", numberId)
+      .eq("contact_id", contactId)
+      .eq("direction", "in")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const isWithin24Hours = lastIncomingMsg?.created_at
+      ? (Date.now() - new Date(lastIncomingMsg.created_at).getTime()) <= 24 * 60 * 60 * 1000
+      : false;
+
+    // Deduct token ONLY IF outside 24-hour customer service window!
+    if (!isWithin24Hours) {
+      const tokenResult = await consumeOneToken(user.org_id);
+      if (!tokenResult.success) {
+        return c.json(jsonFail(tokenResult.message || "Token tidak cukup"), 400);
+      }
     }
 
     const { data: msg, error } = await supa
@@ -1253,9 +1461,9 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
         contact_id: contactId,
         direction: "out",
         status: "queued",
-        message_type: "text",
+        message_type: isTemplate ? "template" : "text",
         text_body: content,
-        payload: { source: "manual" },
+        payload: { source: "manual", isTemplate, templateName, bodyVariables },
       })
       .select("*")
       .single();
@@ -1263,12 +1471,25 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
     if (error) return c.json(jsonFail(error.message), 500);
 
     try {
-      const metaRes = await sendMetaTextMessage({
-        phoneNumberId: numberRow.phone_number_id,
-        accessToken: numberRow.access_token,
-        to: contact.phone_e164,
-        text: content,
-      });
+      let metaRes: any = null;
+      if (isTemplate && templateName) {
+        metaRes = await sendMetaTemplateMessage({
+          phoneNumberId: numberRow.phone_number_id,
+          accessToken: numberRow.access_token,
+          to: contact.phone_e164,
+          templateName,
+          language,
+          bodyVariables,
+          header: body.header || null,
+        });
+      } else {
+        metaRes = await sendMetaTextMessage({
+          phoneNumberId: numberRow.phone_number_id,
+          accessToken: numberRow.access_token,
+          to: contact.phone_e164,
+          text: content,
+        });
+      }
 
       const metaMessageId = metaRes?.messages?.[0]?.id ?? null;
 
@@ -3496,6 +3717,67 @@ const handleWebhookPost = async (c: any) => {
                 message: `Incoming message processed successfully from ${from}`,
                 meta: { from, textBody, messageType },
               });
+
+              // Check and trigger Auto-Reply (Per-Number with Org fallback)
+              try {
+                let autoReplyEnabled = true;
+                let replyText =
+                  "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.";
+
+                // Check per-number setting in key_info
+                if (numberRow?.id) {
+                  const { data: numKeyRow } = await supa
+                    .from("key_info")
+                    .select("value")
+                    .eq("key", `autoreply_num_${numberRow.id}`)
+                    .maybeSingle();
+
+                  if (numKeyRow?.value) {
+                    autoReplyEnabled = numKeyRow.value.autoReplyEnabled !== false;
+                    replyText = numKeyRow.value.autoReplyMessage || replyText;
+                  } else {
+                    const { data: orgData } = await supa
+                      .from("orgs")
+                      .select("auto_reply_enabled, auto_reply_message")
+                      .eq("id", numberRow.org_id)
+                      .maybeSingle();
+
+                    if (orgData) {
+                      autoReplyEnabled = orgData.auto_reply_enabled !== false;
+                      replyText = orgData.auto_reply_message || replyText;
+                    }
+                  }
+                }
+
+                if (autoReplyEnabled) {
+                  if (numberRow.phone_number_id && numberRow.access_token) {
+                    const metaReplyRes = await sendMetaTextMessage({
+                      phoneNumberId: numberRow.phone_number_id,
+                      accessToken: numberRow.access_token,
+                      to: from,
+                      text: replyText,
+                    });
+
+                    const replyMetaId = metaReplyRes?.messages?.[0]?.id ?? null;
+                    await supa.from("wa_messages").insert({
+                      org_id: numberRow.org_id,
+                      number_id: numberRow.id,
+                      contact_id: contact.id,
+                      direction: "out",
+                      status: "sent",
+                      meta_message_id: replyMetaId,
+                      meta_status_payload: metaReplyRes,
+                      message_type: "text",
+                      text_body: replyText,
+                      payload: { source: "auto_reply" },
+                      sent_at: nowIso(),
+                    });
+                    console.log("Auto-reply successfully sent to:", from);
+                  }
+                }
+              } catch (autoReplyErr) {
+                console.error("Error executing auto-reply for incoming message:", autoReplyErr);
+              }
             }
           }
         }
@@ -3752,7 +4034,8 @@ app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
       { data: org, error: orgErr },
       { data: me, error: userErr },
       { data: avatarRow },
-      { data: addressRow }
+      { data: addressRow },
+      { data: numberAutoReplyRows }
     ] = await Promise.all([
       supa
         .from("orgs")
@@ -3774,10 +4057,30 @@ app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
         .select("value")
         .eq("key", `address:${user.org_id}`)
         .maybeSingle(),
+      supa
+        .from("key_info")
+        .select("key, value")
+        .like("key", "autoreply_num_%"),
     ]);
 
     if (orgErr) return c.json(jsonFail(orgErr.message), 500);
     if (userErr) return c.json(jsonFail(userErr.message), 500);
+
+    const numberAutoReplies: Record<string, { autoReplyEnabled: boolean; autoReplyMessage: string }> = {};
+    if (Array.isArray(numberAutoReplyRows)) {
+      for (const row of numberAutoReplyRows) {
+        const numId = String(row.key || "").replace("autoreply_num_", "");
+        if (numId && row.value) {
+          const valObj = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
+          numberAutoReplies[numId] = {
+            autoReplyEnabled: valObj.autoReplyEnabled !== false,
+            autoReplyMessage:
+              valObj.autoReplyMessage ||
+              "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.",
+          };
+        }
+      }
+    }
 
     const webhookUrl = `${new URL(c.req.url).origin}/functions/v1/server/webhooks/meta`;
 
@@ -3788,14 +4091,15 @@ app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
           name: org?.name ?? "",
           slug: org?.slug ?? "",
           supportEmail: org?.support_email ?? "",
-          autoReplyEnabled: !!org?.auto_reply_enabled,
+          autoReplyEnabled: org?.auto_reply_enabled !== false,
           autoReplyMessage:
-            org?.auto_reply_message ??
-            "Terima kasih telah menghubungi kami. Kami akan membalas pesan Anda pada jam kerja.",
+            org?.auto_reply_message ||
+            "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.",
           fallbackTemplateName: org?.fallback_template_name ?? "",
           sendDelayMs: Number(org?.send_delay_ms ?? 2000),
           throttlePerMin: Number(org?.throttle_per_min ?? 30),
           address: addressRow?.value?.address ?? "",
+          numberAutoReplies,
         },
         profile: {
           id: me?.id ?? null,
@@ -3997,32 +4301,68 @@ app.put(`${API_PREFIX}/settings/messaging`, requireAuth, async (c) => {
     const supa = sb();
     const body = await c.req.json();
 
+    const numberId = body.numberId ? String(body.numberId).trim() : null;
     const autoReplyEnabled = !!body.autoReplyEnabled;
     const autoReplyMessage = String(body.autoReplyMessage ?? "").trim();
-    const fallbackTemplateName = String(body.fallbackTemplateName ?? "").trim();
     const sendDelayMs = Math.max(0, Number(body.sendDelayMs ?? 2000));
     const throttlePerMin = Math.max(1, Number(body.throttlePerMin ?? 30));
+
+    if (numberId) {
+      const keyStr = `autoreply_num_${numberId}`;
+      const payloadVal = {
+        autoReplyEnabled,
+        autoReplyMessage:
+          autoReplyMessage ||
+          "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.",
+      };
+
+      const { data: existingRow } = await supa
+        .from("key_info")
+        .select("key")
+        .eq("key", keyStr)
+        .maybeSingle();
+
+      let keyErr: any = null;
+      if (existingRow) {
+        const { error: err } = await supa
+          .from("key_info")
+          .update({ value: payloadVal })
+          .eq("key", keyStr);
+        keyErr = err;
+      } else {
+        const { error: err } = await supa
+          .from("key_info")
+          .insert({ key: keyStr, value: payloadVal });
+        keyErr = err;
+      }
+
+      if (keyErr) {
+        console.error(`[SETTINGS] Error saving key_info per-number auto reply for ${numberId}:`, keyErr.message);
+        return c.json(jsonFail(`Gagal menyimpan auto reply per nomor di database: ${keyErr.message}`), 500);
+      } else {
+        console.log(`[SETTINGS] Successfully saved per-number auto reply for number ${numberId}`);
+      }
+    }
 
     const { data, error } = await supa
       .from("orgs")
       .update({
         auto_reply_enabled: autoReplyEnabled,
         auto_reply_message: autoReplyMessage || null,
-        fallback_template_name: fallbackTemplateName || null,
         send_delay_ms: sendDelayMs,
         throttle_per_min: throttlePerMin,
       })
       .eq("id", user.org_id)
-      .select("auto_reply_enabled, auto_reply_message, fallback_template_name, send_delay_ms, throttle_per_min")
+      .select("auto_reply_enabled, auto_reply_message, send_delay_ms, throttle_per_min")
       .single();
 
     if (error) return c.json(jsonFail(error.message), 500);
 
     return c.json(
       jsonOk({
+        numberId,
         autoReplyEnabled: !!data.auto_reply_enabled,
         autoReplyMessage: data.auto_reply_message ?? "",
-        fallbackTemplateName: data.fallback_template_name ?? "",
         sendDelayMs: Number(data.send_delay_ms ?? 2000),
         throttlePerMin: Number(data.throttle_per_min ?? 30),
       }),

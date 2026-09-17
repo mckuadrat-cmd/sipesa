@@ -4,7 +4,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { AppModal } from "./AppModal";
 
-import { ArrowLeft, Send, Search, Phone, Smile, RotateCw, CheckCheck, Trash2, Square, CheckSquare, Edit, X } from "lucide-react";
+import { ArrowLeft, Send, Search, Phone, Smile, RotateCw, CheckCheck, Trash2, Square, CheckSquare, Edit, X, Lock, FileText, Sparkles, Clock, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 
@@ -131,7 +131,7 @@ function formatContactTime(isoString: string) {
       return time;
     }
 
-    const months = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
     const dateStr = `${d.getDate()} ${months[d.getMonth()]}`;
     return `${dateStr}, ${time}`;
   } catch {
@@ -194,7 +194,104 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   const [tokenBalance, setTokenBalance] = useState(0);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
+  // 24-Hour CS Window & Template Selector States
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
+  const [templatesList, setTemplatesList] = useState<any[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<any | null>(null);
+  const [templateVarValues, setTemplateVarValues] = useState<string[]>([]);
+  const [sendingTemplate, setSendingTemplate] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Check 24-Hour Customer Service Window from client's last incoming message
+  const lastIncomingMessage = [...messages].reverse().find((m) => m.sender === "contact");
+  const isWithin24Hours = Boolean(
+    lastIncomingMessage &&
+    (Date.now() - new Date(lastIncomingMessage.timestamp).getTime() < 24 * 60 * 60 * 1000)
+  );
+
+  const openTemplateModal = async () => {
+    setShowTemplateModal(true);
+    setLoadingTemplates(true);
+    setSelectedTemplate(null);
+    setTemplateVarValues([]);
+    try {
+      const res = await api.getBroadcastTemplates();
+      if (res.success && Array.isArray(res.data)) {
+        // Filter approved or active templates
+        const approved = res.data.filter(
+          (t: any) => String(t.status || "").toLowerCase() === "approved" || !t.status
+        );
+        setTemplatesList(approved.length > 0 ? approved : res.data);
+      } else {
+        toast.error("Gagal memuat daftar template");
+      }
+    } catch (err) {
+      console.error("Error fetching templates:", err);
+      toast.error("Terjadi kesalahan saat memuat template");
+    } finally {
+      setLoadingTemplates(false);
+    }
+  };
+
+  const handleSelectTemplate = (template: any) => {
+    setSelectedTemplate(template);
+    const text = String(template?.content || "");
+    const variableMatches = [...text.matchAll(/\{\{(\d+)\}\}/g)].map((m) => Number(m[1]));
+    const count = variableMatches.length > 0 ? Math.max(...variableMatches) : 0;
+    setTemplateVarValues(Array(count).fill(""));
+  };
+
+  const buildTemplatePreview = (content: string, vars: string[]) => {
+    if (!content) return "";
+    let result = content;
+    vars.forEach((v, idx) => {
+      const val = v.trim() || `{{${idx + 1}}}`;
+      result = result.replace(new RegExp(`\\{\\{${idx + 1}\\}\\}`, "g"), val);
+    });
+    return result;
+  };
+
+  const handleExecuteSendTemplate = async () => {
+    if (!selectedTemplate || !selectedContact) return;
+
+    if (!isWithin24Hours && tokenBalance <= 0) {
+      toast.warning("Token Anda habis! Silakan top-up terlebih dahulu.");
+      return;
+    }
+
+    setSendingTemplate(true);
+    try {
+      const previewText = buildTemplatePreview(selectedTemplate.content, templateVarValues);
+      const result = await api.sendMessage(numberId, selectedContact, {
+        messageType: "template",
+        templateName: selectedTemplate.name,
+        language: selectedTemplate.language || "id",
+        bodyVariables: templateVarValues,
+        content: previewText,
+      });
+
+      if ("error" in result) {
+        toast.error("Gagal mengirim template: " + result.error);
+        return;
+      }
+
+      if (result.data) {
+        setMessages((prev) => [...prev, result.data]);
+      }
+      setTokenBalance(Number(result.tokensRemaining ?? tokenBalance));
+      setShowTemplateModal(false);
+      setSelectedTemplate(null);
+      toast.success("Pesan template disetujui Meta berhasil terkirim!");
+      loadMessages();
+    } catch (err) {
+      console.error("Error sending template:", err);
+      toast.error("Terjadi kesalahan saat mengirim template pesan");
+    } finally {
+      setSendingTemplate(false);
+    }
+  };
 
   useEffect(() => {
     setSelectedContact(null);
@@ -433,9 +530,8 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
     <div className="h-full w-full flex overflow-hidden bg-white text-gray-800">
       {/* Sidebar */}
       <div
-        className={`border-r border-gray-200 bg-white flex flex-col overflow-hidden w-full md:w-[360px] shrink-0 ${
-          selectedContact ? "hidden md:flex" : "flex"
-        }`}
+        className={`border-r border-gray-200 bg-white flex flex-col overflow-hidden w-full md:w-[360px] shrink-0 ${selectedContact ? "hidden md:flex" : "flex"
+          }`}
       >
         <div className="p-4 border-b border-gray-100 flex-shrink-0">
           {/* Back Button */}
@@ -474,11 +570,10 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                 <button
                   onClick={handleMarkSelectedAsRead}
                   disabled={selectedContactIds.size === 0}
-                  className={`p-1.5 rounded-lg transition-all ${
-                    selectedContactIds.size === 0 
-                      ? "text-slate-300 cursor-not-allowed" 
-                      : "text-sky-600 hover:bg-sky-50"
-                  }`}
+                  className={`p-1.5 rounded-lg transition-all ${selectedContactIds.size === 0
+                    ? "text-slate-300 cursor-not-allowed"
+                    : "text-sky-600 hover:bg-sky-50"
+                    }`}
                   title="Tandai dibaca"
                 >
                   <CheckCheck className="w-4 h-4" />
@@ -486,11 +581,10 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                 <button
                   onClick={handleDeleteSelected}
                   disabled={selectedContactIds.size === 0}
-                  className={`p-1.5 rounded-lg transition-all ${
-                    selectedContactIds.size === 0 
-                      ? "text-slate-300 cursor-not-allowed" 
-                      : "text-red-600 hover:bg-red-50"
-                  }`}
+                  className={`p-1.5 rounded-lg transition-all ${selectedContactIds.size === 0
+                    ? "text-slate-300 cursor-not-allowed"
+                    : "text-red-600 hover:bg-red-50"
+                    }`}
                   title="Hapus terpilih"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -575,14 +669,13 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                       );
                     }
                   }}
-                  className={`w-full px-3 py-3 rounded-xl text-left transition-all duration-200 flex items-center gap-3 relative ${
-                    selectedContact === contact.id
-                      ? "bg-emerald-50 border border-emerald-100 shadow-sm"
-                      : "hover:bg-gray-50 border border-transparent"
-                  }`}
+                  className={`w-full px-3 py-3 rounded-xl text-left transition-all duration-200 flex items-center gap-3 relative ${selectedContact === contact.id
+                    ? "bg-emerald-50 border border-emerald-100 shadow-sm"
+                    : "hover:bg-gray-50 border border-transparent"
+                    }`}
                 >
                   {isEditMode && (
-                    <div 
+                    <div
                       className="shrink-0 mr-1"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -613,9 +706,8 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="flex items-start justify-between gap-1 mb-0.5">
                       <h4
-                        className={`text-sm font-semibold truncate ${
-                          selectedContact === contact.id ? "text-emerald-900" : "text-gray-900"
-                        }`}
+                        className={`text-sm font-semibold truncate ${selectedContact === contact.id ? "text-emerald-900" : "text-gray-900"
+                          }`}
                       >
                         {contact.name}
                       </h4>
@@ -644,9 +736,8 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
 
       {/* Main Chat Pane */}
       <div
-        className={`flex-1 min-h-0 flex flex-col bg-[#efeae2] relative overflow-hidden ${
-          selectedContact ? "flex" : "hidden md:flex"
-        }`}
+        className={`flex-1 min-h-0 flex flex-col bg-[#efeae2] relative overflow-hidden ${selectedContact ? "flex" : "hidden md:flex"
+          }`}
       >
         {/* Background Overlay to mimic whatsapp doodle */}
         <div className="absolute inset-0 opacity-[0.04] pointer-events-none bg-[radial-gradient(#1e3a2f_1px,transparent_1px)] [background-size:16px_16px]"></div>
@@ -704,26 +795,24 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                   {messages.map((message) => (
                     <div
                       key={message.id}
-                      className={`flex flex-col ${
-                        message.sender === "user" ? "items-end" : "items-start"
-                      }`}
+                      className={`flex flex-col ${message.sender === "user" ? "items-end" : "items-start"
+                        }`}
                     >
                       <div
-                        className={`max-w-[70%] rounded-2xl shadow-sm ${
-                          message.messageType === "sticker"
-                            ? "bg-transparent shadow-none"
-                            : message.messageType === "reaction"
+                        className={`max-w-[70%] rounded-2xl shadow-sm ${message.messageType === "sticker"
+                          ? "bg-transparent shadow-none"
+                          : message.messageType === "reaction"
                             ? "bg-slate-100/90 text-slate-800 border border-slate-200 px-3 py-1 rounded-full"
                             : message.sender === "user"
-                            ? "bg-[#d9fdd3] text-[#111b21] rounded-tr-none px-4 py-2.5"
-                            : "bg-white text-[#111b21] rounded-tl-none border border-[#e9e5db] px-4 py-2.5"
-                        }`}
+                              ? "bg-[#d9fdd3] text-[#111b21] rounded-tr-none px-4 py-2.5"
+                              : "bg-white text-[#111b21] rounded-tl-none border border-[#e9e5db] px-4 py-2.5"
+                          }`}
                       >
                         {(() => {
                           const payloadObj = (() => {
                             let p = message.payload;
                             if (typeof p === "string") {
-                              try { p = JSON.parse(p); } catch {}
+                              try { p = JSON.parse(p); } catch { }
                             }
                             return p;
                           })();
@@ -787,7 +876,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
 
             {/* Input Bar */}
             <div className="bg-white p-4 border-t border-gray-200 relative flex flex-col gap-2 shadow-[0_-2px_10px_rgba(0,0,0,0.02)] z-10">
-              {showEmojiPicker && (
+              {showEmojiPicker && isWithin24Hours && (
                 <div className="absolute bottom-20 left-4 z-50 bg-white border border-gray-200 rounded-2xl shadow-xl w-72 p-3 flex flex-col h-56 transition-all duration-300">
                   <div className="flex justify-between items-center mb-2 pb-1.5 border-b border-gray-100">
                     <span className="text-xs font-bold text-gray-500">Pilih Emoji</span>
@@ -824,37 +913,59 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
               )}
 
               <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                  className={`text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-full shrink-0 ${
-                    showEmojiPicker ? "text-emerald-600 bg-emerald-50" : ""
-                  }`}
-                >
-                  <Smile className="w-5 h-5" />
-                </Button>
+                {isWithin24Hours ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                      className={`text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-full shrink-0 ${showEmojiPicker ? "text-emerald-600 bg-emerald-50" : ""
+                        }`}
+                    >
+                      <Smile className="w-5 h-5" />
+                    </Button>
 
-                <Input
-                  placeholder="Type a message..."
-                  value={messageInput}
-                  onChange={(e) => setMessageInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                  className="flex-1 bg-gray-50 border-gray-200 focus:bg-white rounded-full px-4 text-sm transition-all focus:ring-1 focus:ring-emerald-500"
-                />
+                    <Input
+                      placeholder="Tulis pesan..."
+                      value={messageInput}
+                      onChange={(e) => setMessageInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                      className="flex-1 bg-gray-50 border-gray-200 focus:bg-white rounded-full px-4 text-sm transition-all focus:ring-1 focus:ring-emerald-500"
+                    />
 
-                <Button
-                  onClick={handleSendMessage}
-                  className="bg-emerald-600 hover:bg-[#152920] text-white rounded-full p-2.5 w-10 h-10 flex items-center justify-center shadow-md shrink-0 transition-transform active:scale-95"
-                  disabled={sending || !messageInput.trim()}
-                >
-                  <Send className="w-4 h-4" />
-                </Button>
+                    <Button
+                      onClick={handleSendMessage}
+                      className="bg-emerald-600 hover:bg-[#152920] text-white rounded-full p-2.5 w-10 h-10 flex items-center justify-center shadow-md shrink-0 transition-transform active:scale-95"
+                      disabled={sending || !messageInput.trim()}
+                    >
+                      <Send className="w-4 h-4" />
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <div className="relative flex-1 flex items-center">
+                      <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
+                      <Input
+                        placeholder="Chat manual terkunci (> 24 jam). Pilih Template Pesan ->"
+                        disabled
+                        className="w-full bg-slate-100/80 border-slate-200 rounded-full pl-9 pr-4 text-xs italic text-slate-500 cursor-not-allowed"
+                      />
+                    </div>
+
+                    <Button
+                      onClick={openTemplateModal}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-full px-4 py-2 flex items-center gap-2 font-semibold shadow-md shrink-0 transition-all text-xs"
+                    >
+                      <FileText className="w-4 h-4" />
+                      Pilih Template Pesan
+                    </Button>
+                  </>
+                )}
               </div>
 
               <div className="flex justify-between items-center px-2">
-                <span className="text-[11px] text-gray-400 font-medium">
-                  💰 Setiap pengiriman memotong 1 token (Rp 1.500)
+                <span className={`text-[11px] font-medium ${isWithin24Hours ? "text-emerald-600" : "text-gray-400"}`}>
+                  {isWithin24Hours ? "✅ Bebas Token (Gratis balasan dalam 24 jam)" : "💰 Menggunakan 1 token per pengiriman"}
                 </span>
                 {tokenBalance <= 10 && tokenBalance > 0 && (
                   <span className="text-[11px] text-amber-600 font-semibold animate-pulse">
@@ -880,6 +991,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
         )}
       </div>
 
+      {/* Delete Confirmation Modal */}
       <AppModal
         open={deleteConfirmOpen}
         title="Hapus Percakapan"
@@ -902,6 +1014,160 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
           </Button>
         </div>
       </AppModal>
+
+      {/* Template Selection Modal for >24h CS Window */}
+      {showTemplateModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden border border-slate-100">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/80">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                  <FileText className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-sm">Pilih Template Pesan Meta</h3>
+                  <p className="text-[11px] text-slate-500">Wajib untuk pesan &gt; 24 jam</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowTemplateModal(false);
+                  setSelectedTemplate(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              {loadingTemplates ? (
+                <div className="py-12 text-center text-slate-500 flex flex-col items-center gap-3">
+                  <RotateCw className="w-7 h-7 animate-spin text-emerald-600" />
+                  <span className="text-xs font-semibold text-slate-600">Memuat template disetujui Meta...</span>
+                </div>
+              ) : !selectedTemplate ? (
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-500">
+                    Silakan pilih salah satu template approved di bawah ini untuk dikirim ke kontak:
+                  </p>
+                  {templatesList.length === 0 ? (
+                    <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                      <AlertTriangle className="w-8 h-8 mx-auto mb-2 text-amber-500" />
+                      <p className="font-semibold text-slate-700 text-sm">Belum Ada Template Disetujui</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Buat atau sinkronkan template terlebih dahulu pada menu Template Pesan.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                      {templatesList.map((tpl) => (
+                        <button
+                          key={tpl.id}
+                          onClick={() => handleSelectTemplate(tpl)}
+                          className="w-full p-3.5 rounded-xl border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/40 text-left transition-all space-y-1.5 group bg-white shadow-xs hover:shadow-sm"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-sm text-slate-800 group-hover:text-emerald-900">
+                              {tpl.name}
+                            </span>
+                            <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                              {tpl.language || "id"}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
+                            {tpl.content || "(Tidak ada sampel isi teks)"}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <button
+                    onClick={() => setSelectedTemplate(null)}
+                    className="text-xs text-emerald-600 font-bold hover:underline flex items-center gap-1"
+                  >
+                    ← Kembali pilih template lain
+                  </button>
+
+                  <div className="p-4 bg-slate-50 border border-slate-200/80 rounded-xl space-y-1.5">
+                    <span className="text-xs font-bold text-slate-800 block">
+                      Template: {selectedTemplate.name}
+                    </span>
+                    <p className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed">
+                      {selectedTemplate.content}
+                    </p>
+                  </div>
+
+                  {/* Template Variable Inputs */}
+                  {templateVarValues.length > 0 && (
+                    <div className="space-y-3 bg-emerald-50/60 p-4 border border-emerald-200/70 rounded-xl">
+                      <span className="text-xs font-bold text-emerald-950 block">
+                        Isi Variabel Pesan ({templateVarValues.length}):
+                      </span>
+                      {templateVarValues.map((_, idx) => (
+                        <div key={idx}>
+                          <label className="text-[11px] font-semibold text-slate-600 mb-1 block">
+                            Variabel `{"{{" + (idx + 1) + "}}"}`
+                          </label>
+                          <Input
+                            placeholder={`Masukkan nilai untuk {{${idx + 1}}}`}
+                            value={templateVarValues[idx] || ""}
+                            onChange={(e) => {
+                              const newVars = [...templateVarValues];
+                              newVars[idx] = e.target.value;
+                              setTemplateVarValues(newVars);
+                            }}
+                            className="bg-white text-xs"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Message Preview */}
+                  <div className="p-3.5 bg-emerald-100/70 border border-emerald-200/80 rounded-xl text-xs space-y-1">
+                    <span className="font-bold text-emerald-950 block">Preview Pesan Terkirim:</span>
+                    <p className="text-emerald-950 font-medium whitespace-pre-wrap leading-relaxed">
+                      {buildTemplatePreview(selectedTemplate.content, templateVarValues)}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between px-6 py-4 bg-slate-50 border-t border-slate-100">
+              <span className={`text-[11px] font-medium ${isWithin24Hours ? "text-emerald-600" : "text-slate-500"}`}>
+                {isWithin24Hours ? "✅ Bebas Token (Gratis balasan dalam window 24 jam)" : "💰 Memotong 1 token per pengiriman"}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowTemplateModal(false);
+                    setSelectedTemplate(null);
+                  }}
+                  disabled={sendingTemplate}
+                  className="rounded-lg text-xs"
+                >
+                  Batal
+                </Button>
+                {selectedTemplate && (
+                  <Button
+                    onClick={handleExecuteSendTemplate}
+                    disabled={sendingTemplate}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold"
+                  >
+                    {sendingTemplate ? "Mengirim..." : "Kirim Template"}
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

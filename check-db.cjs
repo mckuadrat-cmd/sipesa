@@ -1,40 +1,10 @@
-const fs = require('fs');
-let serviceKey = '';
-const env = fs.readFileSync('.env.local', 'utf8').split('\n').forEach(line => {
-  const [k, ...v] = line.split('=');
-  if (k && !k.startsWith('#')) {
-    const val = v.join('=').trim().replace(/^"|"$/g, '');
-    process.env[k.trim()] = val;
-    if (k.trim() === 'SUPABASE_SERVICE_ROLE_KEY') serviceKey = val;
-  }
-});
-
 async function run() {
   const { createClient } = require('@supabase/supabase-js');
-  const supa = createClient(process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL, serviceKey || process.env.VITE_SUPABASE_ANON_KEY);
+  const supa = createClient('https://gwokwhznesggqoqrzaet.supabase.co', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd3b2t3aHpuZXNnZ3FvcXJ6YWV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA5OTA4NTMsImV4cCI6MjA4NjU2Njg1M30.feNwS4Ut279I1-8pNMjbryzAdnjP7Z2MP5NMD2m6-jU');
   
-  console.log('Querying key_info for midtrans transactions...');
-  const { data: txs, error: txErr } = await supa
-    .from('key_info')
-    .select('key, value')
-    .like('key', 'midtrans_tx:%');
-    
-  if (txErr) {
-    console.error('Error querying key_info:', txErr);
-  } else {
-    console.log('Midtrans Transactions:', JSON.stringify(txs, null, 2));
-  }
-
-  console.log('Querying billing_balance...');
-  const { data: balances, error: balErr } = await supa
-    .from('billing_balance')
-    .select('*');
-
-  if (balErr) {
-    console.error('Error querying billing_balance:', balErr);
-  } else {
-    console.log('Billing Balances:', JSON.stringify(balances, null, 2));
-  }
+  console.log('Testing key_info upsert...');
+  const { data, error } = await supa.from('key_info').upsert({ key: 'test_key_123', value: { test: true } }, { onConflict: 'key' }).select('*');
+  console.log('Upsert result:', data, 'Error:', error);
 }
 
 run();

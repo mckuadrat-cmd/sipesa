@@ -259,6 +259,27 @@ export const api = {
     return ok(res.data);
   },
 
+  async validateNumbers(numberId: string, phones: string[]): Promise<AppResult<{
+    checkedWithMeta: boolean;
+    metaError?: string | null;
+    results: Array<{
+      input: string;
+      normalized: string;
+      formatValid: boolean;
+      formatReason?: string;
+      waExists: boolean | null;
+      waStatus: string;
+    }>;
+  }>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/numbers/validate`, {
+      method: "POST",
+      body: JSON.stringify({ numberId, phones }),
+    });
+
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
   async getSettings() {
     const res = await apiFetch<any>(`${API_PREFIX}/settings`, { method: "GET" });
     if (isApiFail(res)) return fail(res.error);
@@ -303,9 +324,10 @@ export const api = {
   },
 
   async updateMessagingSettings(payload: {
+    numberId?: string;
     autoReplyEnabled: boolean;
     autoReplyMessage: string;
-    fallbackTemplateName: string;
+    fallbackTemplateName?: string;
     sendDelayMs: number;
     throttlePerMin: number;
   }) {
@@ -390,13 +412,24 @@ export const api = {
   async sendMessage(
     numberId: string,
     contactId: string,
-    content: string,
+    contentOrPayload: string | {
+      content?: string;
+      messageType?: string;
+      templateName?: string;
+      language?: string;
+      bodyVariables?: string[];
+      header?: any;
+    },
   ): Promise<SendMessageResult> {
+    const bodyPayload = typeof contentOrPayload === "string" 
+      ? { content: contentOrPayload } 
+      : contentOrPayload;
+
     const res = await apiFetch<any>(
       `${API_PREFIX}/numbers/${numberId}/contacts/${contactId}/messages`,
       {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify(bodyPayload),
       },
     );
 

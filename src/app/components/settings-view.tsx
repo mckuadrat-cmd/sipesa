@@ -42,14 +42,15 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
     id: "",
     name: "",
     supportEmail: "",
-    autoReplyEnabled: false,
-    autoReplyMessage: "",
-    fallbackTemplateName: "",
+    autoReplyEnabled: true,
+    autoReplyMessage: "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.",
     sendDelayMs: 2000,
     throttlePerMin: 30,
   });
 
-  const [registeredWaNumber, setRegisteredWaNumber] = useState("Belum ada");
+  const [waNumbersList, setWaNumbersList] = useState<Array<{ id: string; number: string; name: string }>>([]);
+  const [selectedNumberId, setSelectedNumberId] = useState<string>("");
+  const [numberAutoRepliesMap, setNumberAutoRepliesMap] = useState<Record<string, { autoReplyEnabled: boolean; autoReplyMessage: string }>>({});
 
   const [passwordForm, setPasswordForm] = useState({
     currentPassword: "",
@@ -84,22 +85,52 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
         waNumber: result.data.profile?.waNumber ?? "",
       });
 
+      const numReplies = (result.data.org?.numberAutoReplies || {}) as Record<string, { autoReplyEnabled: boolean; autoReplyMessage: string }>;
+      const mergedMap: Record<string, { autoReplyEnabled: boolean; autoReplyMessage: string }> = { ...numReplies };
+
       const orgId = result.data.org?.id ?? "";
+      const defaultMsg = "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.";
+
       setOrg({
         id: orgId,
         name: result.data.org?.name ?? "",
         supportEmail: result.data.org?.supportEmail ?? "",
-        autoReplyEnabled: !!result.data.org?.autoReplyEnabled,
-        autoReplyMessage: result.data.org?.autoReplyMessage ?? "",
-        fallbackTemplateName: result.data.org?.fallbackTemplateName ?? "",
+        autoReplyEnabled: result.data.org?.autoReplyEnabled ?? true,
+        autoReplyMessage: result.data.org?.autoReplyMessage || defaultMsg,
         sendDelayMs: Number(result.data.org?.sendDelayMs ?? 2000),
         throttlePerMin: Number(result.data.org?.throttlePerMin ?? 30),
       });
 
       if (numbersRes && !("error" in numbersRes) && numbersRes.data.length > 0) {
-        const formattedNumbers = numbersRes.data.map(n => n.number).join(", ");
-        setRegisteredWaNumber(formattedNumbers);
+        const numList = numbersRes.data.map(n => ({ id: n.id, number: n.number, name: n.name }));
+        setWaNumbersList(numList);
+
+        numbersRes.data.forEach((n: any) => {
+          if (!mergedMap[n.id]) {
+            mergedMap[n.id] = {
+              autoReplyEnabled: n.autoReplyEnabled !== false,
+              autoReplyMessage: n.autoReplyMessage || defaultMsg,
+            };
+          }
+        });
+
+        const savedNumId = localStorage.getItem("sipesa_selected_waba_number_id");
+        const initialNumId = savedNumId && numList.some(n => n.id === savedNumId)
+          ? savedNumId
+          : (selectedNumberId && numList.some(n => n.id === selectedNumberId) ? selectedNumberId : numList[0].id);
+
+        setSelectedNumberId(initialNumId);
+
+        if (mergedMap[initialNumId]) {
+          setOrg((o) => ({
+            ...o,
+            autoReplyEnabled: mergedMap[initialNumId].autoReplyEnabled,
+            autoReplyMessage: mergedMap[initialNumId].autoReplyMessage || defaultMsg,
+          }));
+        }
       }
+
+      setNumberAutoRepliesMap(mergedMap);
 
       if (userId) {
         let avatarVal = localStorage.getItem(`sipesa_avatar_${userId}`);
@@ -140,6 +171,58 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSelectNumber = (numId: string) => {
+    setSelectedNumberId(numId);
+    localStorage.setItem("sipesa_selected_waba_number_id", numId);
+    const defaultMsg = "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.";
+    const setting = numberAutoRepliesMap[numId];
+    if (setting) {
+      setOrg((o) => ({
+        ...o,
+        autoReplyEnabled: setting.autoReplyEnabled,
+        autoReplyMessage: setting.autoReplyMessage || defaultMsg,
+      }));
+    } else {
+      setOrg((o) => ({
+        ...o,
+        autoReplyEnabled: true,
+        autoReplyMessage: defaultMsg,
+      }));
+    }
+  };
+
+  const handleAutoReplyToggle = (val: boolean) => {
+    setOrg((o) => {
+      const updated = { ...o, autoReplyEnabled: val };
+      if (selectedNumberId) {
+        setNumberAutoRepliesMap((prev) => ({
+          ...prev,
+          [selectedNumberId]: {
+            autoReplyEnabled: val,
+            autoReplyMessage: updated.autoReplyMessage,
+          },
+        }));
+      }
+      return updated;
+    });
+  };
+
+  const handleAutoReplyMessageChange = (msg: string) => {
+    setOrg((o) => {
+      const updated = { ...o, autoReplyMessage: msg };
+      if (selectedNumberId) {
+        setNumberAutoRepliesMap((prev) => ({
+          ...prev,
+          [selectedNumberId]: {
+            autoReplyEnabled: updated.autoReplyEnabled,
+            autoReplyMessage: msg,
+          },
+        }));
+      }
+      return updated;
+    });
   };
 
   const handleSaveProfile = async () => {
@@ -205,9 +288,9 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
     setSaving(true);
     try {
       const result = await api.updateMessagingSettings({
+        numberId: selectedNumberId || undefined,
         autoReplyEnabled: org.autoReplyEnabled,
         autoReplyMessage: org.autoReplyMessage,
-        fallbackTemplateName: org.fallbackTemplateName,
         sendDelayMs: Number(org.sendDelayMs),
         throttlePerMin: Number(org.throttlePerMin),
       });
@@ -217,7 +300,18 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
         return;
       }
 
-      toast.success("Pengaturan pesan berhasil disimpan");
+      if (selectedNumberId) {
+        setNumberAutoRepliesMap((prev) => ({
+          ...prev,
+          [selectedNumberId]: {
+            autoReplyEnabled: org.autoReplyEnabled,
+            autoReplyMessage: org.autoReplyMessage,
+          },
+        }));
+        localStorage.setItem("sipesa_selected_waba_number_id", selectedNumberId);
+      }
+
+      toast.success("Pengaturan pesan per nomor WABA berhasil disimpan");
     } catch (error) {
       console.error(error);
       toast.error("Terjadi kesalahan saat menyimpan pengaturan pesan");
@@ -452,18 +546,6 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
               </div>
 
               <div>
-                <Label className="text-slate-700 font-medium">Nomor WABA Terdaftar</Label>
-                <Input
-                  className="mt-2 bg-slate-50/80"
-                  value={registeredWaNumber}
-                  disabled
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Nomor WhatsApp Business API resmi.
-                </p>
-              </div>
-
-              <div>
                 <Label className="text-slate-700 font-medium">Username</Label>
                 <Input
                   className="mt-2"
@@ -521,6 +603,32 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
           </div>
 
           <div className="space-y-6">
+            <div>
+              <Label className="text-slate-700 font-medium">Nomor WABA Terdaftar</Label>
+              {waNumbersList.length > 0 ? (
+                <select
+                  value={selectedNumberId}
+                  onChange={(e) => handleSelectNumber(e.target.value)}
+                  className="w-full mt-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                >
+                  {waNumbersList.map((n) => (
+                    <option key={n.id} value={n.id}>
+                      {n.number} {n.name ? `(${n.name})` : ""}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <Input
+                  className="mt-2 bg-slate-50/80"
+                  value="Belum ada nomor WA terdaftar"
+                  disabled
+                />
+              )}
+              <p className="text-xs text-muted-foreground mt-1">
+                Pilih nomor WABA untuk mengatur pesan Auto Reply khusus per nomor.
+              </p>
+            </div>
+
             <div className="flex items-center justify-between gap-4">
               <div>
                 <Label className="text-slate-700 font-medium">Auto Reply Dalam 24 Jam</Label>
@@ -530,26 +638,16 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
               </div>
               <Switch
                 checked={org.autoReplyEnabled}
-                onCheckedChange={(val) => setOrg((o) => ({ ...o, autoReplyEnabled: val }))}
+                onCheckedChange={(val) => handleAutoReplyToggle(val)}
               />
             </div>
 
             <div>
               <Label className="text-slate-700 font-medium">Pesan Auto Reply</Label>
               <textarea
-                className="w-full mt-2 p-3 border rounded-lg min-h-[110px] text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                className="w-full mt-2 p-3 border rounded-lg min-h-[110px] text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary border-slate-200"
                 value={org.autoReplyMessage}
-                onChange={(e) => setOrg((o) => ({ ...o, autoReplyMessage: e.target.value }))}
-              />
-            </div>
-
-            <div>
-              <Label className="text-slate-700 font-medium">Template Fallback di Luar 24 Jam</Label>
-              <Input
-                className="mt-2"
-                placeholder="Nama template approved di Meta"
-                value={org.fallbackTemplateName}
-                onChange={(e) => setOrg((o) => ({ ...o, fallbackTemplateName: e.target.value }))}
+                onChange={(e) => handleAutoReplyMessageChange(e.target.value)}
               />
             </div>
 
