@@ -3750,29 +3750,69 @@ const handleWebhookPost = async (c: any) => {
                 }
 
                 if (autoReplyEnabled) {
-                  if (numberRow.phone_number_id && numberRow.access_token) {
-                    const metaReplyRes = await sendMetaTextMessage({
-                      phoneNumberId: numberRow.phone_number_id,
-                      accessToken: numberRow.access_token,
-                      to: from,
-                      text: replyText,
-                    });
+                  // Check if auto-reply was ALREADY sent to this contact today
+                  const startOfToday = new Date();
+                  startOfToday.setHours(0, 0, 0, 0);
 
-                    const replyMetaId = metaReplyRes?.messages?.[0]?.id ?? null;
-                    await supa.from("wa_messages").insert({
-                      org_id: numberRow.org_id,
-                      number_id: numberRow.id,
-                      contact_id: contact.id,
-                      direction: "out",
-                      status: "sent",
-                      meta_message_id: replyMetaId,
-                      meta_status_payload: metaReplyRes,
-                      message_type: "text",
-                      text_body: replyText,
-                      payload: { source: "auto_reply" },
-                      sent_at: nowIso(),
-                    });
-                    console.log("Auto-reply successfully sent to:", from);
+                  const { data: existingAutoReply } = await supa
+                    .from("wa_messages")
+                    .select("id, payload")
+                    .eq("number_id", numberRow.id)
+                    .eq("contact_id", contact.id)
+                    .eq("direction", "out")
+                    .gte("sent_at", startOfToday.toISOString());
+
+                  const alreadyRepliedToday = existingAutoReply?.some(
+                    (msg: any) =>
+                      msg.payload &&
+                      (msg.payload.source === "auto_reply" || msg.payload?.source === "auto_reply")
+                  );
+
+                  if (alreadyRepliedToday) {
+                    console.log(`Auto-reply skipped for ${from}: already sent auto-reply today.`);
+                  } else {
+                    // Add 2-second delay after client chat
+                    await sleep(2000);
+
+                    // Re-check after 2-second sleep to prevent race conditions
+                    const { data: recheckAutoReply } = await supa
+                      .from("wa_messages")
+                      .select("id, payload")
+                      .eq("number_id", numberRow.id)
+                      .eq("contact_id", contact.id)
+                      .eq("direction", "out")
+                      .gte("sent_at", startOfToday.toISOString());
+
+                    const stillAlreadyReplied = recheckAutoReply?.some(
+                      (msg: any) =>
+                        msg.payload &&
+                        (msg.payload.source === "auto_reply" || msg.payload?.source === "auto_reply")
+                    );
+
+                    if (!stillAlreadyReplied && numberRow.phone_number_id && numberRow.access_token) {
+                      const metaReplyRes = await sendMetaTextMessage({
+                        phoneNumberId: numberRow.phone_number_id,
+                        accessToken: numberRow.access_token,
+                        to: from,
+                        text: replyText,
+                      });
+
+                      const replyMetaId = metaReplyRes?.messages?.[0]?.id ?? null;
+                      await supa.from("wa_messages").insert({
+                        org_id: numberRow.org_id,
+                        number_id: numberRow.id,
+                        contact_id: contact.id,
+                        direction: "out",
+                        status: "sent",
+                        meta_message_id: replyMetaId,
+                        meta_status_payload: metaReplyRes,
+                        message_type: "text",
+                        text_body: replyText,
+                        payload: { source: "auto_reply" },
+                        sent_at: nowIso(),
+                      });
+                      console.log("Auto-reply successfully sent to:", from);
+                    }
                   }
                 }
               } catch (autoReplyErr) {

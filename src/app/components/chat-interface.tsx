@@ -4,7 +4,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { AppModal } from "./AppModal";
 
-import { ArrowLeft, Send, Search, Phone, Smile, RotateCw, CheckCheck, Trash2, Square, CheckSquare, Edit, X, Lock, FileText, Sparkles, Clock, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Send, Search, Phone, Smile, RotateCw, CheckCheck, Trash2, Square, CheckSquare, Edit, X, Lock, FileText, Sparkles, Clock, AlertTriangle, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 
@@ -203,6 +203,28 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   const [sendingTemplate, setSendingTemplate] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const userIsAtBottomRef = useRef<boolean>(true);
+  const autoScrollNextRef = useRef<boolean>(true);
+  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
+
+  const handleScroll = () => {
+    if (!scrollContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight <= 120;
+    userIsAtBottomRef.current = isAtBottom;
+    setShowScrollBottomBtn(!isAtBottom);
+  };
+
+  const scrollToBottom = (smooth = true) => {
+    if (!scrollContainerRef.current) return;
+    scrollContainerRef.current.scrollTo({
+      top: scrollContainerRef.current.scrollHeight,
+      behavior: smooth ? "smooth" : "auto",
+    });
+    userIsAtBottomRef.current = true;
+    setShowScrollBottomBtn(false);
+  };
 
   // Check 24-Hour Customer Service Window from client's last incoming message
   const lastIncomingMessage = [...messages].reverse().find((m) => m.sender === "contact");
@@ -278,6 +300,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
       }
 
       if (result.data) {
+        autoScrollNextRef.current = true;
         setMessages((prev) => [...prev, result.data]);
       }
       setTokenBalance(Number(result.tokensRemaining ?? tokenBalance));
@@ -311,6 +334,10 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   }, [numberId]);
 
   useEffect(() => {
+    autoScrollNextRef.current = true;
+    userIsAtBottomRef.current = true;
+    setShowScrollBottomBtn(false);
+
     if (selectedContact) {
       loadMessages();
     } else {
@@ -327,7 +354,10 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   }, [selectedContact, numberId]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (autoScrollNextRef.current || userIsAtBottomRef.current) {
+      scrollToBottom(autoScrollNextRef.current ? false : true);
+      autoScrollNextRef.current = false;
+    }
   }, [messages]);
 
   const loadTokenBalance = async () => {
@@ -465,7 +495,17 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
     try {
       const result = await api.getMessages(numberId, selectedContact);
       if (!result.success) return;
-      setMessages(result.data);
+      setMessages((prev) => {
+        if (
+          prev.length === result.data.length &&
+          prev.length > 0 &&
+          prev[prev.length - 1].id === result.data[result.data.length - 1].id &&
+          prev[prev.length - 1].timestamp === result.data[result.data.length - 1].timestamp
+        ) {
+          return prev;
+        }
+        return result.data;
+      });
     } catch (error) {
       console.error("Error polling messages:", error);
     }
@@ -492,6 +532,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
         return;
       }
 
+      autoScrollNextRef.current = true;
       setMessages((prev) => [...prev, result.data]);
       setMessageInput("");
       setTokenBalance(Number(result.tokensRemaining ?? tokenBalance));
@@ -785,7 +826,11 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
             </div>
 
             {/* Chat Area */}
-            <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 z-10">
+            <div
+              ref={scrollContainerRef}
+              onScroll={handleScroll}
+              className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 z-10 relative"
+            >
               {loading ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600" />
@@ -871,6 +916,16 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                   ))}
                   <div ref={messagesEndRef} />
                 </div>
+              )}
+
+              {showScrollBottomBtn && (
+                <button
+                  onClick={() => scrollToBottom(true)}
+                  className="sticky bottom-4 left-1/2 -translate-x-1/2 bg-white/95 hover:bg-white text-gray-700 shadow-md border border-gray-200 rounded-full px-3 py-1.5 flex items-center gap-1.5 text-xs font-medium backdrop-blur transition-all hover:scale-105 z-20"
+                >
+                  <ChevronDown className="w-4 h-4 text-emerald-600 animate-bounce" />
+                  <span>Pesan terbaru</span>
+                </button>
               )}
             </div>
 
