@@ -264,6 +264,15 @@ export function BroadcastProgressModal({
           api.getBroadcastStats(broadcastId).then((res) => {
             if (active && !("error" in res)) {
               setStats(res.data);
+
+              const campaignStatus = String(res.data?.status || "").toLowerCase();
+              if (["completed", "cancelled", "failed"].includes(campaignStatus)) {
+                api.getBroadcastRecipients(broadcastId).then((rowsRes) => {
+                  if (active && !("error" in rowsRes)) {
+                    setRows(rowsRes.data || []);
+                  }
+                });
+              }
             }
           });
         }
@@ -376,19 +385,21 @@ export function BroadcastProgressModal({
     return "bg-green-500";
   }, [progressPct]);
 
+  const campaignStatus = String(stats?.status || "").toLowerCase();
+  const expectedTotal = Number(stats?.totalRecipients ?? 0);
+  const allRowsLoaded = expectedTotal > 0 && summary.total >= expectedTotal;
+  const noActiveRecipients = summary.pending === 0 && summary.processing === 0;
+  const isComplete =
+    campaignStatus === "completed" && allRowsLoaded && noActiveRecipients;
   const isDone =
-    stats?.status === "completed" ||
-    stats?.status === "cancelled" ||
-    (summary.total > 0 && summary.pending === 0 && summary.processing === 0);
+    isComplete || campaignStatus === "cancelled" || campaignStatus === "failed";
 
   useEffect(() => {
-    if (isDone && open && broadcastId && !hasTriggeredComplete.current) {
+    if (isComplete && open && broadcastId && !hasTriggeredComplete.current) {
       hasTriggeredComplete.current = true;
-      if (onComplete) {
-        onComplete(broadcastId);
-      }
+      onComplete?.(broadcastId);
     }
-  }, [isDone, open, broadcastId, onComplete]);
+  }, [isComplete, open, broadcastId, onComplete]);
 
   // Smooth scroll to the currently processing row
   useEffect(() => {
@@ -413,7 +424,7 @@ export function BroadcastProgressModal({
       onClose={onClose}
       closeOnBackdrop={isDone}
       closeDisabled={!isDone}
-      closeOnContentClick={isDone}
+      closeOnContentClick={false}
       maxWidthClassName="max-w-3xl"
       footer={
         <div className="flex justify-between items-center">
@@ -458,6 +469,15 @@ export function BroadcastProgressModal({
           <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 mt-[2px]" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {isComplete && (
+          <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700 flex items-start gap-2">
+            <CheckCircle2 className="w-4 h-4 mt-[1px]" />
+            <span>
+              Semua pesan sudah diteruskan ke Meta. Status Delivered dan Read akan terus diperbarui dari webhook Meta.
+            </span>
           </div>
         )}
 
