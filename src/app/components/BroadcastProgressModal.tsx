@@ -215,7 +215,6 @@ export function BroadcastProgressModal({
         return;
       }
 
-      await fetchBroadcastData();
       onCancelled?.();
     } catch {
       setError("Gagal membatalkan broadcast.");
@@ -319,7 +318,9 @@ export function BroadcastProgressModal({
         fetchData();
       }
 
-      if (tickCount % 4 === 0) {
+      // Safety trigger only. The server chains 50-recipient batches itself;
+      // polling must not continuously create competing Edge Function workers.
+      if (tickCount % 30 === 0) {
         api.processBroadcasts(200).catch(() => {});
       }
     }, 1000);
