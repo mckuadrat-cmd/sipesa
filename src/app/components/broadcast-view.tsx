@@ -2370,6 +2370,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         broadcastId={activeBroadcastId}
         onClose={() => setProgressModalOpen(false)}
         onCancelled={() => {
+          setProgressModalOpen(false);
           loadInitialData();
           onBroadcastSent?.();
           resetImportedContacts();
@@ -2379,7 +2380,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
           openResultModal(
             "success",
             "Broadcast Selesai",
-            "Pesan broadcast Anda telah selesai dikirim. Silakan lihat laporan detail untuk melihat rincian pengiriman.",
+            "Semua pesan telah selesai diteruskan ke Meta. Status Delivered dan Read akan diperbarui hanya setelah webhook resmi Meta diterima.",
             bcId,
           );
           resetImportedContacts();
