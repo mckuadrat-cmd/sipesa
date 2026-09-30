@@ -71,6 +71,7 @@ const InfoTooltip = ({ text }: { text: string }) => {
 
 type RecipientRow = {
   id: string;
+  sequence_no?: number | null;
   recipient_name?: string | null;
   phone_e164?: string | null;
   status?: string | null;
@@ -79,6 +80,28 @@ type RecipientRow = {
   created_at?: string | null;
   error?: string | null;
 };
+
+function sortRecipientRows(rows: RecipientRow[]) {
+  return [...rows].sort((a, b) => {
+    const aSequence = Number(a.sequence_no ?? Number.MAX_SAFE_INTEGER);
+    const bSequence = Number(b.sequence_no ?? Number.MAX_SAFE_INTEGER);
+    if (aSequence !== bSequence) return aSequence - bSequence;
+
+    const aCreated = new Date(a.created_at || 0).getTime();
+    const bCreated = new Date(b.created_at || 0).getTime();
+    if (aCreated !== bCreated) return aCreated - bCreated;
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  });
+}
+
+function mergeRecipientRows(current: RecipientRow[], incoming: RecipientRow[]) {
+  const byId = new Map(current.map((row) => [row.id, row]));
+  incoming.forEach((row) => {
+    if (!row?.id) return;
+    byId.set(row.id, { ...byId.get(row.id), ...row });
+  });
+  return sortRecipientRows(Array.from(byId.values()));
+}
 
 interface BroadcastProgressModalProps {
   open: boolean;
@@ -199,7 +222,7 @@ export function BroadcastProgressModal({
     }
 
     if (!("error" in rowsRes)) {
-      setRows(rowsRes.data || []);
+      setRows((current) => mergeRecipientRows(current, rowsRes.data || []));
     }
   };
 
@@ -227,6 +250,10 @@ export function BroadcastProgressModal({
     if (!open || !broadcastId) return;
 
     let active = true;
+    setRows([]);
+    setStats(null);
+    setError("");
+    channelStatusRef.current = "INITIAL";
 
     const fetchData = async () => {
       try {
@@ -268,7 +295,7 @@ export function BroadcastProgressModal({
               if (["completed", "cancelled", "failed"].includes(campaignStatus)) {
                 api.getBroadcastRecipients(broadcastId).then((rowsRes) => {
                   if (active && !("error" in rowsRes)) {
-                    setRows(rowsRes.data || []);
+                    setRows((current) => mergeRecipientRows(current, rowsRes.data || []));
                   }
                 });
               }
@@ -289,9 +316,7 @@ export function BroadcastProgressModal({
           if (payload.eventType === "UPDATE" || payload.eventType === "INSERT") {
             const updated = payload.new as RecipientRow;
             if (updated && updated.id) {
-              setRows((prev) =>
-                prev.map((row) => (row.id === updated.id ? { ...row, ...updated } : row))
-              );
+              setRows((current) => mergeRecipientRows(current, [updated]));
             }
           }
         }
@@ -312,14 +337,14 @@ export function BroadcastProgressModal({
 
       tickCount++;
       const isSubscribed = channelStatusRef.current === "SUBSCRIBED";
-      const pollInterval = isSubscribed ? 20 : 5;
+      const pollInterval = isSubscribed ? 60 : 5;
 
       if (tickCount % pollInterval === 0) {
         fetchData();
       }
 
-      // Safety trigger only. The server chains 50-recipient batches itself;
-      // polling must not continuously create competing Edge Function workers.
+      // Recovery trigger only. A database lease on the sender number prevents
+      // this request (or another open tab) from creating a parallel sender.
       if (tickCount % 30 === 0) {
         api.processBroadcasts(200).catch(() => {});
       }
@@ -533,7 +558,7 @@ export function BroadcastProgressModal({
                         : ""
                     }`}
                   >
-                    <td className="px-3 py-2 text-center text-slate-500">{idx + 1}</td>
+                    <td className="px-3 py-2 text-center text-slate-500">{row.sequence_no ?? idx + 1}</td>
                     <td className="px-3 py-2 text-slate-800 font-mono">
                       {row.phone_e164 || "-"}
                     </td>

@@ -4,7 +4,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { AppModal } from "./AppModal";
 
-import { ArrowLeft, Send, Search, Phone, Smile, RotateCw, CheckCheck, Trash2, Square, CheckSquare, Edit, X, Lock, FileText, Sparkles, Clock, AlertTriangle, ChevronDown } from "lucide-react";
+import { ArrowLeft, Send, Search, Phone, Smile, RotateCw, CheckCheck, Trash2, Square, CheckSquare, Edit, X, Lock, FileText, Sparkles, Clock, AlertTriangle, ChevronDown, Download } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 
@@ -863,6 +863,12 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                           })();
                           const imageId = payloadObj?.image?.id || payloadObj?.id;
                           const imageCaption = payloadObj?.image?.caption || payloadObj?.caption || "";
+                          const documentData = payloadObj?.document || {};
+                          const documentId = documentData?.id || (message.messageType === "document" ? payloadObj?.id : null);
+                          const documentName = documentData?.filename || documentData?.file_name || "Dokumen";
+                          const documentCaption = documentData?.caption || payloadObj?.caption || "";
+                          const documentMimeType = documentData?.mime_type || payloadObj?.mime_type || "";
+                          const documentUrl = documentId ? api.getMediaUrl(documentId, numberId) : "";
 
                           if (message.messageType === "image" && imageId) {
                             return (
@@ -876,6 +882,42 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                                 />
                                 {imageCaption && (
                                   <p className="text-[14px] leading-relaxed mt-1">{imageCaption}</p>
+                                )}
+                              </div>
+                            );
+                          } else if (message.messageType === "document") {
+                            return (
+                              <div className="flex flex-col gap-2 min-w-[240px] max-w-full">
+                                <div className="flex items-center gap-3 rounded-xl border border-black/10 bg-black/[0.035] p-3">
+                                  <div className="w-10 h-10 rounded-lg bg-white/80 flex items-center justify-center shrink-0 border border-black/5">
+                                    <FileText className="w-5 h-5 text-slate-600" />
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-semibold text-slate-800 truncate" title={documentName}>
+                                      {documentName}
+                                    </p>
+                                    <p className="text-[11px] text-slate-500 truncate">
+                                      {documentMimeType || "Dokumen WhatsApp"}
+                                    </p>
+                                  </div>
+                                  {documentUrl && (
+                                    <a
+                                      href={documentUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      download={documentName}
+                                      className="w-9 h-9 rounded-full bg-white hover:bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-600 transition-colors shrink-0"
+                                      title="Buka atau unduh dokumen"
+                                    >
+                                      <Download className="w-4 h-4" />
+                                    </a>
+                                  )}
+                                </div>
+                                {documentCaption && (
+                                  <p className="text-[14px] whitespace-pre-wrap leading-relaxed">{documentCaption}</p>
+                                )}
+                                {!documentId && (
+                                  <p className="text-xs text-slate-500 italic">Dokumen tidak dapat dimuat.</p>
                                 )}
                               </div>
                             );

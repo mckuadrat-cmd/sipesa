@@ -651,25 +651,19 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
               />
             </div>
 
-            <div className="grid md:grid-cols-2 gap-4">
+            <div>
               <div>
-                <Label className="text-slate-700 font-medium">Jeda Antar Pesan (ms)</Label>
+                <Label className="text-slate-700 font-medium">Jeda Minimum Antar Pesan (ms)</Label>
                 <Input
                   type="number"
+                  min={0}
                   className="mt-2"
                   value={org.sendDelayMs}
                   onChange={(e) => setOrg((o) => ({ ...o, sendDelayMs: Number(e.target.value || 0) }))}
                 />
-              </div>
-
-              <div>
-                <Label className="text-slate-700 font-medium">Max Pesan per Menit</Label>
-                <Input
-                  type="number"
-                  className="mt-2"
-                  value={org.throttlePerMin}
-                  onChange={(e) => setOrg((o) => ({ ...o, throttlePerMin: Number(e.target.value || 1) }))}
-                />
+                <p className="text-xs text-slate-500 mt-2">
+                  Dihitung dari waktu mulai pengiriman sebelumnya. Contoh: 1000 ms berarti maksimal sekitar satu pesan per detik untuk nomor pengirim yang sama.
+                </p>
               </div>
             </div>
 
