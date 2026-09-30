@@ -954,11 +954,10 @@ export const api = {
         const rawPhone = row[phoneIndex] || "";
         const phone = normalizePhone(rawPhone);
 
-        if (!phone) continue;
-
         const name =
           (nameIndex >= 0 ? row[nameIndex] : "")?.trim() ||
-          phone;
+          phone ||
+          `Baris ${i + 1}`;
 
         const variables = varIndexes.map(({ idx }) => (row[idx] || "").trim());
         const mediaUrl = mediaIndex >= 0 ? (row[mediaIndex] || "").trim() : "";

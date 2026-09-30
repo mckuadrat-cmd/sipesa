@@ -2739,7 +2739,7 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
 
     if (bErr) return c.json(jsonFail(bErr.message), 500);
 
-    const recipientRows = recipients.map((r: any) => {
+    const recipientRows = recipients.map((r: any, recipientIndex: number) => {
       const phone = normalizePhone(r.phone);
       const name = String(r.name ?? "").trim();
       const vars = typeof r.vars === "object" && r.vars ? r.vars : {};
@@ -2768,6 +2768,7 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
         recipient_name: name || null,
         message: finalMessage,
         status: "pending",
+        sequence_no: recipientIndex + 1,
       };
     });
 
@@ -2813,6 +2814,7 @@ app.get(`${API_PREFIX}/broadcasts/:id/recipients`, requireAuth, async (c) => {
       .select("*, wa_messages(status)")
       .eq("org_id", user.org_id)
       .eq("broadcast_id", id)
+      .order("sequence_no", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: true })
       .order("id", { ascending: true });
 
@@ -3075,6 +3077,9 @@ async function runBroadcastWorker(
     return;
   }
   activeWorkers.add(broadcastId);
+  const workerToken = crypto.randomUUID();
+  let workerNumberId: string | null = null;
+  let leaseClaimed = false;
   console.log(`[WORKER] Background worker started for broadcast ${broadcastId}`);
 
   try {
@@ -3120,6 +3125,31 @@ async function runBroadcastWorker(
       .maybeSingle();
 
     const orgDelayMs = Math.max(0, Number(org?.send_delay_ms ?? 300));
+    const leaseSeconds = Math.min(600, Math.max(75, Math.ceil(orgDelayMs / 1000) + 30));
+
+    const { data: didClaimLease, error: leaseErr } = await supa.rpc(
+      "claim_wa_number_broadcast_worker",
+      {
+        p_number_id: broadcast.number_id,
+        p_org_id: orgId,
+        p_broadcast_id: broadcastId,
+        p_worker_token: workerToken,
+        p_lease_seconds: leaseSeconds,
+      },
+    );
+
+    if (leaseErr) {
+      console.error(`[WORKER] Could not claim database worker lease for ${broadcastId}:`, leaseErr);
+      return;
+    }
+
+    if (!didClaimLease) {
+      console.log(`[WORKER] Sender ${broadcast.number_id} is already handled by another worker.`);
+      return;
+    }
+
+    workerNumberId = broadcast.number_id;
+    leaseClaimed = true;
 
     let broadcastTemplate: any = null;
     if (broadcast.mode === "template") {
@@ -3142,17 +3172,73 @@ async function runBroadcastWorker(
     let processedThisRun = 0;
     const MAX_PROCESS_PER_RUN = 50;
     const workerStartTime = Date.now();
-    const MAX_RUN_TIME_MS = 55000;
+    const MAX_RUN_TIME_MS = 40000;
 
     while (processedThisRun < MAX_PROCESS_PER_RUN && (Date.now() - workerStartTime) < MAX_RUN_TIME_MS) {
-      const { data: currentBroadcast } = await supa
+      const [{ data: currentBroadcast }, { data: leaseRow }] = await Promise.all([
+        supa
+          .from("wa_broadcasts")
+          .select("status")
+          .eq("id", broadcastId)
+          .maybeSingle(),
+        supa
+          .from("wa_numbers")
+          .select("broadcast_worker_token, broadcast_worker_lease_until, next_broadcast_send_at")
+          .eq("id", broadcast.number_id)
+          .eq("org_id", orgId)
+          .maybeSingle(),
+      ]);
+
+      if (currentBroadcast?.status === "cancelled" || currentBroadcast?.status === "paused") {
+        console.log(`[WORKER] Broadcast ${broadcastId} is ${currentBroadcast?.status}. Stopping worker.`);
+        break;
+      }
+
+      if (
+        !leaseRow ||
+        leaseRow.broadcast_worker_token !== workerToken ||
+        !leaseRow.broadcast_worker_lease_until ||
+        new Date(leaseRow.broadcast_worker_lease_until).getTime() <= Date.now()
+      ) {
+        console.log(`[WORKER] Database lease for ${broadcastId} is no longer owned by this worker.`);
+        break;
+      }
+
+      const nextAllowedAt = leaseRow.next_broadcast_send_at
+        ? new Date(leaseRow.next_broadcast_send_at).getTime()
+        : 0;
+      const remainingDelayMs = Math.max(0, nextAllowedAt - Date.now());
+
+      if (remainingDelayMs > 0) {
+        await sleep(remainingDelayMs);
+      }
+
+      const gateStartedAt = Date.now();
+      const leaseUntil = new Date(gateStartedAt + leaseSeconds * 1000).toISOString();
+      const { data: renewedLease, error: renewErr } = await supa
+        .from("wa_numbers")
+        .update({
+          broadcast_worker_lease_until: leaseUntil,
+        })
+        .eq("id", broadcast.number_id)
+        .eq("org_id", orgId)
+        .eq("broadcast_worker_token", workerToken)
+        .gt("broadcast_worker_lease_until", nowIso())
+        .select("id")
+        .maybeSingle();
+
+      if (renewErr || !renewedLease) {
+        console.warn(`[WORKER] Failed to renew sender lease for ${broadcastId}. Stopping.`);
+        break;
+      }
+
+      const { data: statusAfterWait } = await supa
         .from("wa_broadcasts")
         .select("status")
         .eq("id", broadcastId)
         .maybeSingle();
 
-      if (currentBroadcast?.status === "cancelled" || currentBroadcast?.status === "paused") {
-        console.log(`[WORKER] Broadcast ${broadcastId} is ${currentBroadcast?.status}. Stopping worker.`);
+      if (statusAfterWait?.status === "cancelled" || statusAfterWait?.status === "paused") {
         break;
       }
 
@@ -3161,6 +3247,7 @@ async function runBroadcastWorker(
         .select("*")
         .eq("broadcast_id", broadcastId)
         .eq("status", "pending")
+        .order("sequence_no", { ascending: true, nullsFirst: false })
         .order("created_at", { ascending: true })
         .order("id", { ascending: true })
         .limit(1);
@@ -3205,6 +3292,8 @@ async function runBroadcastWorker(
         });
         break;
       }
+
+      let sendAttemptStartedAt: number | null = null;
 
       try {
         const { data: msg, error: msgErr } = await supa
@@ -3265,6 +3354,7 @@ async function runBroadcastWorker(
             throw new Error(`Media header wajib untuk template ${tpl.name} di nomor ${rec.phone_e164}`);
           }
 
+          sendAttemptStartedAt = Date.now();
           metaRes = await sendMetaTemplateMessage({
             phoneNumberId: numberRow.phone_number_id,
             accessToken: numberRow.access_token,
@@ -3275,6 +3365,7 @@ async function runBroadcastWorker(
             header,
           });
         } else {
+          sendAttemptStartedAt = Date.now();
           metaRes = await sendMetaTextMessage({
             phoneNumberId: numberRow.phone_number_id,
             accessToken: numberRow.access_token,
@@ -3358,6 +3449,17 @@ async function runBroadcastWorker(
         });
       }
 
+      if (sendAttemptStartedAt !== null) {
+        await supa
+          .from("wa_numbers")
+          .update({
+            next_broadcast_send_at: new Date(sendAttemptStartedAt + orgDelayMs).toISOString(),
+          })
+          .eq("id", broadcast.number_id)
+          .eq("org_id", orgId)
+          .eq("broadcast_worker_token", workerToken);
+      }
+
       // Recipient rows drive the realtime UI. Recalculate the denormalized
       // campaign summary periodically instead of scanning all recipients after
       // every single send.
@@ -3366,15 +3468,25 @@ async function runBroadcastWorker(
       }
 
       processedThisRun++;
-
-      if (orgDelayMs > 0 && processedThisRun < MAX_PROCESS_PER_RUN) {
-        await sleep(orgDelayMs);
-      }
     }
   } catch (err) {
     console.error(`[WORKER] Fatal error in worker for broadcast ${broadcastId}:`, err);
   } finally {
     activeWorkers.delete(broadcastId);
+
+    if (leaseClaimed && workerNumberId) {
+      await supa
+        .from("wa_numbers")
+        .update({
+          broadcast_worker_token: null,
+          broadcast_worker_broadcast_id: null,
+          broadcast_worker_lease_until: null,
+        })
+        .eq("id", workerNumberId)
+        .eq("org_id", orgId)
+        .eq("broadcast_worker_token", workerToken);
+    }
+
     console.log(`[WORKER] Background worker finished for broadcast ${broadcastId}. Recalculating stats.`);
     await recalculateBroadcastStats(supa, broadcastId);
 
@@ -3385,8 +3497,9 @@ async function runBroadcastWorker(
       .eq("broadcast_id", broadcastId)
       .eq("status", "pending");
 
-    if (!countErr && count && count > 0) {
-      console.log(`[WORKER] Batch run finished. Chain-retriggering next worker instance for ${broadcastId}. Remaining pending: ${count}`);
+    if (leaseClaimed) {
+      const pendingCount = !countErr ? Number(count ?? 0) : 0;
+      console.log(`[WORKER] Worker finished for ${broadcastId}. Remaining pending: ${pendingCount}`);
       if (sessionToken && baseUrl) {
         const triggerUrl = `${baseUrl}${API_PREFIX}/jobs/process-broadcasts`;
         const p = fetch(triggerUrl, {
@@ -3406,7 +3519,7 @@ async function runBroadcastWorker(
         } else if (c?.executionCtx?.waitUntil) {
           c.executionCtx.waitUntil(p);
         }
-      } else {
+      } else if (pendingCount > 0) {
         runBroadcastWorkerInBackground(supa, orgId, actorUserId, broadcastId, sessionToken, baseUrl, c);
       }
     }
