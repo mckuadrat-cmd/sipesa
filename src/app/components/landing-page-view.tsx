@@ -66,13 +66,13 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 selection:bg-[#DF7A5E] selection:text-white">
+    <div className="min-h-screen w-full max-w-full overflow-x-clip bg-slate-50 text-slate-800 selection:bg-[#DF7A5E] selection:text-white">
       {/* Header / Navbar */}
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-100 transition-all duration-300">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <img src="/logo-sipesa.png" alt="SIPESA Logo" className="h-12 w-auto" />
-            <span className="text-xl font-bold tracking-tight text-[#3C405B]">SIPESA</span>
+        <div className="max-w-7xl mx-auto w-full min-w-0 px-3 sm:px-6 lg:px-8 h-20 flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <img src="/logo-sipesa.png" alt="SIPESA Logo" className="h-10 sm:h-12 w-auto shrink-0" />
+            <span className="text-lg sm:text-xl font-bold tracking-tight text-[#3C405B] truncate">SIPESA</span>
           </div>
 
           <nav className="hidden md:flex items-center gap-8">
@@ -82,16 +82,16 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
             <a href="#faq" className="text-sm font-medium text-slate-600 hover:text-[#DF7A5E] transition-colors">FAQ</a>
           </nav>
 
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-3">
             <button
               onClick={onNavigateToLogin}
-              className="px-4 py-2 text-sm font-semibold text-[#3C405B] hover:text-[#DF7A5E] transition-colors cursor-pointer"
+              className="min-h-11 px-2 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-[#3C405B] hover:text-[#DF7A5E] transition-colors cursor-pointer"
             >
               Masuk
             </button>
             <button
               onClick={onNavigateToRegister}
-              className="px-5 py-2.5 text-sm font-semibold bg-[#DF7A5E] hover:bg-[#DF7A5E]/90 text-white rounded-full shadow-md shadow-[#DF7A5E]/20 transition-all duration-200 cursor-pointer"
+              className="min-h-11 px-3 sm:px-5 py-2.5 text-xs sm:text-sm font-semibold bg-[#DF7A5E] hover:bg-[#DF7A5E]/90 text-white rounded-full shadow-md shadow-[#DF7A5E]/20 transition-all duration-200 cursor-pointer whitespace-nowrap"
             >
               Daftar Gratis
             </button>
@@ -103,21 +103,21 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
       <section className="relative overflow-hidden pt-12 pb-20 lg:pt-20 lg:pb-32 bg-gradient-to-br from-white via-slate-50 to-[#F0EAC6]/20">
         <div className="absolute inset-0 z-0 opacity-40 bg-[radial-gradient(#DF7A5E_1px,transparent_1px)] [background-size:24px_24px]"></div>
 
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-          <div className="grid lg:grid-cols-12 gap-12 lg:gap-8 items-center">
+        <div className="max-w-7xl mx-auto w-full min-w-0 px-4 sm:px-6 lg:px-8 relative z-10">
+          <div className="grid min-w-0 lg:grid-cols-12 gap-12 lg:gap-8 items-center">
 
             {/* Left Copywriting */}
-            <div className="lg:col-span-6 flex flex-col text-left space-y-6">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#DF7A5E]/10 border border-[#DF7A5E]/20 w-fit">
-                <span className="flex h-2 w-2 rounded-full bg-[#DF7A5E] animate-pulse"></span>
-                <span className="text-xs font-semibold text-[#DF7A5E] uppercase tracking-wider">No Subscription Fees</span>
+            <div className="min-w-0 lg:col-span-6 flex flex-col text-left space-y-6">
+              <div className="inline-flex max-w-full items-center gap-2 px-3 py-1 rounded-full bg-[#DF7A5E]/10 border border-[#DF7A5E]/20 w-fit">
+                <span className="flex h-2 w-2 shrink-0 rounded-full bg-[#DF7A5E] animate-pulse"></span>
+                <span className="min-w-0 text-xs font-semibold text-[#DF7A5E] uppercase tracking-wider break-words">No Subscription Fees</span>
               </div>
 
-              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight text-[#3C405B] leading-[1.1]">
+              <h1 className="max-w-full break-words text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight text-[#3C405B] leading-[1.1]">
                 Kirim Broadcast WA Massal, <span className="text-[#DF7A5E]">Cukup Bayar per Pesan!</span>
               </h1>
 
-              <p className="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl">
+              <p className="min-w-0 max-w-xl break-words text-base sm:text-lg text-slate-600 leading-relaxed">
                 Kelola inbox kolaboratif, template Meta, dan broadcast terjadwal hingga 5.000 penerima per campaign tanpa biaya langganan bulanan.
               </p>
 
@@ -126,14 +126,14 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                   href={waAdminLink}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center gap-2 px-8 py-4 bg-[#25D366] hover:bg-[#20ba5a] text-white text-base font-bold rounded-2xl shadow-lg shadow-emerald-500/25 transition-all duration-200 transform hover:-translate-y-0.5 cursor-pointer"
+                  className="inline-flex w-full sm:w-auto min-w-0 items-center justify-center gap-2 px-4 sm:px-8 py-4 bg-[#25D366] hover:bg-[#20ba5a] text-white text-center text-base font-bold rounded-2xl shadow-lg shadow-emerald-500/25 transition-all duration-200 transform hover:-translate-y-0.5 cursor-pointer"
                 >
                   <MessageCircle className="w-5 h-5 fill-current" />
                   Hubungi WhatsApp Admin
                 </a>
                 <button
                   onClick={onNavigateToRegister}
-                  className="inline-flex items-center justify-center gap-2 px-8 py-4 bg-[#3C405B] hover:bg-[#3C405B]/90 text-white text-base font-bold rounded-2xl transition-all duration-200 cursor-pointer"
+                  className="inline-flex w-full sm:w-auto min-w-0 items-center justify-center gap-2 px-4 sm:px-8 py-4 bg-[#3C405B] hover:bg-[#3C405B]/90 text-white text-center text-base font-bold rounded-2xl transition-all duration-200 cursor-pointer"
                 >
                   Daftar Sekarang
                   <ArrowRight className="w-5 h-5" />
@@ -141,30 +141,30 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               </div>
 
               {/* Badges / Social Proof */}
-              <div className="grid grid-cols-3 gap-4 pt-8 border-t border-slate-200/80">
-                <div>
+              <div className="grid min-w-0 grid-cols-1 min-[430px]:grid-cols-3 gap-4 pt-8 border-t border-slate-200/80">
+                <div className="min-w-0">
                   <div className="text-2xl font-extrabold text-[#3C405B]">WABA</div>
-                  <div className="text-xs text-slate-500 font-medium">Integrasi Resmi Meta</div>
+                  <div className="text-xs text-slate-500 font-medium break-words">Integrasi Resmi Meta</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-2xl font-extrabold text-[#3C405B]">Rp 0</div>
-                  <div className="text-xs text-slate-500 font-medium">Biaya Langganan Bulanan</div>
+                  <div className="text-xs text-slate-500 font-medium break-words">Biaya Langganan Bulanan</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-2xl font-extrabold text-[#3C405B]">5.000</div>
-                  <div className="text-xs text-slate-500 font-medium">Penerima per Broadcast</div>
+                  <div className="text-xs text-slate-500 font-medium break-words">Penerima per Broadcast</div>
                 </div>
               </div>
             </div>
 
             {/* Right Graphic/Mockup */}
-            <div className="lg:col-span-6 relative">
+            <div className="min-w-0 w-full max-w-full lg:col-span-6 relative">
               <div className="absolute inset-0 bg-gradient-to-tr from-[#DF7A5E]/20 to-[#F0EAC6]/30 rounded-3xl filter blur-3xl -z-10 transform scale-95"></div>
-              <div className="relative border-8 border-slate-900 rounded-3xl shadow-2xl overflow-hidden bg-slate-900 aspect-[16/10] group">
+              <div className="relative w-full max-w-full border-4 sm:border-8 border-slate-900 rounded-3xl shadow-2xl overflow-hidden bg-slate-900 aspect-[16/10] group">
                 <img
                   src="/dashboard_illustration.png"
                   alt="SIPESA Dashboard"
-                  className="w-full h-full object-cover object-top hover:scale-102 transition-transform duration-700"
+                  className="block w-full max-w-full h-full object-cover object-top hover:scale-102 transition-transform duration-700"
                 />
                 <div className="absolute inset-0 bg-slate-900/10 group-hover:bg-transparent transition-all duration-300"></div>
               </div>

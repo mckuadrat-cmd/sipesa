@@ -189,7 +189,7 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
 
   return (
     <div
-      className="h-screen overflow-hidden grid lg:grid-cols-2"
+      className="min-h-[100dvh] w-full max-w-full overflow-x-clip overflow-y-auto grid lg:h-screen lg:overflow-hidden lg:grid-cols-2"
       style={{ background: "linear-gradient(135deg, #F0EAC6 0%, #f6f2dd 100%)" }}
     >
       <div className="hidden lg:flex flex-col justify-center px-40 py-16 bg-[#3C405B] text-white">
@@ -212,9 +212,9 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
         </div>
       </div>
 
-      <div className="h-full flex items-center justify-center p-4 md:p-8 overflow-hidden">
+      <div className="min-h-[100dvh] w-full min-w-0 max-w-full flex items-center justify-center px-4 py-6 sm:p-6 md:p-8 overflow-x-clip overflow-y-auto lg:min-h-0 lg:h-full">
         {isRegistered ? (
-          <Card className="w-full max-w-md p-6 md:p-10 shadow-xl rounded-3xl border-0 flex flex-col items-center text-center justify-center">
+          <Card className="w-full min-w-0 max-w-full sm:max-w-md p-5 sm:p-6 md:p-10 shadow-xl rounded-3xl border-0 flex flex-col items-center text-center justify-center">
             <div className="rounded-full bg-emerald-50 p-4 mb-6 text-emerald-600">
               <Mail className="w-12 h-12" />
             </div>
@@ -240,8 +240,8 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
             </Button>
           </Card>
         ) : (
-          <Card className="w-full max-w-md p-6 md:p-10 shadow-xl rounded-3xl border-0 flex flex-col max-h-full overflow-hidden">
-            <div className="text-center mb-4 flex-shrink-0">
+          <Card className="w-full min-w-0 max-w-full sm:max-w-md p-5 sm:p-6 md:p-10 shadow-xl rounded-3xl border-0 flex flex-col max-h-full overflow-hidden">
+            <div className="w-full min-w-0 text-center mb-4 flex-shrink-0">
               <img
                 src="/logo-sipesa.png"
                 alt="SIPESA Logo"
@@ -252,7 +252,7 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
                 {isForgotPassword ? "Lupa Password" : isLogin ? "Login" : "Register"}
               </h1>
 
-              <p className="text-muted-foreground">
+              <p className="max-w-full break-words text-muted-foreground">
                 {isForgotPassword
                   ? "Masukkan email untuk menerima instruksi pemulihan"
                   : isLogin
@@ -262,14 +262,14 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
             </div>
 
             {error && (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-5 flex items-start gap-2 text-red-700 flex-shrink-0">
+              <div className="w-full min-w-0 bg-red-50 border border-red-200 rounded-xl p-3 mb-5 flex items-start gap-2 text-red-700 flex-shrink-0">
                 <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                 <p className="text-sm break-words">{error}</p>
               </div>
             )}
 
             {isForgotPassword ? (
-              <form onSubmit={handleForgotPassword} className="flex flex-col flex-1 min-h-0 space-y-4">
+              <form onSubmit={handleForgotPassword} className="w-full min-w-0 flex flex-col flex-1 min-h-0 space-y-4">
                 {recoveryRequested ? (
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800" role="status">
                     Jika email terdaftar, instruksi pemulihan akan dikirim.
@@ -277,7 +277,7 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
                 ) : (
                   <div>
                     <Label htmlFor="forgot-email">Email</Label>
-                    <div className="relative mt-2">
+                    <div className="relative mt-2 w-full min-w-0">
                       <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                       <Input
                         id="forgot-email"
@@ -288,7 +288,7 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
                           resetFormError();
                         }}
                         placeholder="email@example.com"
-                        className="pl-10"
+                        className="w-full min-w-0 pl-10"
                         disabled={loading}
                         aria-invalid={Boolean(error)}
                       />
@@ -315,8 +315,8 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
                 </button>
               </form>
             ) : (
-            <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0 space-y-4 overflow-hidden">
-              <div className="space-y-4 overflow-y-auto flex-1 pr-1 pb-2">
+            <form onSubmit={handleSubmit} className="w-full min-w-0 flex flex-col flex-1 min-h-0 space-y-4 overflow-hidden">
+              <div className="min-w-0 space-y-4 overflow-y-auto flex-1 pr-1 pb-2">
                 {!isLogin && (
                   <>
                     <div>
@@ -394,7 +394,7 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
 
                 <div>
                   <Label htmlFor="auth-identifier">{isLogin ? "Email / Username" : "Email *"}</Label>
-                  <div className="relative mt-2">
+                  <div className="relative mt-2 w-full min-w-0">
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
                       id="auth-identifier"
@@ -406,13 +406,13 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
                         resetFormError();
                       }}
                       required
-                      className="pl-10"
+                      className="w-full min-w-0 pl-10"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                     <Label htmlFor="auth-password">Password *</Label>
                     {isLogin && (
                       <button
@@ -423,14 +423,14 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
                           setError("");
                           setPassword("");
                         }}
-                        className="text-xs font-medium hover:underline"
+                        className="min-h-10 shrink-0 text-xs font-medium hover:underline"
                         style={{ color: "#DF7A5E" }}
                       >
                         Lupa password?
                       </button>
                     )}
                   </div>
-                  <div className="relative mt-2">
+                  <div className="relative mt-2 w-full min-w-0">
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
                       id="auth-password"
@@ -442,13 +442,13 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
                         resetFormError();
                       }}
                       required
-                      className="pl-10 pr-10"
+                      className="w-full min-w-0 pl-10 pr-12"
                     />
                     <button
                       type="button"
                       aria-label={showPassword ? "Sembunyikan password" : "Tampilkan password"}
                       onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      className="absolute right-0 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center text-muted-foreground hover:text-foreground"
                     >
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
@@ -463,7 +463,7 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
                 {!isLogin && (
                   <div>
                     <Label>Konfirmasi Password *</Label>
-                    <div className="relative mt-2">
+                    <div className="relative mt-2 w-full min-w-0">
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                       <Input
                         type={showConfirmPassword ? "text" : "password"}
@@ -474,12 +474,13 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
                           resetFormError();
                         }}
                         required
-                        className="pl-10 pr-10"
+                        className="w-full min-w-0 pl-10 pr-12"
                       />
                       <button
                         type="button"
+                        aria-label={showConfirmPassword ? "Sembunyikan konfirmasi password" : "Tampilkan konfirmasi password"}
                         onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        className="absolute right-0 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center text-muted-foreground hover:text-foreground"
                       >
                         {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                       </button>
@@ -502,7 +503,7 @@ export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin 
             )}
 
             {!isForgotPassword && <div className="text-center mt-4 flex-shrink-0">
-              <p className="text-sm text-muted-foreground">
+              <p className="flex flex-wrap items-center justify-center gap-x-1 text-sm text-muted-foreground">
                 {isLogin ? "Belum punya akun?" : "Sudah punya akun?"}{" "}
                 <button
                   type="button"

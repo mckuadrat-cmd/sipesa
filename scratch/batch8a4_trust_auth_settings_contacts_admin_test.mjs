@@ -139,7 +139,7 @@ test("payment scope remains present and was not repurposed by Batch 8A-4", () =>
 
 test("changed layouts retain responsive wrapping and mobile modal actions", () => {
   assert.match(landing, /px-4 sm:px-6 lg:px-8/);
-  assert.match(login, /p-4 md:p-8/);
+  assert.match(login, /px-4 py-6 sm:p-6 md:p-8/);
   assert.match(settings, /grid grid-cols-1 lg:grid-cols-2/);
   assert.match(contacts, /w-full max-w-lg/);
   assert.match(admin, /flex flex-col-reverse gap-2 sm:flex-row/);
