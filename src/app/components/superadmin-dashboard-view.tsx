@@ -21,7 +21,6 @@ import {
   Settings,
   Mail,
   Loader2,
-  Trash2,
   Eye,
   Upload,
   Scale,
@@ -29,6 +28,8 @@ import {
 import { api } from "../lib/api";
 import { toast } from "sonner";
 import { AppModal } from "./AppModal";
+import { ADVERTISED_PLAN_TOKEN_PRICE_IDR } from "../lib/pricingCatalog";
+import { useVisibilityRefresh } from "../hooks/use-visibility-refresh";
 
 interface WAConfig {
   id: string;
@@ -136,6 +137,8 @@ export function SuperadminDashboardView() {
   // Manual payment state variables
   const [paymentRequests, setPaymentRequests] = useState<any[]>([]);
   const [loadingRequests, setLoadingRequests] = useState(false);
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState("submitted");
+  const [paymentDetail, setPaymentDetail] = useState<any | null>(null);
   const [bankTransferText, setBankTransferText] = useState("");
   const [gopayText, setGopayText] = useState("");
   const [qrisBase64, setQrisBase64] = useState<string | null>(null);
@@ -159,7 +162,8 @@ export function SuperadminDashboardView() {
   const [selectedRequest, setSelectedRequest] = useState<any | null>(null);
   const [rejectNotes, setRejectNotes] = useState("");
   const [submittingProcess, setSubmittingProcess] = useState(false);
-  const [receiptZoom, setReceiptZoom] = useState<string | null>(null);
+  const [receiptZoom, setReceiptZoom] = useState<{ url: string; mime: string | null; fileName: string | null } | null>(null);
+  const [loadingProofId, setLoadingProofId] = useState<string | null>(null);
   const [approveModalOpen, setApproveModalOpen] = useState(false);
   const [requestToApprove, setRequestToApprove] = useState<any | null>(null);
 
@@ -188,7 +192,7 @@ export function SuperadminDashboardView() {
   const [orgSupportEmail, setOrgSupportEmail] = useState("");
   const [orgSendDelay, setOrgSendDelay] = useState(2000);
   const [orgThrottle, setOrgThrottle] = useState(30);
-  const [orgTokenPrice, setOrgTokenPrice] = useState(1500);
+  const [orgTokenPrice, setOrgTokenPrice] = useState(0);
   const [submittingEdit, setSubmittingEdit] = useState(false);
 
   // Add Number form state
@@ -200,15 +204,18 @@ export function SuperadminDashboardView() {
   const [numAccessToken, setNumAccessToken] = useState("");
   const [submittingNumber, setSubmittingNumber] = useState(false);
   const [processingSignupId, setProcessingSignupId] = useState<string | null>(null);
+  const [signupToVerify, setSignupToVerify] = useState<SignupItem | null>(null);
+  const [orgStatusConfirmOpen, setOrgStatusConfirmOpen] = useState(false);
 
-  const handleActivateSignup = async (userId: string) => {
-    setProcessingSignupId(userId);
+  const handleActivateSignup = async () => {
+    if (!signupToVerify || processingSignupId) return;
+    setProcessingSignupId(signupToVerify.id);
     try {
-      const res = await api.activateSuperadminUser(userId);
+      const res = await api.activateSuperadminUser(signupToVerify.id);
       if (res.success) {
         toast.success("Akun & instansi sekolah berhasil diverifikasi.");
-        loadOrgs();
-        loadSignups();
+        setSignupToVerify(null);
+        void refreshSuperadminData();
       } else {
         const errorMsg = "error" in res ? res.error : "Gagal melakukan verifikasi";
         toast.error(errorMsg);
@@ -245,20 +252,23 @@ export function SuperadminDashboardView() {
     loadSignups();
     loadSuperadminRequests(true);
     loadSuperadminSettings();
-
-    const interval = setInterval(() => {
-      loadOrgs(false);
-      loadSignups();
-      loadSuperadminRequests(false);
-    }, 1000);
-
-    return () => clearInterval(interval);
   }, []);
+
+  const refreshSuperadminData = useVisibilityRefresh(
+    async () => {
+      await Promise.all([
+        loadOrgs(false),
+        loadSignups(),
+        loadSuperadminRequests(false),
+      ]);
+    },
+    { intervalMs: 30_000 },
+  );
 
   const loadSuperadminRequests = async (showLoading = true) => {
     if (showLoading) setLoadingRequests(true);
     try {
-      const res = await api.getSuperadminManualRequests();
+      const res = await api.getSuperadminManualRequests(paymentStatusFilter);
       if (res.success) {
         setPaymentRequests(res.data);
       } else {
@@ -271,6 +281,10 @@ export function SuperadminDashboardView() {
       if (showLoading) setLoadingRequests(false);
     }
   };
+
+  useEffect(() => {
+    if (activeTab === "payments") void loadSuperadminRequests(true);
+  }, [activeTab, paymentStatusFilter]);
 
   const loadSuperadminSettings = async () => {
     try {
@@ -378,8 +392,7 @@ export function SuperadminDashboardView() {
         toast.success(`Pembayaran disetujui. Saldo token ${requestToApprove.org_name} bertambah.`);
         setApproveModalOpen(false);
         setRequestToApprove(null);
-        loadSuperadminRequests();
-        loadOrgs(); // refresh org list to show updated token balance
+        void refreshSuperadminData();
       } else {
         const errorMsg = "error" in res ? res.error : "Gagal memproses";
         toast.error("Gagal menyetujui: " + errorMsg);
@@ -398,6 +411,21 @@ export function SuperadminDashboardView() {
     setRejectModalOpen(true);
   };
 
+  const handleViewPaymentProof = async (req: any) => {
+    if (!req?.proof_available || loadingProofId) return;
+    setLoadingProofId(req.id);
+    const result = await api.getManualPaymentProofObjectUrl(req.id);
+    if (result.success) {
+      setReceiptZoom((current) => {
+        if (current?.url) URL.revokeObjectURL(current.url);
+        return { url: result.data, mime: req.proof_mime_type ?? null, fileName: req.proof_file_name ?? null };
+      });
+    } else {
+      toast.error(result.error);
+    }
+    setLoadingProofId(null);
+  };
+
   const handleConfirmReject = async () => {
     if (!selectedRequest) return;
     setSubmittingProcess(true);
@@ -407,34 +435,10 @@ export function SuperadminDashboardView() {
         toast.success(`Pembayaran untuk ${selectedRequest.org_name} ditolak.`);
         setRejectModalOpen(false);
         setSelectedRequest(null);
-        loadSuperadminRequests();
+        void refreshSuperadminData();
       } else {
         const errorMsg = "error" in res ? res.error : "Gagal memproses";
         toast.error("Gagal menolak: " + errorMsg);
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error("Terjadi kesalahan jaringan.");
-    } finally {
-      setSubmittingProcess(false);
-    }
-  };
-
-  const [deleteConfirmReq, setDeleteConfirmReq] = useState<any>(null);
-
-  const handleDeleteRequest = async () => {
-    if (!deleteConfirmReq) return;
-    const req = deleteConfirmReq;
-    setDeleteConfirmReq(null);
-    setSubmittingProcess(true);
-    try {
-      const res = await api.deleteSuperadminManualRequest(req.id);
-      if (res.success) {
-        toast.success("Riwayat transaksi berhasil dihapus.");
-        loadSuperadminRequests();
-      } else {
-        const errorMsg = (res as any).error || "Gagal memproses";
-        toast.error("Gagal menghapus: " + errorMsg);
       }
     } catch (err) {
       console.error(err);
@@ -483,7 +487,7 @@ export function SuperadminDashboardView() {
         };
         setSelectedDetailOrg(updatedOrg);
 
-        loadOrgs();
+        void refreshSuperadminData();
 
         const statsRes = await api.getSuperadminOrgStats(selectedDetailOrg.id);
         if (statsRes.success) {
@@ -550,6 +554,13 @@ export function SuperadminDashboardView() {
     };
   }, [orgs]);
 
+  const filteredPaymentRequests = useMemo(
+    () => paymentStatusFilter === "all"
+      ? paymentRequests
+      : paymentRequests.filter((request) => request.status === paymentStatusFilter),
+    [paymentRequests, paymentStatusFilter],
+  );
+
   // Filtering orgs
   const filteredOrgs = useMemo(() => {
     return orgs.filter((o) => {
@@ -585,7 +596,7 @@ export function SuperadminDashboardView() {
       if (res.success) {
         toast.success(`Berhasil menyesuaikan token sebesar ${tokenDelta > 0 ? "+" : ""}${tokenDelta} untuk ${selectedOrg.name}`);
         setTokenModalOpen(false);
-        loadOrgs();
+        void refreshSuperadminData();
       } else {
         const errorMsg = "error" in res ? res.error : "Terjadi kesalahan";
         toast.error("Gagal update token: " + errorMsg);
@@ -607,14 +618,20 @@ export function SuperadminDashboardView() {
     setOrgSupportEmail(org.supportEmail);
     setOrgSendDelay(org.sendDelayMs);
     setOrgThrottle(org.throttlePerMin);
-    setOrgTokenPrice(org.tokenPrice ?? 1500);
+    setOrgTokenPrice(Number(org.tokenPrice ?? 0));
+    setOrgStatusConfirmOpen(false);
     setEditModalOpen(true);
   };
 
-  const handleUpdateOrgDetails = async () => {
+  const performUpdateOrgDetails = async () => {
     if (!selectedOrg) return;
+    if (submittingEdit) return;
     if (!orgName.trim() || !orgSlug.trim()) {
       toast.error("Nama instansi dan Slug wajib diisi");
+      return;
+    }
+    if (!Number.isFinite(orgTokenPrice) || orgTokenPrice <= 0) {
+      toast.error("Harga token wajib lebih besar dari nol");
       return;
     }
 
@@ -633,8 +650,9 @@ export function SuperadminDashboardView() {
 
       if (res.success) {
         toast.success(`Profil ${orgName} berhasil diperbarui.`);
+        setOrgStatusConfirmOpen(false);
         setEditModalOpen(false);
-        loadOrgs();
+        void refreshSuperadminData();
       } else {
         const errorMsg = "error" in res ? res.error : "Terjadi kesalahan";
         toast.error("Gagal update instansi: " + errorMsg);
@@ -645,6 +663,23 @@ export function SuperadminDashboardView() {
     } finally {
       setSubmittingEdit(false);
     }
+  };
+
+  const handleUpdateOrgDetails = () => {
+    if (!selectedOrg || submittingEdit) return;
+    if (!orgName.trim() || !orgSlug.trim()) {
+      toast.error("Nama instansi dan Slug wajib diisi");
+      return;
+    }
+    if (!Number.isFinite(orgTokenPrice) || orgTokenPrice <= 0) {
+      toast.error("Harga token wajib lebih besar dari nol");
+      return;
+    }
+    if (orgIsActive !== selectedOrg.isActive) {
+      setOrgStatusConfirmOpen(true);
+      return;
+    }
+    void performUpdateOrgDetails();
   };
 
   const handleOpenNumberModal = (org: OrgItem) => {
@@ -679,7 +714,7 @@ export function SuperadminDashboardView() {
       if (res.success) {
         toast.success(`Nomor WA berhasil dihubungkan ke instansi ${selectedOrg.name}`);
         setNumberModalOpen(false);
-        loadOrgs();
+        void refreshSuperadminData();
       } else {
         const errorMsg = "error" in res ? res.error : "Terjadi kesalahan";
         toast.error("Gagal menghubungkan nomor WA: " + errorMsg);
@@ -704,7 +739,7 @@ export function SuperadminDashboardView() {
   };
 
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-8">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8 overflow-x-hidden">
       {/* Title */}
       <div>
         <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Manajemen User</h1>
@@ -785,7 +820,7 @@ export function SuperadminDashboardView() {
             : "border-transparent text-slate-500 hover:text-slate-800"
             }`}
         >
-          Riwayat Pembelian ({paymentRequests.filter((r) => r.status === "pending").length})
+          Verifikasi Pembayaran
         </button>
       </div>
 
@@ -874,7 +909,11 @@ export function SuperadminDashboardView() {
                         {/* Tokens */}
                         <td className="px-5 py-4 text-center">
                           <div className="text-base font-bold text-slate-700">{org.tokensBalance.toLocaleString("id-ID")}</div>
-                          <div className="text-[10px] text-amber-600 font-semibold mt-0.5">Rp {(org.tokenPrice ?? 1500).toLocaleString("id-ID")}/token</div>
+                          <div className="text-[10px] text-amber-600 font-semibold mt-0.5">
+                            {Number(org.tokenPrice) > 0
+                              ? `Rp ${Number(org.tokenPrice).toLocaleString("id-ID")}/token`
+                              : "Harga belum dikonfigurasi"}
+                          </div>
                         </td>
                         {/* WhatsApp configs */}
                         <td className="px-5 py-4">
@@ -957,7 +996,7 @@ export function SuperadminDashboardView() {
       {/* Tab Contents: Signups */}
       {activeTab === "signups" && (
         <Card className="p-6 space-y-6">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
             <h3 className="text-lg font-bold text-slate-800">Daftar Registrasi Form Baru</h3>
             <Button onClick={loadSignups} variant="outline" className="h-8 text-xs">
               Refresh Pendaftar
@@ -1038,7 +1077,7 @@ export function SuperadminDashboardView() {
                         {(!signup.isActive || !signup.isEmailConfirmed) && (
                           <Button
                             size="sm"
-                            onClick={() => handleActivateSignup(signup.id)}
+                            onClick={() => setSignupToVerify(signup)}
                             disabled={processingSignupId !== null}
                             className="h-8 text-xs font-semibold px-3 bg-emerald-600 hover:bg-emerald-700"
                           >
@@ -1076,10 +1115,21 @@ export function SuperadminDashboardView() {
       {activeTab === "payments" && (
         <Card className="p-6 space-y-6">
           <div className="flex justify-between items-center">
-            <h3 className="text-lg font-bold text-slate-800">Riwayat Pembelian Token</h3>
-            <Button onClick={() => loadSuperadminRequests(true)} variant="outline" className="h-8 text-xs">
-              Refresh Riwayat
-            </Button>
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">Verifikasi Pembayaran Manual</h3>
+              <p className="text-xs text-slate-500">Review bukti sebelum menambahkan saldo melalui Billing Core.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor="payment-status-filter" className="text-xs font-semibold text-slate-600">Status</label>
+              <select id="payment-status-filter" value={paymentStatusFilter} onChange={(event) => setPaymentStatusFilter(event.target.value)} className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs">
+                <option value="submitted">Menunggu Verifikasi</option>
+                <option value="approved">Disetujui</option>
+                <option value="rejected">Ditolak</option>
+                <option value="draft">Menunggu Bukti</option>
+                <option value="all">Semua Status</option>
+              </select>
+              <Button onClick={() => loadSuperadminRequests(true)} variant="outline" className="h-9 text-xs">Perbarui</Button>
+            </div>
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-slate-100">
@@ -1088,15 +1138,16 @@ export function SuperadminDashboardView() {
                 <tr className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                   <th className="px-5 py-3 text-left">Tanggal</th>
                   <th className="px-5 py-3 text-left">Instansi</th>
+                  <th className="px-5 py-3 text-left">Referensi</th>
                   <th className="px-5 py-3 text-left">Jumlah Token</th>
-                  <th className="px-5 py-3 text-left">Nominal</th>
+                  <th className="px-5 py-3 text-left">Total Transfer</th>
                   <th className="px-5 py-3 text-left">Metode</th>
                   <th className="px-5 py-3 text-left">Status</th>
                   <th className="px-5 py-3 text-right">Aksi</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
-                {paymentRequests.map((req) => (
+                {filteredPaymentRequests.map((req) => (
                   <tr key={req.id} className="hover:bg-slate-50/50 transition-colors">
                     <td className="px-5 py-4 font-medium text-slate-600">
                       {formatDate(req.created_at)}
@@ -1104,18 +1155,21 @@ export function SuperadminDashboardView() {
                     <td className="px-5 py-4 font-semibold text-slate-800">
                       {req.org_name}
                     </td>
+                    <td className="px-5 py-4 font-mono text-xs text-slate-600">
+                      {req.payment_reference || req.id}
+                    </td>
                     <td className="px-5 py-4 font-bold text-slate-700">
                       {Number(req.amount_tokens ?? 0).toLocaleString()} token
                     </td>
                     <td className="px-5 py-4 font-mono font-bold text-primary">
-                      Rp {Number(req.amount_idr ?? 0).toLocaleString("id-ID")}
+                      Rp {Number(req.transfer_amount ?? req.amount_idr ?? 0).toLocaleString("id-ID")}
                     </td>
                     <td className="px-5 py-4">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${req.payment_method === "Midtrans"
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${req.legacy_gateway
                         ? "bg-purple-100 text-purple-700"
                         : "bg-slate-100 text-slate-700"
                         }`}>
-                        {req.payment_method || "Manual"}
+                        {req.payment_method === "bank_transfer" ? "Transfer Bank" : req.payment_method === "qris_static" ? "QRIS Statis" : req.payment_method || "Manual"}
                       </span>
                     </td>
                     <td className="px-5 py-4">
@@ -1128,33 +1182,31 @@ export function SuperadminDashboardView() {
                               : "bg-amber-500 text-black"
                         }
                       >
-                        {req.status === "approved"
-                          ? "SUKSES"
-                          : req.status === "rejected"
-                            ? "GAGAL"
-                            : "PENDING"}
+                        {req.status_label || (req.status === "approved" ? "Disetujui" : req.status === "rejected" ? "Ditolak" : "Menunggu Verifikasi")}
                       </Badge>
                     </td>
                     <td className="px-5 py-4 text-right">
-                      <div className="flex justify-end items-center">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => setDeleteConfirmReq(req)}
-                          disabled={submittingProcess}
-                          className="w-8 h-8 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                          title="Hapus Riwayat"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
+                      <div className="flex justify-end items-center gap-1">
+                        <Button type="button" size="sm" variant="ghost" onClick={() => setPaymentDetail(req)}>Detail</Button>
+                        {req.proof_available && (
+                          <Button type="button" size="sm" variant="outline" onClick={() => void handleViewPaymentProof(req)} disabled={loadingProofId === req.id || submittingProcess}>
+                            <Eye className="w-4 h-4 mr-1" aria-hidden="true" />{loadingProofId === req.id ? "Memuat…" : "Bukti"}
+                          </Button>
+                        )}
+                        {req.status === "submitted" && !req.legacy_gateway && (
+                          <>
+                            <Button type="button" size="sm" variant="outline" onClick={() => handleRejectRequest(req)} disabled={submittingProcess}>Tolak</Button>
+                            <Button type="button" size="sm" onClick={() => handleApproveRequest(req)} disabled={submittingProcess}>Setujui</Button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
                 ))}
-                {paymentRequests.length === 0 && (
+                {filteredPaymentRequests.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="px-5 py-10 text-center text-slate-400">
-                      Belum ada riwayat pembelian token.
+                    <td colSpan={8} className="px-5 py-10 text-center text-slate-400">
+                      {loadingRequests ? "Memuat antrean verifikasi…" : paymentRequests.length === 0 ? "Belum ada permintaan pembayaran." : "Tidak ada pembayaran dengan status ini."}
                     </td>
                   </tr>
                 )}
@@ -1167,6 +1219,30 @@ export function SuperadminDashboardView() {
 
 
       {/* Modal 1: Update Token Balance */}
+      <AppModal
+        open={!!signupToVerify}
+        title="Verifikasi Organisasi"
+        closeDisabled={processingSignupId !== null}
+        onClose={() => {
+          if (!processingSignupId) setSignupToVerify(null);
+        }}
+        footer={
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" disabled={processingSignupId !== null} onClick={() => setSignupToVerify(null)}>
+              Batal
+            </Button>
+            <Button disabled={processingSignupId !== null} onClick={handleActivateSignup}>
+              {processingSignupId ? "Memverifikasi..." : "Ya, Verifikasi"}
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-slate-600 break-words">
+          Verifikasi organisasi <strong className="text-slate-800">{signupToVerify?.org?.name || signupToVerify?.fullName}</strong>?
+          Akun pendaftar akan dikonfirmasi dan diaktifkan sesuai proses verifikasi yang berlaku.
+        </p>
+      </AppModal>
+
       <AppModal
         open={tokenModalOpen && !!selectedOrg}
         title="Sesuaikan Saldo Token"
@@ -1227,11 +1303,53 @@ export function SuperadminDashboardView() {
         )}
       </AppModal>
 
+      <AppModal
+        open={orgStatusConfirmOpen && !!selectedOrg}
+        title={orgIsActive ? "Aktifkan Kembali Organisasi" : "Nonaktifkan Akses Organisasi"}
+        closeDisabled={submittingEdit}
+        onClose={() => {
+          if (!submittingEdit) setOrgStatusConfirmOpen(false);
+        }}
+        footer={
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" disabled={submittingEdit} onClick={() => setOrgStatusConfirmOpen(false)}>
+              Batal
+            </Button>
+            <Button
+              disabled={submittingEdit}
+              onClick={() => void performUpdateOrgDetails()}
+              className={orgIsActive ? "" : "bg-red-600 text-white hover:bg-red-700"}
+            >
+              {submittingEdit
+                ? "Memproses..."
+                : orgIsActive
+                  ? "Ya, Aktifkan Kembali"
+                  : "Ya, Nonaktifkan Login & Pengiriman Baru"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-2 text-sm text-slate-600 break-words">
+          <p>
+            {orgIsActive ? "Aktifkan kembali" : "Nonaktifkan login dan pengiriman baru untuk"}{" "}
+            <strong className="text-slate-800">{selectedOrg?.name}</strong>?
+          </p>
+          <p>
+            {orgIsActive
+              ? "Pengguna organisasi dapat kembali masuk dan menggunakan fitur pengiriman."
+              : "Pengguna organisasi tidak dapat masuk atau memulai pengiriman baru sampai akses diaktifkan kembali. Broadcast yang sudah antre atau sedang diproses tidak otomatis dibatalkan."}
+          </p>
+        </div>
+      </AppModal>
+
       {/* Modal 2: Edit Org Details */}
       <AppModal
         open={editModalOpen && !!selectedOrg}
         title="Edit Profil Instansi Sekolah"
-        onClose={() => setEditModalOpen(false)}
+        closeDisabled={submittingEdit}
+        onClose={() => {
+          if (!submittingEdit) setEditModalOpen(false);
+        }}
         footer={
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={() => setEditModalOpen(false)} disabled={submittingEdit}>
@@ -1278,9 +1396,9 @@ export function SuperadminDashboardView() {
                     const nextPlan = e.target.value;
                     setOrgPlan(nextPlan);
                     if (nextPlan === "full") {
-                      setOrgTokenPrice(1250);
+                      setOrgTokenPrice(ADVERTISED_PLAN_TOKEN_PRICE_IDR.full);
                     } else if (nextPlan === "core") {
-                      setOrgTokenPrice(250);
+                      setOrgTokenPrice(ADVERTISED_PLAN_TOKEN_PRICE_IDR.core);
                     }
                   }}
                   className="w-full mt-2 p-2.5 border rounded-lg text-sm bg-white font-semibold text-slate-700 focus:outline-none"
@@ -1463,11 +1581,48 @@ export function SuperadminDashboardView() {
         )}
       </AppModal>
 
+      <AppModal
+        open={Boolean(paymentDetail)}
+        title="Detail Pembayaran"
+        description={paymentDetail?.payment_reference}
+        onClose={() => setPaymentDetail(null)}
+        maxWidthClassName="max-w-xl"
+        footer={
+          <div className="flex flex-col-reverse sm:flex-row justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setPaymentDetail(null)}>Tutup</Button>
+            {paymentDetail?.proof_available && <Button type="button" variant="outline" onClick={() => void handleViewPaymentProof(paymentDetail)} disabled={loadingProofId === paymentDetail?.id}>Lihat Bukti</Button>}
+            {paymentDetail?.status === "submitted" && !paymentDetail?.legacy_gateway && <>
+              <Button type="button" variant="outline" onClick={() => { handleRejectRequest(paymentDetail); setPaymentDetail(null); }}>Tolak</Button>
+              <Button type="button" onClick={() => { handleApproveRequest(paymentDetail); setPaymentDetail(null); }}>Setujui</Button>
+            </>}
+          </div>
+        }
+      >
+        {paymentDetail && <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+          <div><dt className="text-slate-500">Organisasi</dt><dd className="font-semibold break-words">{paymentDetail.org_name}</dd></div>
+          <div><dt className="text-slate-500">Pemohon</dt><dd className="font-semibold break-all">{paymentDetail.created_by_email || "-"}</dd></div>
+          <div><dt className="text-slate-500">Token</dt><dd className="font-semibold">{Number(paymentDetail.amount_tokens || 0).toLocaleString("id-ID")}</dd></div>
+          <div><dt className="text-slate-500">Nominal Top Up</dt><dd className="font-semibold">Rp {Number(paymentDetail.base_amount ?? paymentDetail.amount_idr ?? 0).toLocaleString("id-ID")}</dd></div>
+          {paymentDetail.unique_code != null && <div><dt className="text-slate-500">Kode Unik</dt><dd className="font-semibold font-mono">{String(paymentDetail.unique_code).padStart(3, "0")}</dd></div>}
+          <div><dt className="text-slate-500">Total Transfer</dt><dd className="font-bold text-primary">Rp {Number(paymentDetail.transfer_amount ?? paymentDetail.amount_idr ?? 0).toLocaleString("id-ID")}</dd></div>
+          <div><dt className="text-slate-500">Saldo yang ditambahkan</dt><dd className="font-semibold">{Number(paymentDetail.amount_tokens || 0).toLocaleString("id-ID")} token</dd><dd className="text-xs text-slate-500">Berdasarkan nominal top-up; kode unik tidak dikreditkan.</dd></div>
+          <div><dt className="text-slate-500">Metode</dt><dd className="font-semibold">{paymentDetail.destination?.provider_name || paymentDetail.payment_method}</dd></div>
+          <div><dt className="text-slate-500">Dikirim</dt><dd className="font-semibold">{formatDate(paymentDetail.submitted_at)}</dd></div>
+          <div className="sm:col-span-2"><dt className="text-slate-500">Status</dt><dd className="font-semibold">{paymentDetail.status_label}</dd></div>
+          {paymentDetail.proof_file_name && <div className="sm:col-span-2"><dt className="text-slate-500">File bukti</dt><dd className="font-semibold break-all">{paymentDetail.proof_file_name} <span className="font-normal text-slate-500">({paymentDetail.proof_mime_type || "tipe tidak tersedia"})</span></dd></div>}
+          {paymentDetail.rejection_reason && <div className="sm:col-span-2"><dt className="text-slate-500">Alasan penolakan</dt><dd className="text-red-700 break-words">{paymentDetail.rejection_reason}</dd></div>}
+          {paymentDetail.billing_ledger_id && <div className="sm:col-span-2"><dt className="text-slate-500">Referensi ledger</dt><dd className="font-mono text-xs break-all">{paymentDetail.billing_ledger_id}</dd></div>}
+        </dl>}
+      </AppModal>
+
       {/* Rejection Notes Modal */}
       <AppModal
         open={rejectModalOpen}
         title="Tolak Pembayaran Top-up"
-        onClose={() => setRejectModalOpen(false)}
+        closeDisabled={submittingProcess}
+        onClose={() => {
+          if (!submittingProcess) setRejectModalOpen(false);
+        }}
         footer={
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={() => setRejectModalOpen(false)} disabled={submittingProcess}>
@@ -1475,7 +1630,7 @@ export function SuperadminDashboardView() {
             </Button>
             <Button
               onClick={handleConfirmReject}
-              disabled={submittingProcess || !rejectNotes.trim()}
+              disabled={submittingProcess || rejectNotes.trim().length < 3}
               className="bg-rose-600 hover:bg-rose-700 text-white font-semibold"
             >
               {submittingProcess ? "Menolak..." : "Ya, Tolak Pembayaran"}
@@ -1485,7 +1640,7 @@ export function SuperadminDashboardView() {
       >
         <div className="space-y-4">
           <p className="text-sm text-slate-600">
-            Berikan alasan mengapa pembayaran top-up untuk <span className="font-semibold">{selectedRequest?.org_name}</span> ditolak. Pengguna akan melihat catatan ini di halaman billing mereka.
+            Tolak pembayaran <strong>{selectedRequest?.payment_reference}</strong> untuk <span className="font-semibold">{selectedRequest?.org_name}</span> dengan total transfer <strong>Rp {Number(selectedRequest?.transfer_amount ?? selectedRequest?.amount_idr ?? 0).toLocaleString("id-ID")}</strong>? Pengguna akan melihat alasan ini di halaman billing mereka.
           </p>
           <div>
             <Label htmlFor="reject-notes" className="text-slate-700">Catatan Penolakan</Label>
@@ -1495,6 +1650,10 @@ export function SuperadminDashboardView() {
               placeholder="Contoh: Bukti transfer tidak valid / tidak terbaca, Nominal transfer kurang dari Rp..."
               value={rejectNotes}
               onChange={(e) => setRejectNotes(e.target.value)}
+              required
+              minLength={3}
+              maxLength={500}
+              aria-invalid={rejectNotes.length > 0 && rejectNotes.trim().length < 3}
               className="w-full text-sm mt-2 p-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary bg-white"
             />
           </div>
@@ -1504,22 +1663,29 @@ export function SuperadminDashboardView() {
       {/* Zoom Receipt Modal */}
       <AppModal
         open={!!receiptZoom}
-        title="Bukti Transfer"
-        onClose={() => setReceiptZoom(null)}
+        title="Bukti Pembayaran"
+        onClose={() => {
+          if (receiptZoom?.url) URL.revokeObjectURL(receiptZoom.url);
+          setReceiptZoom(null);
+        }}
         footer={
           <div className="flex justify-end">
-            <Button onClick={() => setReceiptZoom(null)}>Tutup</Button>
+            <Button onClick={() => {
+              if (receiptZoom?.url) URL.revokeObjectURL(receiptZoom.url);
+              setReceiptZoom(null);
+            }}>Tutup</Button>
           </div>
         }
       >
+        {receiptZoom?.fileName && <p className="mb-3 text-sm text-slate-600 break-all">File: <strong>{receiptZoom.fileName}</strong>{receiptZoom.mime ? ` (${receiptZoom.mime})` : ""}</p>}
         {receiptZoom && (
-          <div className="flex items-center justify-center p-2 bg-slate-900/5 rounded-lg overflow-hidden border">
-            <img
-              src={receiptZoom}
-              alt="Zoom Bukti Transfer"
-              className="max-w-full max-h-[70vh] object-contain rounded"
-            />
-          </div>
+          receiptZoom.mime === "application/pdf" ? (
+            <iframe src={receiptZoom.url} title="Bukti pembayaran PDF" className="w-full h-[70vh] rounded border" />
+          ) : (
+            <div className="flex items-center justify-center p-2 bg-slate-900/5 rounded-lg overflow-hidden border">
+              <img src={receiptZoom.url} alt="Bukti pembayaran" className="max-w-full max-h-[70vh] object-contain rounded" />
+            </div>
+          )
         )}
       </AppModal>
 
@@ -1712,53 +1878,21 @@ export function SuperadminDashboardView() {
               disabled={submittingProcess}
               onClick={handleConfirmApprove}
             >
-              {submittingProcess ? "Memproses..." : "Setujui"}
+              {submittingProcess ? "Memproses..." : "Setujui & Tambahkan Saldo"}
             </Button>
           </div>
         }
       >
-        <p className="text-sm text-slate-600">
-          Apakah Anda yakin ingin menyetujui pengajuan top-up sebesar{" "}
-          <strong className="text-slate-800 font-bold">
-            {requestToApprove?.amount_tokens?.toLocaleString("id-ID")} token
-          </strong>{" "}
-          untuk <strong className="text-slate-800 font-bold">{requestToApprove?.org_name}</strong>?
-        </p>
+        <div className="space-y-3 text-sm text-slate-600">
+          <p>Setujui pembayaran <strong>{requestToApprove?.payment_reference}</strong> untuk <strong className="text-slate-800 font-bold">{requestToApprove?.org_name}</strong>?</p>
+          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg border bg-slate-50 p-3">
+            <div><dt>Nominal Top Up</dt><dd className="font-semibold text-slate-800">Rp {Number(requestToApprove?.base_amount ?? requestToApprove?.amount_idr ?? 0).toLocaleString("id-ID")}</dd></div>
+            {requestToApprove?.unique_code != null && <div><dt>Kode Unik</dt><dd className="font-semibold font-mono text-slate-800">{String(requestToApprove.unique_code).padStart(3, "0")}</dd></div>}
+            <div className="sm:col-span-2"><dt>Total Transfer</dt><dd className="text-xl font-bold text-primary">Rp {Number(requestToApprove?.transfer_amount ?? requestToApprove?.amount_idr ?? 0).toLocaleString("id-ID")}</dd></div>
+          </dl>
+          <p>Billing Core akan menambahkan <strong>{Number(requestToApprove?.amount_tokens || 0).toLocaleString("id-ID")} token</strong> berdasarkan nominal top-up, tepat satu kali setelah transaksi berhasil. Kode unik tidak menambah saldo.</p>
+        </div>
       </AppModal>
-
-      {/* Delete Confirmation Modal */}
-      {deleteConfirmReq && (
-        <AppModal
-          open={true}
-          onClose={() => setDeleteConfirmReq(null)}
-          title="Konfirmasi Hapus"
-        >
-          <div className="space-y-4">
-            <p className="text-sm text-slate-600">
-              Apakah Anda yakin ingin menghapus riwayat transaksi <strong>{deleteConfirmReq.org_name}</strong> sejumlah <strong>{deleteConfirmReq.amount_tokens} token</strong> ini?
-            </p>
-            <p className="text-xs text-rose-600 bg-rose-50 p-2 rounded-lg border border-rose-100">
-              Tindakan ini tidak dapat dibatalkan dan akan menghapus riwayat dari sistem secara permanen.
-            </p>
-            <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
-              <Button
-                variant="outline"
-                onClick={() => setDeleteConfirmReq(null)}
-                disabled={submittingProcess}
-              >
-                Batal
-              </Button>
-              <Button
-                onClick={handleDeleteRequest}
-                disabled={submittingProcess}
-                className="bg-rose-600 hover:bg-rose-700 text-white"
-              >
-                {submittingProcess ? "Menghapus..." : "Ya, Hapus"}
-              </Button>
-            </div>
-          </div>
-        </AppModal>
-      )}
     </div>
   );
 }

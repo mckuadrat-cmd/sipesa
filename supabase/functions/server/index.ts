@@ -4,6 +4,7 @@ import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import bcrypt from "npm:bcryptjs";
+import { verifyMetaWebhookSignature } from "./meta-webhook-security.js";
 
 // ===== Helpers =====
 function waStatusRank(status?: string | null): number {
@@ -43,11 +44,15 @@ type Env = {
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   META_GRAPH_VERSION?: string;
-  APP_WEBHOOK_SECRET?: string;
+  META_APP_SECRET?: string;
+  BROADCAST_SCHEDULER_SECRET?: string;
+  SUPERADMIN_USER_ID?: string;
+  SUPERADMIN_EMAIL?: string;
 };
 
 const API_PREFIX = "";
 const SESSION_HEADER = "x-sipesa-session";
+const SCHEDULER_HEADER = "x-sipesa-scheduler-secret";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -55,7 +60,7 @@ app.use(
   "*",
   cors({
     origin: "*",
-    allowHeaders: ["Content-Type", "Authorization", "apikey", SESSION_HEADER, "x-worker-secret"],
+    allowHeaders: ["Content-Type", "Authorization", "apikey", SESSION_HEADER, "x-worker-secret", SCHEDULER_HEADER],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     exposeHeaders: [SESSION_HEADER],
   }),
@@ -89,16 +94,126 @@ function jsonFail(error: unknown) {
   };
 }
 
-function randomToken() {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-}
-
 function normalizeEmail(email: unknown) {
   return String(email ?? "").trim().toLowerCase();
+}
+
+const PAYMENT_PROOF_BUCKET = "payment-proofs";
+const PAYMENT_ASSET_BUCKET = "payment-assets";
+const PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024;
+const PAYMENT_UNIQUE_CODE_MIN = 101;
+const PAYMENT_UNIQUE_CODE_MAX = 999;
+const PAYMENT_UNIQUE_CODE_ATTEMPTS = 16;
+const PAYMENT_PROOF_MIME_EXTENSIONS = new Map([
+  ["image/jpeg", "jpg"],
+  ["image/png", "png"],
+  ["image/webp", "webp"],
+  ["application/pdf", "pdf"],
+]);
+
+function paymentStatusLabel(status: unknown) {
+  switch (String(status || "").toLowerCase()) {
+    case "draft": return "Menunggu Bukti Pembayaran";
+    case "submitted": return "Menunggu Verifikasi";
+    case "approved": return "Disetujui";
+    case "rejected": return "Ditolak";
+    default: return "Status Tidak Dikenal";
+  }
+}
+
+function paymentRequestDto(row: any) {
+  const destination = Array.isArray(row?.destination) ? row.destination[0] : row?.destination;
+  const organization = Array.isArray(row?.organization) ? row.organization[0] : row?.organization;
+  const requester = Array.isArray(row?.requester) ? row.requester[0] : row?.requester;
+  const baseAmount = Number(row.amount_requested ?? row.amount_idr ?? 0);
+  const rawUniqueCode = Number(row.unique_code);
+  const uniqueCode = Number.isInteger(rawUniqueCode)
+    && rawUniqueCode >= PAYMENT_UNIQUE_CODE_MIN
+    && rawUniqueCode <= PAYMENT_UNIQUE_CODE_MAX
+    ? rawUniqueCode
+    : null;
+  return {
+    id: row.id,
+    org_id: row.org_id,
+    org_name: organization?.name ?? row.org_name ?? null,
+    requested_by: row.requested_by,
+    created_by_email: requester?.email ?? row.created_by_email ?? null,
+    amount_tokens: Number(row.tokens_requested ?? row.amount_tokens ?? 0),
+    amount_idr: baseAmount,
+    base_amount: baseAmount,
+    amount_requested: baseAmount,
+    unique_code: uniqueCode,
+    transfer_amount: baseAmount + (uniqueCode ?? 0),
+    token_price_idr: Number(row.token_price_idr ?? 0),
+    payment_method: row.payment_method,
+    payment_reference: row.payment_reference ?? row.id,
+    destination: destination ? {
+      id: destination.id,
+      method: destination.method,
+      provider_name: destination.provider_name,
+      account_reference: destination.account_reference,
+      account_holder: destination.account_holder,
+      has_qris: Boolean(destination.qris_object_path),
+      instructions: destination.instructions,
+    } : null,
+    proof_available: Boolean(row.proof_object_path ?? row.receipt_url),
+    proof_mime_type: row.proof_mime_type ?? null,
+    proof_size_bytes: row.proof_size_bytes == null ? null : Number(row.proof_size_bytes),
+    proof_file_name: row.proof_file_name ?? null,
+    note: row.note ?? null,
+    status: row.status,
+    status_label: paymentStatusLabel(row.status),
+    rejection_reason: row.rejection_reason ?? row.notes ?? null,
+    submitted_at: row.submitted_at ?? row.created_at ?? null,
+    reviewed_at: row.reviewed_at ?? row.approved_at ?? null,
+    reviewed_by: row.reviewed_by ?? row.approved_by ?? null,
+    billing_ledger_id: row.billing_ledger_id ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at ?? row.created_at,
+  };
+}
+
+function generatePaymentUniqueCode() {
+  const values = new Uint16Array(1);
+  crypto.getRandomValues(values);
+  const range = PAYMENT_UNIQUE_CODE_MAX - PAYMENT_UNIQUE_CODE_MIN + 1;
+  return PAYMENT_UNIQUE_CODE_MIN + (values[0] % range);
+}
+
+function safePaymentProofFileName(value: unknown) {
+  const sanitized = String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, 255);
+  return sanitized || "bukti-pembayaran";
+}
+
+function legacyPaymentRequestDto(value: any) {
+  const legacyStatus = value?.status === "pending" ? "submitted" : value?.status;
+  return paymentRequestDto({
+    ...value,
+    tokens_requested: value?.amount_tokens,
+    amount_requested: value?.amount_idr,
+    payment_method: "manual_legacy",
+    payment_reference: value?.id,
+    proof_object_path: value?.receipt_url ? "legacy-inline" : null,
+    proof_mime_type: String(value?.receipt_url || "").match(/^data:([^;,]+)/)?.[1] ?? null,
+    status: legacyStatus,
+    rejection_reason: value?.notes,
+    submitted_at: value?.created_at,
+    reviewed_at: value?.approved_at,
+    reviewed_by: value?.approved_by,
+  });
+}
+
+function decodeLegacyDataUrl(value: unknown) {
+  const match = String(value || "").match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/);
+  if (!match || !PAYMENT_PROOF_MIME_EXTENSIONS.has(match[1])) return null;
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  if (bytes.byteLength > PAYMENT_PROOF_MAX_BYTES) return null;
+  return { mime: match[1], bytes };
 }
 
 function normalizePhone(phone: unknown) {
@@ -111,6 +226,161 @@ function normalizePhone(phone: unknown) {
   if (raw.startsWith("62")) return `+${raw}`;
   if (!raw.startsWith("+")) return `+${raw}`;
   return raw;
+}
+
+function validatePhoneDestination(phone: unknown) {
+  const input = String(phone ?? "").trim();
+  const normalized = normalizePhone(input);
+  const digitsOnly = normalized.replace(/\D/g, "");
+
+  if (!input) {
+    return { input, normalized: "", valid: false, reason: "Nomor kosong" };
+  }
+  if (!digitsOnly || digitsOnly.length < 9 || digitsOnly.length > 15) {
+    return {
+      input,
+      normalized,
+      valid: false,
+      reason: `Panjang nomor (${digitsOnly.length} digit) tidak standar (minimal 9, maksimal 15 digit)`,
+    };
+  }
+  if (!/^\+[1-9]\d{8,14}$/.test(normalized)) {
+    return { input, normalized, valid: false, reason: "Format E.164 tidak valid" };
+  }
+  if (/^\+?(628000|62000|00000)/.test(normalized)) {
+    return { input, normalized, valid: false, reason: "Nomor terindikasi nomor fiktif / dummy" };
+  }
+  return { input, normalized, valid: true, reason: null };
+}
+
+function getTemplateSendRequirements(template: any) {
+  const components = Array.isArray(template?.components) ? template.components : [];
+  const body = components.find((item: any) => String(item?.type || "").toUpperCase() === "BODY");
+  const bodyText = String(body?.text || "");
+  const indexes = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map((match) => Number(match[1]));
+  const bodyVariableCount = indexes.length > 0 ? Math.max(...indexes) : 0;
+  const header = components.find((item: any) => String(item?.type || "").toUpperCase() === "HEADER");
+  const headerFormat = String(header?.format || "").toUpperCase();
+  return {
+    bodyVariableCount,
+    requiresMedia: ["IMAGE", "VIDEO", "DOCUMENT"].includes(headerFormat),
+  };
+}
+
+function logContactsRouteFailure(
+  stage: string,
+  error: any,
+  context: {
+    numberId: string;
+    orgId?: string | null;
+    summaryCount?: number | null;
+    contactIdCount?: number | null;
+    batchIndex?: number | null;
+    batchCount?: number | null;
+    batchSize?: number | null;
+  },
+) {
+  const diagnosticText = (value: unknown) => {
+    if (value === undefined || value === null || value === "") return null;
+    return String(value).slice(0, 2000);
+  };
+
+  console.error("[CONTACTS] request failed", {
+    stage,
+    code: diagnosticText(error?.code) ?? "UNKNOWN",
+    message: diagnosticText(error?.message ?? error) ?? "Unknown error",
+    details: diagnosticText(error?.details),
+    hint: diagnosticText(error?.hint),
+    numberId: context.numberId,
+    orgId: context.orgId ?? null,
+    summaryCount: context.summaryCount ?? null,
+    contactIdCount: context.contactIdCount ?? null,
+    batchIndex: context.batchIndex ?? null,
+    batchCount: context.batchCount ?? null,
+    batchSize: context.batchSize ?? null,
+  });
+}
+
+const CONTACT_DETAILS_BATCH_SIZE = 100;
+const CONTACT_DETAILS_BATCH_CONCURRENCY = 4;
+const BROADCAST_MAX_RECIPIENTS = 5000;
+const BROADCAST_CONTACT_VALIDATION_BATCH_SIZE = 100;
+const BROADCAST_CONTACT_VALIDATION_CONCURRENCY = 4;
+const BROADCAST_RECIPIENT_INSERT_BATCH_SIZE = 100;
+const CONTACT_LIST_DEFAULT_PAGE_SIZE = 10;
+const CONTACT_LIST_MAX_PAGE_SIZE = 100;
+const CONTACT_IMPORT_PREFLIGHT_MAX_CONTACTS = 100;
+const BROADCAST_HISTORY_DEFAULT_PAGE_SIZE = 10;
+const BROADCAST_HISTORY_MAX_PAGE_SIZE = 50;
+const BROADCAST_RECIPIENT_DEFAULT_PAGE_SIZE = 50;
+const BROADCAST_RECIPIENT_MAX_PAGE_SIZE = 100;
+const DASHBOARD_CALENDAR_MAX_RANGE_MS = 62 * 24 * 60 * 60 * 1000;
+
+function parseListPagination(c: any, defaultPageSize: number, maxPageSize: number) {
+  const requestedPage = Number(c.req.query("page") ?? 1);
+  const requestedPageSize = Number(c.req.query("pageSize") ?? defaultPageSize);
+  const page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+  const pageSize = Number.isInteger(requestedPageSize)
+    ? Math.min(Math.max(requestedPageSize, 1), maxPageSize)
+    : defaultPageSize;
+  return { page, pageSize, from: (page - 1) * pageSize, to: page * pageSize - 1 };
+}
+
+function safeListSearch(value: unknown, maxLength = 100) {
+  return String(value ?? "")
+    .trim()
+    .slice(0, maxLength)
+    .replace(/[,%.()"\\]/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function pagedPayload<T>(items: T[], count: number | null, page: number, pageSize: number) {
+  const total = Number(count ?? 0);
+  return {
+    items,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
+}
+
+function chunkValues<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let offset = 0; offset < values.length; offset += size) {
+    chunks.push(values.slice(offset, offset + size));
+  }
+  return chunks;
+}
+
+function parseScheduledAt(value: unknown) {
+  if (value === null || value === undefined || String(value).trim() === "") {
+    return { value: null, error: null };
+  }
+  const raw = String(value).trim();
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(raw)) {
+    return { value: null, error: "scheduledAt wajib menyertakan timezone/offset eksplisit" };
+  }
+  const timestamp = Date.parse(raw);
+  if (!Number.isFinite(timestamp)) {
+    return { value: null, error: "scheduledAt tidak valid" };
+  }
+  if (timestamp <= Date.now()) {
+    return { value: null, error: "scheduledAt harus berada di masa depan" };
+  }
+  return { value: new Date(timestamp).toISOString(), error: null };
+}
+
+function constantTimeEqual(left: string, right: string) {
+  const encoder = new TextEncoder();
+  const a = encoder.encode(left);
+  const b = encoder.encode(right);
+  let diff = a.length ^ b.length;
+  const maxLength = Math.max(a.length, b.length);
+  for (let index = 0; index < maxLength; index++) {
+    diff |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  }
+  return diff === 0;
 }
 
 function renderTemplate(text: string, vars: Record<string, string>) {
@@ -140,10 +410,6 @@ function nowIso() {
 
 function graphVersion() {
   return Deno.env.get("META_GRAPH_VERSION") || "v25.0";
-}
-
-function workerSecret() {
-  return Deno.env.get("APP_WEBHOOK_SECRET") || "";
 }
 
 function sleep(ms: number) {
@@ -273,55 +539,141 @@ async function sendMetaTemplateMessage(opts: {
   });
 }
 
-async function consumeOneToken(orgId: string) {
-  const supa = sb();
+type BillingMutationInput = {
+  orgId: string;
+  tokenDelta: number;
+  transactionType: "topup" | "usage" | "adjustment" | "refund";
+  amountIdr: number;
+  description: string;
+  refType?: string | null;
+  // Relational ledger reference. When present this must be a UUID; arbitrary
+  // provider/idempotency identifiers belong in externalReference instead.
+  refId?: string | null;
+  actorUserId?: string | null;
+  provider: string;
+  externalReference: string;
+  metadata?: Record<string, unknown>;
+  floorAtZero?: boolean;
+};
 
-  const { data, error } = await supa.rpc("consume_billing_tokens", {
-    p_org_id: orgId,
-    p_tokens: 1,
+async function applyBillingMutation(input: BillingMutationInput) {
+  const supa = sb();
+  const { data, error } = await supa.rpc("apply_billing_mutation", {
+    p_org_id: input.orgId,
+    p_token_delta: input.tokenDelta,
+    p_transaction_type: input.transactionType,
+    p_amount_idr: input.amountIdr,
+    p_description: input.description,
+    p_ref_type: input.refType ?? null,
+    p_ref_id: input.refId ?? null,
+    p_actor_user_id: input.actorUserId ?? null,
+    p_provider: input.provider,
+    p_external_reference: input.externalReference,
+    p_metadata: input.metadata ?? {},
+    p_floor_at_zero: input.floorAtZero ?? false,
   });
 
   if (error) throw error;
-
-  const row = Array.isArray(data) ? data[0] : null;
-  return {
-    success: !!row?.success,
-    remaining: Number(row?.remaining ?? 0),
-    message: String(row?.message ?? ""),
-  };
+  return data;
 }
 
-async function refundOneToken(orgId: string) {
-  const supa = sb();
+function requireUuidBillingReference(value: string, fieldName: string): string {
+  const normalized = String(value ?? "").trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)) {
+    throw new Error(`${fieldName} harus UUID valid`);
+  }
+  return normalized;
+}
 
-  const { data: bal, error: balErr } = await supa
+function requireCanonicalTokenPrice(value: unknown, orgId: string): number {
+  const price = Number(value);
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new Error(`Harga token canonical tidak valid untuk organisasi ${orgId}`);
+  }
+  return price;
+}
+
+async function getCanonicalTokenPrice(supa: any, orgId: string): Promise<number> {
+  const { data, error } = await supa
     .from("billing_balance")
-    .select("tokens_balance")
+    .select("token_price_idr")
     .eq("org_id", orgId)
     .maybeSingle();
 
-  if (balErr) throw balErr;
-
-  const { error: updErr } = await supa
-    .from("billing_balance")
-    .update({
-      tokens_balance: Number(bal?.tokens_balance ?? 0) + 1,
-      updated_at: nowIso(),
-    })
-    .eq("org_id", orgId);
-
-  if (updErr) throw updErr;
+  if (error) throw error;
+  if (!data) throw new Error(`Konfigurasi billing tidak ditemukan untuk organisasi ${orgId}`);
+  return requireCanonicalTokenPrice(data.token_price_idr, orgId);
 }
 
-function slugifyOrgName(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 50);
+async function getCanonicalOrOriginalUsagePrice(
+  supa: any,
+  orgId: string,
+  provider: string,
+  externalReference: string,
+): Promise<number> {
+  const { data: existing, error } = await supa
+    .from("billing_transactions")
+    .select("amount_idr")
+    .eq("org_id", orgId)
+    .eq("provider", provider)
+    .eq("external_reference", externalReference)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (existing) return requireCanonicalTokenPrice(existing.amount_idr, orgId);
+  return await getCanonicalTokenPrice(supa, orgId);
+}
+
+async function consumeBroadcastToken(input: {
+  orgId: string;
+  recipientId: string;
+  broadcastId: string;
+  broadcastTitle: string;
+  phone: string;
+  actorUserId?: string | null;
+}) {
+  try {
+    const supa = sb();
+    const recipientReference = requireUuidBillingReference(input.recipientId, "recipientId");
+    const broadcastReference = requireUuidBillingReference(input.broadcastId, "broadcastId");
+    const tokenPrice = await getCanonicalOrOriginalUsagePrice(
+      supa,
+      input.orgId,
+      "broadcast_usage",
+      recipientReference,
+    );
+    const result = await applyBillingMutation({
+      orgId: input.orgId,
+      tokenDelta: -1,
+      transactionType: "usage",
+      amountIdr: tokenPrice,
+      description: `Pemakaian token broadcast: ${input.broadcastTitle} -> ${input.phone}`,
+      refType: "broadcast_recipient",
+      refId: recipientReference,
+      actorUserId: input.actorUserId,
+      provider: "broadcast_usage",
+      externalReference: recipientReference,
+      metadata: {
+        broadcast_id: broadcastReference,
+        recipient_id: recipientReference,
+        phone_e164: input.phone,
+        token_price_idr: tokenPrice,
+      },
+    });
+
+    return {
+      success: true,
+      remaining: Number(result?.new_balance ?? 0),
+      message: "Token berhasil digunakan",
+      duplicate: Boolean(result?.duplicate),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.toLowerCase().includes("saldo token tidak mencukupi")) {
+      return { success: false, remaining: 0, message, duplicate: false };
+    }
+    throw error;
+  }
 }
 
 function normalizeUsername(value: unknown) {
@@ -395,8 +747,7 @@ async function requireAuth(c: any, next: any) {
   try {
     const token =
       c.req.header(SESSION_HEADER) ||
-      c.req.header("Authorization")?.split(" ")[1] ||
-      c.req.query("token");
+      c.req.header("Authorization")?.split(" ")[1];
     if (!token) return c.json(jsonFail("Missing session token"), 401);
 
     const supa = sb();
@@ -421,17 +772,19 @@ async function requireAuth(c: any, next: any) {
       return c.json(jsonFail("Akun Anda dinonaktifkan. Silakan hubungi admin."), 403);
     }
 
-    let org_id = user.org_id;
-    let email = user.email;
-    let name = user.full_name;
-    let role = user.role;
+    const org_id = user.org_id;
+    const email = user.email;
+    const name = user.full_name;
+    const role = String(user.role || "").toLowerCase();
 
-    if (email === "mckuadratid@gmail.com") {
-      role = "owner";
+    if (!org_id) {
+      return c.json(jsonFail("Profil pengguna tidak memiliki organisasi yang valid"), 403);
     }
 
     const authUserObj: any = {
       id: user.id,
+      auth_user_id: authUser.id,
+      auth_email: normalizeEmail(authUser.email),
       org_id,
       email,
       name,
@@ -456,17 +809,13 @@ async function requireAuth(c: any, next: any) {
   }
 }
 
-async function requireWorkerSecret(c: any, next: any) {
-  const incoming =
-    c.req.header("x-worker-secret") ||
-    c.req.query("secret") ||
-    "";
-  const expected = workerSecret();
+const ORG_ADMIN_ROLES = new Set(["owner", "admin"]);
 
-  if (!expected || incoming !== expected) {
-    return c.json(jsonFail("Unauthorized worker"), 401);
+async function requireOrgAdmin(c: any, next: any) {
+  const user = c.get("authUser");
+  if (!user?.org_id || !ORG_ADMIN_ROLES.has(String(user.role || "").toLowerCase())) {
+    return c.json(jsonFail("Aksi ini hanya dapat dilakukan admin organisasi"), 403);
   }
-
   await next();
 }
 
@@ -686,7 +1035,7 @@ app.get(`${API_PREFIX}/numbers`, requireAuth, async (c) => {
   }
 });
 
-app.post(`${API_PREFIX}/numbers`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/numbers`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const body = await c.req.json();
@@ -760,7 +1109,7 @@ app.post(`${API_PREFIX}/numbers`, requireAuth, async (c) => {
   }
 });
 
-app.post(`${API_PREFIX}/numbers/:id/test`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/numbers/:id/test`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const id = c.req.param("id");
@@ -817,32 +1166,13 @@ app.post(`${API_PREFIX}/numbers/validate`, requireAuth, async (c) => {
     }> = [];
 
     for (const rawPhone of phones) {
-      const inputStr = String(rawPhone || "").trim();
-      const normalized = normalizePhone(inputStr);
-      const digitsOnly = normalized.replace(/\D/g, "");
-
-      let formatValid = true;
-      let formatReason: string | undefined = undefined;
-
-      if (!inputStr) {
-        formatValid = false;
-        formatReason = "Nomor kosong";
-      } else if (!digitsOnly || digitsOnly.length < 9 || digitsOnly.length > 15) {
-        formatValid = false;
-        formatReason = `Panjang nomor (${digitsOnly.length} digit) tidak standar (minimal 9, maksimal 15 digit)`;
-      } else if (!/^62\d{8,13}$/.test(digitsOnly) && !/^\d{9,15}$/.test(digitsOnly)) {
-        formatValid = false;
-        formatReason = "Format E.164 tidak valid";
-      } else if (/^628000|^62000|^00000/.test(digitsOnly)) {
-        formatValid = false;
-        formatReason = "Nomor terindikasi nomor fiktif / dummy";
-      }
+      const validation = validatePhoneDestination(rawPhone);
 
       formattedNumbers.push({
-        input: inputStr,
-        normalized: digitsOnly ? `+${digitsOnly}` : inputStr,
-        formatValid,
-        formatReason,
+        input: validation.input,
+        normalized: validation.normalized,
+        formatValid: validation.valid,
+        formatReason: validation.reason ?? undefined,
       });
     }
 
@@ -946,130 +1276,164 @@ app.post(`${API_PREFIX}/numbers/validate`, requireAuth, async (c) => {
 });
 
 app.get(`${API_PREFIX}/numbers/:numberId/contacts`, requireAuth, async (c) => {
+  const numberId = c.req.param("numberId");
+  let stage = "resolve_auth_context";
+  let orgId: string | null = null;
+  let summaryCount: number | null = null;
+  let contactIdCount: number | null = null;
+
   try {
     const user = c.get("authUser");
-    const numberId = c.req.param("numberId");
+    orgId = user?.org_id ?? null;
     const supa = sb();
 
-    // 1. Fetch unique contact IDs that have messages for this WABA number (limit to latest 20000 messages)
-    const { data: msgContacts, error: msgErr } = await supa
-      .from("wa_messages")
-      .select("contact_id")
-      .eq("org_id", user.org_id)
-      .eq("number_id", numberId)
-      .order("created_at", { ascending: false })
-      .limit(20000);
+    // Aggregate latest-message and unread state inside Postgres. This avoids
+    // transferring/scanning up to 20,000 messages twice in every Edge request.
+    stage = "conversation_summary_rpc";
+    const { data: summaries, error: summaryError } = await supa.rpc(
+      "get_wa_conversation_summaries",
+      { p_org_id: user.org_id, p_number_id: numberId },
+    );
 
-    if (msgErr) return c.json(jsonFail(msgErr.message), 500);
+    if (summaryError) {
+      logContactsRouteFailure(stage, summaryError, { numberId, orgId });
+      return c.json(jsonFail(summaryError.message), 500);
+    }
 
-    const contactIds = [...new Set((msgContacts ?? []).map((m: any) => m.contact_id).filter(Boolean))];
+    summaryCount = Array.isArray(summaries) ? summaries.length : null;
+
+    const contactIds = [...new Set(
+      (summaries ?? []).map((row: any) => String(row.contact_id || "")).filter(Boolean),
+    )];
+    contactIdCount = contactIds.length;
 
     if (contactIds.length === 0) {
       return c.json(jsonOk([]));
     }
 
-    // 2. Fetch details for these contacts
-    const { data: contacts, error: contactsErr } = await supa
-      .from("wa_contacts")
-      .select("*")
-      .in("id", contactIds);
+    // 2. Keep each PostgREST URL bounded. Sending hundreds of UUIDs through a
+    // single .in() filter can exceed the request-line limit before PostgREST
+    // gets a chance to execute the query.
+    stage = "contact_details_query";
+    const contactIdBatches = chunkValues(contactIds, CONTACT_DETAILS_BATCH_SIZE);
+    const contacts: any[] = [];
 
-    if (contactsErr) return c.json(jsonFail(contactsErr.message), 500);
+    for (
+      let waveStart = 0;
+      waveStart < contactIdBatches.length;
+      waveStart += CONTACT_DETAILS_BATCH_CONCURRENCY
+    ) {
+      const wave = contactIdBatches.slice(
+        waveStart,
+        waveStart + CONTACT_DETAILS_BATCH_CONCURRENCY,
+      );
+      const results = await Promise.all(wave.map(async (batch, waveIndex) => {
+        const batchIndex = waveStart + waveIndex;
+        const result = await supa
+          .from("wa_contacts")
+          .select("*")
+          .eq("org_id", user.org_id)
+          .in("id", batch);
+        return { ...result, batchIndex, batchSize: batch.length };
+      }));
 
-    // 3. Fetch messages for this numberId to find last messages and unread statuses (limit to latest 20000 messages)
-    const { data: allMessages, error: msgsErr } = await supa
-      .from("wa_messages")
-      .select("id, contact_id, text_body, direction, created_at, status")
-      .eq("org_id", user.org_id)
-      .eq("number_id", numberId)
-      .order("created_at", { ascending: false })
-      .limit(20000);
-
-    if (msgsErr) return c.json(jsonFail(msgsErr.message), 500);
-
-    // Group by contact_id to get the last message details
-    const lastMessagesMap: Record<string, { text: string; time: string; direction: string; unread: boolean }> = {};
-    for (const msg of allMessages ?? []) {
-      if (!msg.contact_id) continue;
-      if (!lastMessagesMap[msg.contact_id]) {
-        lastMessagesMap[msg.contact_id] = {
-          text: msg.text_body ?? (msg.direction === "out" ? "Pesan Keluar" : "Pesan Masuk"),
-          time: msg.created_at,
-          direction: msg.direction,
-          unread: msg.direction === "in" && msg.status === "delivered",
-        };
+      for (const result of results) {
+        if (result.error) {
+          logContactsRouteFailure(stage, result.error, {
+            numberId,
+            orgId,
+            summaryCount,
+            contactIdCount,
+            batchIndex: result.batchIndex,
+            batchCount: contactIdBatches.length,
+            batchSize: result.batchSize,
+          });
+          return c.json(jsonFail(result.error.message), 500);
+        }
+        contacts.push(...(result.data ?? []));
       }
     }
 
-    const mapped = (contacts ?? []).map((r: any) => {
-      const lastMsg = lastMessagesMap[r.id];
-      return {
-        id: r.id,
-        name: r.display_name || r.phone_e164 || "Kontak",
-        phone: r.phone_e164 ?? "",
-        lastMessage: lastMsg?.text ?? "",
-        timestamp: lastMsg?.time ?? r.last_message_at ?? r.updated_at ?? r.created_at ?? nowIso(),
-        unread: lastMsg?.unread ?? false,
-      };
-    });
+    stage = "map_contact_response";
+    const contactsById = new Map(
+      contacts.map((contact: any) => [String(contact.id), contact]),
+    );
 
-    // Sort contacts by latest message timestamp descending
-    mapped.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    // The RPC already orders by latest message. Mapping in summary order keeps
+    // that ordering stable regardless of batch response order.
+    const mapped = (summaries ?? []).flatMap((summary: any) => {
+      const contact: any = contactsById.get(String(summary.contact_id));
+      if (!contact) return [];
+      return [{
+        id: contact.id,
+        name: contact.display_name || contact.phone_e164 || "Kontak",
+        phone: contact.phone_e164 ?? "",
+        lastMessage: summary.last_text ?? "",
+        timestamp: summary.last_created_at
+          ?? contact.last_message_at
+          ?? contact.updated_at
+          ?? contact.created_at
+          ?? nowIso(),
+        unread: summary.has_unread === true,
+      }];
+    });
 
     return c.json(jsonOk(mapped));
   } catch (e) {
+    logContactsRouteFailure(stage, e, {
+      numberId,
+      orgId,
+      summaryCount,
+      contactIdCount,
+    });
     return c.json(jsonFail(e), 500);
   }
 });
 
-app.get(`${API_PREFIX}/media/:mediaId`, async (c) => {
+app.get(`${API_PREFIX}/media/:mediaId`, requireAuth, async (c) => {
   try {
     const mediaId = c.req.param("mediaId");
     const numberId = c.req.query("numberId");
-    const token = c.req.query("token");
-    const apiKeyParam = c.req.query("apikey");
+    const user = c.get("authUser");
 
     if (!numberId) {
       return c.json(jsonFail("numberId wajib"), 400);
     }
+    if (!/^\d{1,64}$/.test(mediaId)) {
+      return c.json(jsonFail("Media tidak ditemukan"), 404);
+    }
 
     const supa = sb();
 
-    // Authenticate: either valid JWT user token OR valid Supabase Anon/Service Key
-    let isAuthenticated = false;
-    let authUser: any = null;
-    const systemAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
-    const systemServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    // A provider media id is not an authorization credential. Prove the
+    // requested media belongs to a message in this tenant and WABA number.
+    const { data: ownedMessage, error: messageError } = await supa
+      .from("wa_messages")
+      .select("id")
+      .eq("org_id", user.org_id)
+      .eq("number_id", numberId)
+      .or([
+        `payload->>id.eq.${mediaId}`,
+        `payload->image->>id.eq.${mediaId}`,
+        `payload->document->>id.eq.${mediaId}`,
+        `payload->sticker->>id.eq.${mediaId}`,
+        `payload->video->>id.eq.${mediaId}`,
+        `payload->audio->>id.eq.${mediaId}`,
+        `payload->voice->>id.eq.${mediaId}`,
+      ].join(","))
+      .limit(1)
+      .maybeSingle();
 
-    if (apiKeyParam && (apiKeyParam === systemAnonKey || apiKeyParam === systemServiceKey)) {
-      isAuthenticated = true;
-    } else if (token) {
-      const { data: { user } } = await supa.auth.getUser(token);
-      if (user) {
-        isAuthenticated = true;
-        // Fetch user org details
-        const { data: appUser } = await supa
-          .from("app_users")
-          .select("org_id")
-          .eq("id", user.id)
-          .maybeSingle();
-        if (appUser) {
-          authUser = appUser;
-        }
-      }
+    if (messageError || !ownedMessage) {
+      return c.json(jsonFail("Media tidak ditemukan"), 404);
     }
 
-    if (!isAuthenticated) {
-      return c.json(jsonFail("Sesi Anda tidak valid atau tidak memiliki akses"), 401);
-    }
-
-    // Query WABA number row
-    let query = supa.from("wa_numbers").select("access_token").eq("id", numberId);
-    if (authUser?.org_id) {
-      query = query.eq("org_id", authUser.org_id);
-    }
-
-    const { data: numberRow, error } = await query.maybeSingle();
+    const { data: numberRow, error } = await supa
+      .from("wa_numbers")
+      .select("access_token")
+      .eq("id", numberId)
+      .eq("org_id", user.org_id)
+      .maybeSingle();
 
     if (error || !numberRow || !numberRow.access_token) {
       return c.json(jsonFail("Nomor WA tidak valid atau token tidak ditemukan"), 404);
@@ -1114,24 +1478,34 @@ app.get(`${API_PREFIX}/media/:mediaId`, async (c) => {
     const arrayBuffer = await fileRes.arrayBuffer();
     return c.body(arrayBuffer, 200, {
       "Content-Type": mimeType,
-      "Cache-Control": "public, max-age=86400",
+      "Cache-Control": "private, no-store",
     });
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
 });
 
-// GET all organization contacts
+// GET one bounded page of organization contacts.
 app.get(`${API_PREFIX}/contacts`, requireAuth, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
+    const { page, pageSize, from, to } = parseListPagination(c, CONTACT_LIST_DEFAULT_PAGE_SIZE, CONTACT_LIST_MAX_PAGE_SIZE);
+    const search = safeListSearch(c.req.query("search"));
+    const label = safeListSearch(c.req.query("label"));
 
-    const { data, error } = await supa
+    let query = supa
       .from("wa_contacts")
-      .select("*")
-      .eq("org_id", user.org_id)
-      .order("display_name", { ascending: true });
+      .select("id, display_name, phone_e164, label, created_at, updated_at", { count: "exact" })
+      .eq("org_id", user.org_id);
+
+    if (search) query = query.or(`display_name.ilike.%${search}%,phone_e164.ilike.%${search}%,label.ilike.%${search}%`);
+    if (label) query = query.eq("label", label);
+
+    const { data, error, count } = await query
+      .order("display_name", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, to);
 
     if (error) return c.json(jsonFail(error.message), 500);
 
@@ -1139,13 +1513,124 @@ app.get(`${API_PREFIX}/contacts`, requireAuth, async (c) => {
       id: r.id,
       name: r.display_name || r.phone_e164 || "Kontak",
       phone: r.phone_e164 ?? "",
+      label: r.label ?? "",
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     }));
 
-    return c.json(jsonOk(mapped));
+    return c.json(jsonOk(pagedPayload(mapped, count, page, pageSize)));
   } catch (e) {
     return c.json(jsonFail(e), 500);
+  }
+});
+
+// POST a bounded, read-only contact-import preflight for the authenticated organization.
+app.post(`${API_PREFIX}/contacts/import/preflight`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const body = await c.req.json();
+    const contacts = body?.contacts;
+
+    if (!Array.isArray(contacts) || contacts.length === 0) {
+      return c.json(jsonFail("Daftar kontak wajib diisi"), 400);
+    }
+    if (contacts.length > CONTACT_IMPORT_PREFLIGHT_MAX_CONTACTS) {
+      return c.json(
+        jsonFail(`Maksimal ${CONTACT_IMPORT_PREFLIGHT_MAX_CONTACTS} kontak per pemeriksaan impor`),
+        413,
+      );
+    }
+
+    const hasInvalidRowId = contacts.some((contact: any) => {
+      const rowId = contact?.rowId;
+      return !(
+        typeof rowId === "string" ||
+        (typeof rowId === "number" && Number.isFinite(rowId))
+      );
+    });
+    if (hasInvalidRowId) {
+      return c.json(jsonFail("Setiap kontak wajib memiliki rowId berupa teks atau angka"), 400);
+    }
+
+    const seenPhones = new Set<string>();
+    const classified = contacts.map((contact: any) => {
+      const validation = validatePhoneDestination(contact?.phone);
+      const duplicateWithinImport = validation.normalized !== "" && seenPhones.has(validation.normalized);
+      if (validation.normalized !== "") seenPhones.add(validation.normalized);
+
+      return {
+        rowId: contact.rowId as string | number,
+        normalizedPhone: validation.normalized,
+        valid: validation.valid,
+        invalidReason: validation.reason,
+        duplicateWithinImport,
+      };
+    });
+
+    const uniqueValidPhones = [...new Set(
+      classified
+        .filter((result) => result.valid)
+        .map((result) => result.normalizedPhone),
+    )];
+
+    const existingByPhone = new Map<string, string>();
+    if (uniqueValidPhones.length > 0) {
+      const supa = sb();
+      const { data: existingContacts, error: lookupError } = await supa
+        .from("wa_contacts")
+        .select("id, phone_e164")
+        .eq("org_id", user.org_id)
+        .in("phone_e164", uniqueValidPhones);
+
+      if (lookupError) {
+        console.error("[CONTACT_IMPORT_PREFLIGHT] organization duplicate lookup failed", {
+          code: lookupError.code ?? "UNKNOWN",
+          message: lookupError.message ?? "Unknown error",
+          orgId: user.org_id,
+          contactCount: contacts.length,
+          lookupCount: uniqueValidPhones.length,
+        });
+        return c.json(jsonFail("Pemeriksaan duplikat kontak belum dapat dilakukan. Silakan coba lagi."), 500);
+      }
+
+      for (const existing of existingContacts ?? []) {
+        if (existing?.phone_e164 && existing?.id) {
+          existingByPhone.set(String(existing.phone_e164), String(existing.id));
+        }
+      }
+    }
+
+    const results = classified.map((result) => {
+      const existingContactId = result.valid
+        ? existingByPhone.get(result.normalizedPhone) ?? null
+        : null;
+      return {
+        ...result,
+        existingOrganizationDuplicate: existingContactId !== null,
+        existingContactId,
+      };
+    });
+
+    return c.json(jsonOk({
+      results,
+      summary: {
+        total: results.length,
+        validNew: results.filter((result) => (
+          result.valid &&
+          !result.duplicateWithinImport &&
+          !result.existingOrganizationDuplicate
+        )).length,
+        invalid: results.filter((result) => !result.valid).length,
+        duplicateWithinImport: results.filter((result) => result.duplicateWithinImport).length,
+        existingOrganizationDuplicate: results.filter((result) => result.existingOrganizationDuplicate).length,
+      },
+    }));
+  } catch (error) {
+    console.error("[CONTACT_IMPORT_PREFLIGHT] request failed", {
+      code: (error as any)?.code ?? "UNKNOWN",
+      message: (error as any)?.message ?? "Unknown error",
+    });
+    return c.json(jsonFail("Pemeriksaan impor kontak belum dapat dilakukan. Silakan coba lagi."), 500);
   }
 });
 
@@ -1158,23 +1643,46 @@ app.post(`${API_PREFIX}/contacts`, requireAuth, async (c) => {
 
     const name = String(body.name ?? "").trim();
     const phone = normalizePhone(body.phone);
+    const label = safeListSearch(body.label, 80) || null;
 
     if (!name) return c.json(jsonFail("Nama kontak harus diisi"), 400);
     if (!phone) return c.json(jsonFail("Nomor telepon harus diisi"), 400);
 
-    const { data: existing } = await supa
+    const { data: existing, error: existingError } = await supa
       .from("wa_contacts")
       .select("*")
       .eq("org_id", user.org_id)
       .eq("phone_e164", phone)
       .maybeSingle();
 
+    if (existingError) {
+      console.error("[CONTACT_CREATE] duplicate lookup failed", {
+        code: existingError.code ?? "UNKNOWN",
+        message: existingError.message ?? "Unknown error",
+        orgId: user.org_id,
+      });
+      return c.json(jsonFail("Kontak belum dapat diperiksa. Silakan coba lagi."), 500);
+    }
+
     if (existing) {
+      let contact = existing;
+      if (label !== null && existing.label !== label) {
+        const { data: updated, error: updateLabelError } = await supa
+          .from("wa_contacts")
+          .update({ label, updated_at: new Date().toISOString() })
+          .eq("id", existing.id)
+          .eq("org_id", user.org_id)
+          .select("*")
+          .single();
+        if (updateLabelError) return c.json(jsonFail(updateLabelError.message), 500);
+        contact = updated;
+      }
       return c.json(jsonOk({
-        id: existing.id,
-        name: existing.display_name,
-        phone: existing.phone_e164,
-        createdAt: existing.created_at,
+        id: contact.id,
+        name: contact.display_name,
+        phone: contact.phone_e164,
+        label: contact.label ?? "",
+        createdAt: contact.created_at,
       }));
     }
 
@@ -1184,16 +1692,50 @@ app.post(`${API_PREFIX}/contacts`, requireAuth, async (c) => {
         org_id: user.org_id,
         display_name: name,
         phone_e164: phone,
+        label,
       })
       .select("*")
       .single();
 
-    if (error) return c.json(jsonFail(error.message), 500);
+    if (error?.code === "23505") {
+      const { data: racedExisting, error: racedLookupError } = await supa
+        .from("wa_contacts")
+        .select("id, display_name, phone_e164, label, created_at")
+        .eq("org_id", user.org_id)
+        .eq("phone_e164", phone)
+        .maybeSingle();
+
+      if (racedExisting && !racedLookupError) {
+        return c.json(jsonOk({
+          id: racedExisting.id,
+          name: racedExisting.display_name,
+          phone: racedExisting.phone_e164,
+          label: racedExisting.label ?? "",
+          createdAt: racedExisting.created_at,
+        }));
+      }
+
+      console.error("[CONTACT_CREATE] unique race could not be resolved", {
+        code: racedLookupError?.code ?? error.code,
+        message: racedLookupError?.message ?? error.message,
+        orgId: user.org_id,
+      });
+      return c.json(jsonFail("Nomor telepon sudah terdaftar di organisasi ini."), 409);
+    }
+    if (error) {
+      console.error("[CONTACT_CREATE] insert failed", {
+        code: error.code ?? "UNKNOWN",
+        message: error.message ?? "Unknown error",
+        orgId: user.org_id,
+      });
+      return c.json(jsonFail("Kontak belum dapat disimpan. Silakan coba lagi."), 500);
+    }
 
     return c.json(jsonOk({
       id: data.id,
       name: data.display_name,
       phone: data.phone_e164,
+      label: data.label ?? "",
       createdAt: data.created_at,
     }));
   } catch (e) {
@@ -1211,6 +1753,7 @@ app.put(`${API_PREFIX}/contacts/:id`, requireAuth, async (c) => {
 
     const name = String(body.name ?? "").trim();
     const phone = normalizePhone(body.phone);
+    const label = safeListSearch(body.label, 80) || null;
 
     if (!name) return c.json(jsonFail("Nama kontak harus diisi"), 400);
     if (!phone) return c.json(jsonFail("Nomor telepon harus diisi"), 400);
@@ -1220,6 +1763,7 @@ app.put(`${API_PREFIX}/contacts/:id`, requireAuth, async (c) => {
       .update({
         display_name: name,
         phone_e164: phone,
+        label,
         updated_at: new Date().toISOString(),
       })
       .eq("id", id)
@@ -1233,6 +1777,7 @@ app.put(`${API_PREFIX}/contacts/:id`, requireAuth, async (c) => {
       id: data.id,
       name: data.display_name,
       phone: data.phone_e164,
+      label: data.label ?? "",
       updatedAt: data.updated_at,
     }));
   } catch (e) {
@@ -1241,7 +1786,7 @@ app.put(`${API_PREFIX}/contacts/:id`, requireAuth, async (c) => {
 });
 
 // DELETE contact
-app.delete(`${API_PREFIX}/contacts/:id`, requireAuth, async (c) => {
+app.delete(`${API_PREFIX}/contacts/:id`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const id = c.req.param("id");
@@ -1261,7 +1806,7 @@ app.delete(`${API_PREFIX}/contacts/:id`, requireAuth, async (c) => {
   }
 });
 
-app.post(`${API_PREFIX}/templates/sync-default`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/templates/sync-default`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
@@ -1299,34 +1844,90 @@ app.post(`${API_PREFIX}/templates/sync-default`, requireAuth, async (c) => {
 });
 
 // ===== MESSAGES =====
+app.get(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/message-statuses`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const numberId = c.req.param("numberId");
+    const contactId = c.req.param("contactId");
+    const ids = String(c.req.query("ids") ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+    if (ids.length === 0 || ids.length > 50 || ids.some((id) => !uuidPattern.test(id))) {
+      return c.json(jsonFail("Daftar message id tidak valid"), 400);
+    }
+
+    const { data, error } = await sb()
+      .from("wa_messages")
+      .select("id, status")
+      .eq("org_id", user.org_id)
+      .eq("number_id", numberId)
+      .eq("contact_id", contactId)
+      .in("id", ids);
+
+    if (error) return c.json(jsonFail(error.message), 500);
+    return c.json(jsonOk(data ?? []));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
 app.get(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, requireAuth, async (c) => {
   try {
     const user = c.get("authUser");
     const numberId = c.req.param("numberId");
     const contactId = c.req.param("contactId");
+    const requestedLimit = Number(c.req.query("limit") ?? 50);
+    const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
+    const beforeCreatedAt = c.req.query("beforeCreatedAt");
+    const beforeId = c.req.query("beforeId");
+    const afterCreatedAt = c.req.query("afterCreatedAt");
+    const afterId = c.req.query("afterId");
     const supa = sb();
 
-    // Mark incoming messages as read
-    await supa
-      .from("wa_messages")
-      .update({ status: "read", read_at: nowIso() })
-      .eq("org_id", user.org_id)
-      .eq("number_id", numberId)
-      .eq("contact_id", contactId)
-      .eq("direction", "in")
-      .eq("status", "delivered");
+    const hasBefore = Boolean(beforeCreatedAt || beforeId);
+    const hasAfter = Boolean(afterCreatedAt || afterId);
+    if ((hasBefore && hasAfter) || (hasBefore && (!beforeCreatedAt || !beforeId)) || (hasAfter && (!afterCreatedAt || !afterId))) {
+      return c.json(jsonFail("Cursor message tidak valid"), 400);
+    }
 
-    const { data, error } = await supa
+    const cursorCreatedAt = beforeCreatedAt || afterCreatedAt;
+    const cursorId = beforeId || afterId;
+    if (cursorCreatedAt && (!Number.isFinite(Date.parse(cursorCreatedAt)) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(cursorId)))) {
+      return c.json(jsonFail("Cursor message tidak valid"), 400);
+    }
+    const normalizedCursorCreatedAt = cursorCreatedAt
+      ? new Date(cursorCreatedAt).toISOString()
+      : null;
+
+    let query = supa
       .from("wa_messages")
       .select("*")
       .eq("org_id", user.org_id)
       .eq("number_id", numberId)
-      .eq("contact_id", contactId)
-      .order("created_at", { ascending: true });
+      .eq("contact_id", contactId);
+
+    if (hasBefore) {
+      query = query.or(`created_at.lt.${normalizedCursorCreatedAt},and(created_at.eq.${normalizedCursorCreatedAt},id.lt.${beforeId})`);
+    } else if (hasAfter) {
+      query = query.or(`created_at.gt.${normalizedCursorCreatedAt},and(created_at.eq.${normalizedCursorCreatedAt},id.gt.${afterId})`);
+    }
+
+    const ascending = hasAfter;
+    const { data, error } = await query
+      .order("created_at", { ascending })
+      .order("id", { ascending })
+      .limit(limit + 1);
 
     if (error) return c.json(jsonFail(error.message), 500);
 
-    const mapped = (data ?? []).map((r: any) => ({
+    const hasMore = (data ?? []).length > limit;
+    const pageRows = (data ?? []).slice(0, limit);
+    if (!ascending) pageRows.reverse();
+
+    const mapped = pageRows.map((r: any) => ({
       id: r.id,
       content: r.text_body ?? "",
       sender: r.direction === "out" ? "user" : "contact",
@@ -1337,7 +1938,43 @@ app.get(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, requireA
       contactName: undefined,
     }));
 
-    return c.json(jsonOk(mapped));
+    const oldest = pageRows[0];
+    const latest = pageRows[pageRows.length - 1];
+    return c.json(jsonOk({
+      messages: mapped,
+      hasMore,
+      olderCursor: oldest ? { createdAt: oldest.created_at, id: oldest.id } : null,
+      latestCursor: latest ? { createdAt: latest.created_at, id: latest.id } : null,
+    }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/read`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const numberId = c.req.param("numberId");
+    const contactId = c.req.param("contactId");
+    const supa = sb();
+
+    // Explicit and idempotent: only unread inbound messages can advance to
+    // read. Delivered/read status from provider webhooks can never regress.
+    const { data, error } = await supa
+      .from("wa_messages")
+      .update({ status: "read", read_at: nowIso() })
+      .eq("org_id", user.org_id)
+      .eq("number_id", numberId)
+      .eq("contact_id", contactId)
+      .eq("direction", "in")
+      .eq("status", "delivered")
+      .select("id");
+
+    if (error) return c.json(jsonFail(error.message), 500);
+    return c.json(jsonOk({
+      message: "Percakapan telah ditandai sebagai dibaca",
+      updatedCount: data?.length ?? 0,
+    }));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -1372,7 +2009,7 @@ app.post(`${API_PREFIX}/numbers/:numberId/read-all`, requireAuth, async (c) => {
   }
 });
 
-app.post(`${API_PREFIX}/numbers/:numberId/delete-conversations`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/numbers/:numberId/delete-conversations`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const numberId = c.req.param("numberId");
@@ -1411,17 +2048,27 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
     const numberId = c.req.param("numberId");
     const contactId = c.req.param("contactId");
     const body = await c.req.json();
+    const manualSendReference = String(
+      body.idempotencyKey ?? c.req.header("idempotency-key") ?? "",
+    ).trim();
+
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(manualSendReference)) {
+      return c.json(jsonFail("Idempotency key pengiriman wajib dan tidak valid"), 400);
+    }
 
     const isTemplate = body.messageType === "template" || !!body.templateName;
     const templateName = String(body.templateName ?? "").trim();
     const language = String(body.language ?? "id").trim();
-    const bodyVariables = Array.isArray(body.bodyVariables) ? body.bodyVariables.map((x: any) => String(x ?? "")) : [];
-    const content = String(body.content ?? body.message ?? body.text ?? (isTemplate ? `[Template: ${templateName}]` : "")).trim();
+    const bodyVariables = Array.isArray(body.bodyVariables)
+      ? body.bodyVariables.map((value: any) => String(value ?? ""))
+      : [];
+    const content = String(
+      body.content ?? body.message ?? body.text ?? (isTemplate ? `[Template: ${templateName}]` : ""),
+    ).trim();
 
     if (!content && !isTemplate) return c.json(jsonFail("Pesan tidak boleh kosong"), 400);
 
     const supa = sb();
-
     const { data: numberRow, error: numberErr } = await supa
       .from("wa_numbers")
       .select("*")
@@ -1441,13 +2088,129 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
 
     if (contactErr) return c.json(jsonFail(contactErr.message), 500);
     if (!contact) return c.json(jsonFail("Kontak tidak ditemukan"), 404);
-
     if (!numberRow.access_token || !numberRow.phone_number_id) {
       return c.json(jsonFail("Nomor WA belum terkoneksi lengkap ke Meta"), 400);
     }
 
-    // Check if client sent an incoming message within the last 24 hours (Meta CS Window)
-    const { data: lastIncomingMsg } = await supa
+    const readBalance = async () => {
+      const { data } = await supa
+        .from("billing_balance")
+        .select("tokens_balance")
+        .eq("org_id", user.org_id)
+        .maybeSingle();
+      return data ? Number(data.tokens_balance ?? 0) : null;
+    };
+
+    const refundPaidSend = async (messageId: string) => {
+      const { data, error } = await supa.rpc("compensate_billing_mutation", {
+        p_org_id: user.org_id,
+        p_original_provider: "manual_chat_debit",
+        p_external_reference: manualSendReference,
+        p_refund_provider: "manual_chat_refund",
+        p_description: `Kompensasi chat manual yang ditolak Meta (${messageId})`,
+        p_ref_type: "manual_message",
+        p_ref_id: messageId,
+        p_actor_user_id: user.id,
+        p_metadata: { message_id: messageId, manual_send_reference: manualSendReference },
+      });
+      if (error) throw error;
+      return data;
+    };
+
+    const existingResult = async (existing: any) => {
+      const sameLogicalPayload =
+        existing.number_id === numberId &&
+        existing.contact_id === contactId &&
+        existing.text_body === content &&
+        existing.message_type === (isTemplate ? "template" : "text") &&
+        String(existing.payload?.templateName ?? "") === templateName;
+
+      if (!sameLogicalPayload) {
+        return c.json({
+          success: false,
+          error: "Idempotency key sudah digunakan untuk payload berbeda",
+          code: "IDEMPOTENCY_PAYLOAD_MISMATCH",
+          retryable: false,
+        }, 409);
+      }
+
+      if (existing.meta_message_id || ["sent", "delivered", "read"].includes(existing.status)) {
+        return c.json(jsonOk({
+          id: existing.id,
+          content: existing.text_body,
+          sender: "user",
+          timestamp: existing.sent_at || existing.created_at,
+          status: existing.status,
+          outcome: "accepted",
+          duplicate: true,
+          metaMessageId: existing.meta_message_id,
+          billingState: existing.manual_billing_state,
+          tokensRemaining: await readBalance(),
+        }));
+      }
+
+      if (existing.status === "failed") {
+        if (existing.manual_billing_state === "compensation_pending") {
+          try {
+            const refund = await refundPaidSend(existing.id);
+            if (refund?.original_missing) {
+              return c.json({
+                success: false,
+                error: "Pengiriman gagal dan status debit sebelumnya masih ambigu",
+                code: "COMPENSATION_PENDING",
+                retryable: true,
+              }, 503);
+            }
+            await supa
+              .from("wa_messages")
+              .update({
+                manual_billing_state: "refunded",
+                manual_billing_ledger_id: refund?.ledger_id ?? existing.manual_billing_ledger_id,
+              })
+              .eq("id", existing.id);
+          } catch (refundError) {
+            return c.json({
+              success: false,
+              error: "Pengiriman gagal dan kompensasi billing masih perlu rekonsiliasi",
+              code: "COMPENSATION_PENDING",
+              retryable: true,
+            }, 503);
+          }
+        }
+        return c.json({
+          success: false,
+          error: "Percobaan pengiriman sebelumnya ditolak Meta",
+          code: "META_REJECTED",
+          retryable: false,
+        }, 409);
+      }
+
+      return c.json(jsonOk({
+        id: existing.id,
+        content: existing.text_body,
+        sender: "user",
+        timestamp: existing.created_at,
+        status: "processing",
+        outcome: "processing",
+        duplicate: true,
+        metaMessageId: null,
+        billingState: existing.manual_billing_state,
+        tokensRemaining: await readBalance(),
+      }));
+    };
+
+    const { data: existingMessage, error: existingErr } = await supa
+      .from("wa_messages")
+      .select("*")
+      .eq("org_id", user.org_id)
+      .eq("manual_send_reference", manualSendReference)
+      .maybeSingle();
+
+    if (existingErr) return c.json(jsonFail(existingErr.message), 500);
+    if (existingMessage) return await existingResult(existingMessage);
+
+    // Preserve the existing 24-hour customer-service-window business rule.
+    const { data: lastIncomingMsg, error: incomingErr } = await supa
       .from("wa_messages")
       .select("created_at")
       .eq("org_id", user.org_id)
@@ -1458,130 +2221,292 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
       .limit(1)
       .maybeSingle();
 
+    if (incomingErr) return c.json(jsonFail(incomingErr.message), 500);
     const isWithin24Hours = lastIncomingMsg?.created_at
       ? (Date.now() - new Date(lastIncomingMsg.created_at).getTime()) <= 24 * 60 * 60 * 1000
       : false;
+    const requiresBilling = !isWithin24Hours;
+    const manualChatTokenPrice = requiresBilling
+      ? await getCanonicalTokenPrice(supa, user.org_id)
+      : 0;
 
-    // Deduct token ONLY IF outside 24-hour customer service window!
-    if (!isWithin24Hours) {
-      const tokenResult = await consumeOneToken(user.org_id);
-      if (!tokenResult.success) {
-        return c.json(jsonFail(tokenResult.message || "Token tidak cukup"), 400);
-      }
-    }
-
-    const { data: msg, error } = await supa
+    const { data: msg, error: messageInsertErr } = await supa
       .from("wa_messages")
       .insert({
         org_id: user.org_id,
         number_id: numberId,
         contact_id: contactId,
         direction: "out",
-        status: "queued",
+        status: "processing",
         message_type: isTemplate ? "template" : "text",
         text_body: content,
-        payload: { source: "manual", isTemplate, templateName, bodyVariables },
+        payload: {
+          source: "manual",
+          isTemplate,
+          templateName,
+          bodyVariables,
+          manual_send_reference: manualSendReference,
+          free_window: isWithin24Hours,
+        },
+        manual_send_reference: manualSendReference,
+        manual_billing_state: requiresBilling ? "pending" : "not_required",
       })
       .select("*")
       .single();
 
-    if (error) return c.json(jsonFail(error.message), 500);
+    if (messageInsertErr) {
+      if (messageInsertErr.code === "23505") {
+        const { data: racedMessage } = await supa
+          .from("wa_messages")
+          .select("*")
+          .eq("org_id", user.org_id)
+          .eq("manual_send_reference", manualSendReference)
+          .maybeSingle();
+        if (racedMessage) return await existingResult(racedMessage);
+      }
+      return c.json(jsonFail(messageInsertErr.message), 500);
+    }
 
-    try {
-      let metaRes: any = null;
-      if (isTemplate && templateName) {
-        metaRes = await sendMetaTemplateMessage({
-          phoneNumberId: numberRow.phone_number_id,
-          accessToken: numberRow.access_token,
-          to: contact.phone_e164,
-          templateName,
-          language,
-          bodyVariables,
-          header: body.header || null,
+    let tokensRemaining = await readBalance();
+    let debitResult: any = null;
+    if (requiresBilling) {
+      try {
+        debitResult = await applyBillingMutation({
+          orgId: user.org_id,
+          tokenDelta: -1,
+          transactionType: "usage",
+          amountIdr: manualChatTokenPrice,
+          description: `Pemakaian token chat manual ke ${contact.phone_e164}`,
+          refType: "manual_message",
+          refId: msg.id,
+          actorUserId: user.id,
+          provider: "manual_chat_debit",
+          externalReference: manualSendReference,
+          metadata: {
+            message_id: msg.id,
+            manual_send_reference: manualSendReference,
+            token_price_idr: manualChatTokenPrice,
+          },
         });
-      } else {
-        metaRes = await sendMetaTextMessage({
-          phoneNumberId: numberRow.phone_number_id,
-          accessToken: numberRow.access_token,
-          to: contact.phone_e164,
-          text: content,
-        });
+        tokensRemaining = Number(debitResult?.new_balance ?? tokensRemaining ?? 0);
+      } catch (billingError) {
+        const billingMessage = (billingError as any)?.message || String(billingError);
+        const insufficientBalance = billingMessage.toLowerCase().includes("saldo token tidak mencukupi");
+        let billingState = insufficientBalance ? "insufficient_balance" : "compensation_pending";
+        let retryable = !insufficientBalance;
+        let compensationLedgerId: string | null = null;
+
+        // The debit response can be ambiguous when a database/network error is
+        // returned after commit. Compensate only when the original debit ledger
+        // actually exists; the database RPC never grants a refund otherwise.
+        if (!insufficientBalance) {
+          try {
+            const compensation = await refundPaidSend(msg.id);
+            if (!compensation?.original_missing) {
+              billingState = "refunded";
+              retryable = false;
+              compensationLedgerId = compensation?.ledger_id ?? null;
+              tokensRemaining = Number(compensation?.new_balance ?? tokensRemaining ?? 0);
+            }
+          } catch {
+            billingState = "compensation_pending";
+            retryable = true;
+          }
+        }
+
+        await supa
+          .from("wa_messages")
+          .update({
+            status: "failed",
+            error: billingMessage,
+            manual_billing_state: billingState,
+            manual_billing_ledger_id: compensationLedgerId,
+          })
+          .eq("id", msg.id);
+        return c.json({
+          success: false,
+          error: insufficientBalance
+            ? "Token tidak cukup"
+            : retryable
+              ? "Billing gagal dan kompensasi perlu rekonsiliasi"
+              : "Billing gagal sebelum pengiriman",
+          code: insufficientBalance
+            ? "INSUFFICIENT_BALANCE"
+            : retryable
+              ? "COMPENSATION_PENDING"
+              : "BILLING_DEBIT_FAILED",
+          retryable,
+        }, insufficientBalance ? 400 : 503);
       }
 
-      const metaMessageId = metaRes?.messages?.[0]?.id ?? null;
-
-      await supa
+      const { error: debitStateErr } = await supa
         .from("wa_messages")
         .update({
-          status: "sent",
-          meta_message_id: metaMessageId,
-          meta_status_payload: metaRes,
-          sent_at: nowIso(),
+          manual_billing_state: "debited",
+          manual_billing_ledger_id: debitResult?.ledger_id ?? null,
         })
         .eq("id", msg.id);
 
-      await supa
-        .from("wa_contacts")
-        .update({ last_message_at: nowIso() })
-        .eq("id", contactId)
-        .eq("org_id", user.org_id);
+      if (debitStateErr) {
+        let compensationPending = false;
+        try {
+          await refundPaidSend(msg.id);
+          await supa
+            .from("wa_messages")
+            .update({ status: "failed", manual_billing_state: "refunded", error: "Billing state persistence failed" })
+            .eq("id", msg.id);
+        } catch {
+          compensationPending = true;
+          await supa
+            .from("wa_messages")
+            .update({ status: "failed", manual_billing_state: "compensation_pending", error: "Billing reconciliation required" })
+            .eq("id", msg.id);
+        }
+        return c.json({
+          success: false,
+          error: compensationPending
+            ? "Billing tidak dapat dipersistenkan dan kompensasi perlu rekonsiliasi"
+            : "Billing tidak dapat dipersistenkan; pesan tidak dikirim",
+          code: compensationPending ? "COMPENSATION_PENDING" : "BILLING_STATE_FAILED",
+          retryable: compensationPending,
+        }, 503);
+      }
+    }
 
-      await supa.from("billing_transactions").insert({
-        org_id: user.org_id,
-        type: "usage",
-        tokens_delta: -1,
-        amount_idr: 1500,
-        description: `Pemakaian token chat manual ke ${contact.phone_e164}`,
-        ref_type: "message",
-        ref_id: msg.id,
-        created_by: user.id,
-      });
+    let metaRes: any;
+    try {
+      metaRes = isTemplate && templateName
+        ? await sendMetaTemplateMessage({
+            phoneNumberId: numberRow.phone_number_id,
+            accessToken: numberRow.access_token,
+            to: contact.phone_e164,
+            templateName,
+            language,
+            bodyVariables,
+            header: body.header || null,
+          })
+        : await sendMetaTextMessage({
+            phoneNumberId: numberRow.phone_number_id,
+            accessToken: numberRow.access_token,
+            to: contact.phone_e164,
+            text: content,
+          });
 
-      await supa.from("app_activity").insert({
-        org_id: user.org_id,
-        actor_user_id: user.id,
-        type: "message_sent",
-        message: "Pesan manual terkirim",
-        meta: { message_id: msg.id, number_id: numberId, contact_id: contactId, meta_message_id: metaMessageId },
-      });
+      if (!metaRes?.messages?.[0]?.id) {
+        throw new Error("Meta tidak mengembalikan message_id");
+      }
+    } catch (metaError) {
+      const message = metaError instanceof Error ? metaError.message : String(metaError);
+      let billingState = requiresBilling ? "compensation_pending" : "not_required";
+      let refundLedgerId: string | null = null;
 
-      return c.json(
-        jsonOk({
-          id: msg.id,
-          content,
-          sender: "user",
-          timestamp: nowIso(),
-          status: "sent",
-          metaMessageId,
-          tokensRemaining: tokenResult.remaining,
-        }),
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      if (requiresBilling) {
+        try {
+          const refundResult = await refundPaidSend(msg.id);
+          billingState = "refunded";
+          refundLedgerId = refundResult?.ledger_id ?? null;
+          tokensRemaining = Number(refundResult?.new_balance ?? tokensRemaining ?? 0);
+        } catch (refundError) {
+          console.error("Manual chat compensation failed; reconciliation required.", {
+            messageId: msg.id,
+            manualSendReference,
+            error: (refundError as any)?.message || "unknown",
+          });
+        }
+      }
 
       await supa
         .from("wa_messages")
         .update({
           status: "failed",
           error: message,
+          manual_billing_state: billingState,
+          manual_billing_ledger_id: refundLedgerId ?? debitResult?.ledger_id ?? null,
         })
         .eq("id", msg.id);
 
-      await supa.from("billing_transactions").insert({
-        org_id: user.org_id,
-        type: "usage",
-        tokens_delta: -1,
-        amount_idr: 1500,
-        description: `Pemakaian token chat manual ke ${contact.phone_e164} (gagal)`,
-        ref_type: "message",
-        ref_id: msg.id,
-        created_by: user.id,
-      });
-
-      return c.json(jsonFail(message), 400);
+      return c.json({
+        success: false,
+        error: billingState === "compensation_pending"
+          ? "Meta menolak pengiriman dan kompensasi billing perlu rekonsiliasi"
+          : message,
+        code: billingState === "compensation_pending" ? "COMPENSATION_PENDING" : "META_REJECTED",
+        retryable: billingState === "compensation_pending",
+      }, billingState === "compensation_pending" ? 503 : 400);
     }
+
+    const metaMessageId = metaRes.messages[0].id;
+    const acceptedAt = nowIso();
+    const { error: acceptedUpdateErr } = await supa
+      .from("wa_messages")
+      .update({
+        status: "sent",
+        meta_message_id: metaMessageId,
+        meta_status_payload: metaRes,
+        sent_at: acceptedAt,
+      })
+      .eq("id", msg.id);
+
+    const reconciliationRequired = Boolean(acceptedUpdateErr);
+    if (acceptedUpdateErr) {
+      console.error("Manual chat accepted by Meta but local status update failed.", {
+        messageId: msg.id,
+        metaMessageId,
+        manualSendReference,
+        errorCode: acceptedUpdateErr.code || "unknown",
+      });
+    }
+
+    // These are secondary local effects. Their failure must never rewrite a
+    // Meta-accepted send to failed or invite a duplicate user retry.
+    const { error: contactUpdateErr } = await supa
+      .from("wa_contacts")
+      .update({ last_message_at: acceptedAt })
+      .eq("id", contactId)
+      .eq("org_id", user.org_id);
+    if (contactUpdateErr) {
+      console.error("Manual chat contact timestamp update failed.", {
+        messageId: msg.id,
+        errorCode: contactUpdateErr.code || "unknown",
+      });
+    }
+
+    const { error: activityErr } = await supa.from("app_activity").insert({
+      org_id: user.org_id,
+      actor_user_id: user.id,
+      type: reconciliationRequired ? "message_sent_reconciliation_required" : "message_sent",
+      message: reconciliationRequired
+        ? "Pesan diterima Meta; sinkronisasi status lokal diperlukan"
+        : "Pesan manual diterima Meta",
+      meta: { message_id: msg.id, number_id: numberId, contact_id: contactId, meta_message_id: metaMessageId },
+    });
+    if (activityErr) {
+      console.error("Manual chat activity logging failed after Meta acceptance.", {
+        messageId: msg.id,
+        metaMessageId,
+        errorCode: activityErr.code || "unknown",
+      });
+    }
+
+    return c.json(jsonOk({
+      id: msg.id,
+      content,
+      sender: "user",
+      timestamp: acceptedAt,
+      status: "sent",
+      outcome: reconciliationRequired ? "accepted_reconciliation_required" : "accepted",
+      reconciliationRequired,
+      duplicate: false,
+      metaMessageId,
+      billingState: requiresBilling ? "debited" : "not_required",
+      tokensRemaining,
+    }));
   } catch (e) {
-    return c.json(jsonFail(e), 500);
+    return c.json({
+      ...jsonFail(e),
+      code: "MANUAL_SEND_UNKNOWN",
+      retryable: true,
+    }, 500);
   }
 });
 
@@ -1763,7 +2688,7 @@ app.get(`${API_PREFIX}/templates`, requireAuth, async (c) => {
   }
 });
 
-app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const body = await c.req.parseBody();
@@ -1845,16 +2770,7 @@ app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, async (c) => {
   }
 });
 
-function buildTemplateComponentsFromContent(content: string) {
-  return [
-    {
-      type: "BODY",
-      text: content,
-    },
-  ];
-}
-
-app.post(`${API_PREFIX}/templates`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/templates`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
@@ -1922,7 +2838,7 @@ app.post(`${API_PREFIX}/templates`, requireAuth, async (c) => {
   }
 });
 
-app.put(`${API_PREFIX}/templates/:id`, requireAuth, async (c) => {
+app.put(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
@@ -2089,7 +3005,7 @@ app.put(`${API_PREFIX}/templates/:id`, requireAuth, async (c) => {
   }
 });
 
-app.delete(`${API_PREFIX}/templates/:id`, requireAuth, async (c) => {
+app.delete(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
@@ -2158,7 +3074,7 @@ app.delete(`${API_PREFIX}/templates/:id`, requireAuth, async (c) => {
   }
 });
 
-app.post(`${API_PREFIX}/templates/sync`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/templates/sync`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
@@ -2218,7 +3134,7 @@ app.post(`${API_PREFIX}/templates/sync`, requireAuth, async (c) => {
   }
 });
 
-app.post(`${API_PREFIX}/templates/:id/push-meta`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/templates/:id/push-meta`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
@@ -2369,34 +3285,27 @@ app.get(`${API_PREFIX}/billing`, requireAuth, async (c) => {
 
     const { data: balance, error: balErr } = await supa
       .from("billing_balance")
-      .select("*")
+      .select("tokens_balance, token_price_idr")
       .eq("org_id", user.org_id)
       .maybeSingle();
 
     if (balErr) return c.json(jsonFail(balErr.message), 500);
+    if (!balance) return c.json(jsonFail("Konfigurasi billing organisasi tidak ditemukan"), 500);
+    const tokenPrice = requireCanonicalTokenPrice(balance.token_price_idr, user.org_id);
 
-    const { data: txRows, error: txErr } = await supa
-      .from("billing_transactions")
-      .select("amount_idr, type")
-      .eq("org_id", user.org_id);
+    const { data: totalSpentValue, error: txErr } = await supa.rpc(
+      "get_billing_total_spent",
+      { p_org_id: user.org_id },
+    );
 
     if (txErr) return c.json(jsonFail(txErr.message), 500);
-
-    const totalSpent = (txRows ?? [])
-      .reduce((sum: number, x: any) => {
-        if (x.type === "usage") {
-          return sum + Number(x.amount_idr ?? 0);
-        } else if (x.type === "refund") {
-          return sum - Number(x.amount_idr ?? 0);
-        }
-        return sum;
-      }, 0);
+    const totalSpent = Number(totalSpentValue ?? 0);
 
     return c.json(
       jsonOk({
         currentTokens: Number(balance?.tokens_balance ?? 0),
         totalSpent,
-        tokenPrice: Number(balance?.token_price_idr ?? 1500),
+        tokenPrice,
       }),
     );
   } catch (e) {
@@ -2473,9 +3382,6 @@ app.get(`${API_PREFIX}/stats`, requireAuth, async (c) => {
     const user = c.get("authUser");
     const supa = sb();
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-
     const { count: totalMessages, error: msgErr } = await supa
       .from("wa_messages")
       .select("id", { count: "exact", head: true })
@@ -2507,17 +3413,13 @@ app.get(`${API_PREFIX}/stats`, requireAuth, async (c) => {
 
     if (balErr) return c.json(jsonFail(balErr.message), 500);
 
-    const { data: usageRows, error: usageErr } = await supa
-      .from("billing_transactions")
-      .select("tokens_delta, type")
-      .eq("org_id", user.org_id)
-      .eq("type", "usage");
+    const { data: tokensUsedValue, error: usageErr } = await supa.rpc(
+      "get_billing_tokens_used",
+      { p_org_id: user.org_id },
+    );
 
     if (usageErr) return c.json(jsonFail(usageErr.message), 500);
-
-    const tokensUsed = Math.abs(
-      (usageRows ?? []).reduce((sum: number, x: any) => sum + Number(x.tokens_delta ?? 0), 0),
-    );
+    const tokensUsed = Number(tokensUsedValue ?? 0);
 
     return c.json(
       jsonOk({
@@ -2558,38 +3460,27 @@ app.get(`${API_PREFIX}/dashboard/usage-7d`, requireAuth, async (c) => {
     const user = c.get("authUser");
     const supa = sb();
 
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    start.setDate(start.getDate() - 6);
+    const endDate = String(c.req.query("endDate") ?? "").trim();
+    const timeZone = String(c.req.query("timeZone") ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate) || !Number.isFinite(Date.parse(`${endDate}T00:00:00Z`))) {
+      return c.json(jsonFail("endDate tidak valid"), 400);
+    }
+    if (!timeZone || timeZone.length > 100 || !/^[A-Za-z0-9_+\-/]+$/.test(timeZone)) {
+      return c.json(jsonFail("timeZone tidak valid"), 400);
+    }
 
-    const { data, error } = await supa
-      .from("billing_transactions")
-      .select("created_at, tokens_delta, type")
-      .eq("org_id", user.org_id)
-      .eq("type", "usage")
-      .gte("created_at", start.toISOString())
-      .order("created_at", { ascending: true });
+    const { data, error } = await supa.rpc("get_dashboard_usage_7d", {
+      p_org_id: user.org_id,
+      p_end_date: endDate,
+      p_time_zone: timeZone,
+    });
 
     if (error) return c.json(jsonFail(error.message), 500);
 
-    const days: Record<string, number> = {};
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(start);
-      d.setDate(start.getDate() + i);
-      const key = d.toISOString().slice(0, 10);
-      days[key] = 0;
-    }
-
-    for (const row of data ?? []) {
-      const key = String(row.created_at).slice(0, 10);
-      const delta = Math.abs(Number(row.tokens_delta ?? 0));
-      if (key in days) days[key] += delta;
-    }
-
-    const result = Object.entries(days).map(([date, tokens]) => ({
-      date,
-      tokens,
-      amountIdr: tokens * 1500,
+    const result = (data ?? []).map((row: any) => ({
+      date: row.usage_date,
+      tokens: Number(row.tokens ?? 0),
+      amountIdr: Number(row.amount_idr ?? 0),
     }));
 
     return c.json(jsonOk(result));
@@ -2598,8 +3489,85 @@ app.get(`${API_PREFIX}/dashboard/usage-7d`, requireAuth, async (c) => {
   }
 });
 
+app.get(`${API_PREFIX}/dashboard/broadcast-summary`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const supa = sb();
+    const rawRangeStart = String(c.req.query("rangeStart") ?? "").trim();
+    const rangeStart = rawRangeStart && Number.isFinite(Date.parse(rawRangeStart))
+      ? new Date(rawRangeStart).toISOString()
+      : null;
+    if (rawRangeStart && !rangeStart) return c.json(jsonFail("rangeStart tidak valid"), 400);
+
+    const { data: totalRecipientsValue, error: summaryError } = await supa.rpc(
+      "get_dashboard_broadcast_summary",
+      { p_org_id: user.org_id, p_range_start: rangeStart },
+    );
+    if (summaryError) return c.json(jsonFail(summaryError.message), 500);
+
+    let recentQuery = supa
+      .from("wa_broadcasts")
+      .select("id, title, status, total_recipients, created_at, scheduled_at")
+      .eq("org_id", user.org_id);
+    if (rangeStart) recentQuery = recentQuery.gte("created_at", rangeStart);
+    const { data: recentRows, error: recentError } = await recentQuery
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(3);
+    if (recentError) return c.json(jsonFail(recentError.message), 500);
+
+    return c.json(jsonOk({
+      totalRecipients: Number(totalRecipientsValue ?? 0),
+      recent: (recentRows ?? []).map((row: any) => ({
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        totalRecipients: Number(row.total_recipients ?? 0),
+        createdAt: row.created_at,
+        scheduledAt: row.scheduled_at,
+      })),
+    }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.get(`${API_PREFIX}/dashboard/broadcast-calendar`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const rawFrom = String(c.req.query("from") ?? "").trim();
+    const rawTo = String(c.req.query("to") ?? "").trim();
+    const fromMs = Date.parse(rawFrom);
+    const toMs = Date.parse(rawTo);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) {
+      return c.json(jsonFail("Rentang kalender tidak valid"), 400);
+    }
+    if (toMs - fromMs > DASHBOARD_CALENDAR_MAX_RANGE_MS) {
+      return c.json(jsonFail("Rentang kalender maksimal 62 hari"), 400);
+    }
+
+    const { data, error } = await sb().rpc("get_dashboard_broadcast_calendar", {
+      p_org_id: user.org_id,
+      p_range_start: new Date(fromMs).toISOString(),
+      p_range_end: new Date(toMs).toISOString(),
+    });
+    if (error) return c.json(jsonFail(error.message), 500);
+
+    return c.json(jsonOk((data ?? []).map((row: any) => ({
+      id: row.id,
+      title: row.title,
+      status: row.status,
+      totalRecipients: Number(row.total_recipients ?? 0),
+      createdAt: row.created_at,
+      scheduledAt: row.scheduled_at,
+    }))));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
 // ===== INIT =====
-app.post(`${API_PREFIX}/init`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/init`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
@@ -2632,24 +3600,43 @@ app.get(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
+    const { page, pageSize, from, to } = parseListPagination(c, BROADCAST_HISTORY_DEFAULT_PAGE_SIZE, BROADCAST_HISTORY_MAX_PAGE_SIZE);
+    const search = safeListSearch(c.req.query("search"));
+    const status = safeListSearch(c.req.query("status"));
+    const numberId = safeListSearch(c.req.query("numberId"));
+    const dateFrom = c.req.query("dateFrom");
+    const dateTo = c.req.query("dateTo");
 
-    // Self-heal stale aggregate rows. Recipient statuses are the source of truth,
-    // while wa_broadcasts stores a denormalized summary for the history screen.
-    const { data: activeBroadcasts } = await supa
+    let query = supa
       .from("wa_broadcasts")
-      .select("id")
-      .eq("org_id", user.org_id)
-      .in("status", ["queued", "scheduled", "sending"]);
+      .select("id, title, status, total_recipients, total_sent, total_delivered, total_read, total_failed, total_cancelled, created_at, scheduled_at, started_at, finished_at, mode, template_id, number_id, text_body, wa_numbers(phone_e164, label)", { count: "exact" })
+      .eq("org_id", user.org_id);
 
-    for (const activeBroadcast of activeBroadcasts ?? []) {
-      await recalculateBroadcastStats(supa, activeBroadcast.id);
+    if (search) {
+      const { data: matchingNumbers, error: matchingNumbersError } = await supa
+        .from("wa_numbers")
+        .select("id")
+        .eq("org_id", user.org_id)
+        .or(`phone_e164.ilike.%${search}%,label.ilike.%${search}%`);
+      if (matchingNumbersError) return c.json(jsonFail(matchingNumbersError.message), 500);
+      const numberIds = (matchingNumbers ?? []).map((row: any) => row.id);
+      const numberClause = numberIds.length ? `,number_id.in.(${numberIds.join(",")})` : "";
+      query = query.or(`title.ilike.%${search}%,text_body.ilike.%${search}%${numberClause}`);
+    }
+    if (status) query = query.eq("status", status);
+    if (numberId) query = query.eq("number_id", numberId);
+    const fromIso = dateFrom && Number.isFinite(Date.parse(dateFrom)) ? new Date(dateFrom).toISOString() : null;
+    const toIso = dateTo && Number.isFinite(Date.parse(dateTo)) ? new Date(dateTo).toISOString() : null;
+    if (fromIso || toIso) {
+      const scheduledParts = [fromIso ? `scheduled_at.gte.${fromIso}` : null, toIso ? `scheduled_at.lte.${toIso}` : null].filter(Boolean);
+      const createdParts = ["scheduled_at.is.null", fromIso ? `created_at.gte.${fromIso}` : null, toIso ? `created_at.lte.${toIso}` : null].filter(Boolean);
+      query = query.or(`and(${scheduledParts.join(",")}),and(${createdParts.join(",")})`);
     }
 
-    const { data, error } = await supa
-      .from("wa_broadcasts")
-      .select("*, wa_numbers(phone_e164, label)")
-      .eq("org_id", user.org_id)
-      .order("created_at", { ascending: false });
+    const { data, error, count } = await query
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(from, to);
 
     if (error) return c.json(jsonFail(error.message), 500);
 
@@ -2662,6 +3649,7 @@ app.get(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
       return {
         id: r.id,
         title: r.title,
+        message: r.text_body ?? "",
         status: r.status,
         totalRecipients: r.total_recipients ?? 0,
         totalSent: r.total_sent ?? 0,
@@ -2672,6 +3660,7 @@ app.get(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
         read: Number(r.total_read ?? 0),
         failed: Number(r.total_failed ?? 0),
         createdAt: r.created_at,
+        scheduledAt: r.scheduled_at,
         startedAt: r.started_at,
         finishedAt: r.finished_at,
         mode: r.mode ?? "text",
@@ -2681,13 +3670,28 @@ app.get(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
       };
     });
 
-    return c.json(jsonOk(mapped));
+    const { data: senderRows, error: senderError } = await supa
+      .from("wa_numbers")
+      .select("id, phone_e164, label")
+      .eq("org_id", user.org_id)
+      .order("created_at", { ascending: true });
+    if (senderError) return c.json(jsonFail(senderError.message), 500);
+
+    return c.json(jsonOk({
+      ...pagedPayload(mapped, count, page, pageSize),
+      senderOptions: (senderRows ?? []).map((row: any) => ({
+        id: row.id,
+        name: row.phone_e164 && row.label
+          ? `${normalizePhone(row.phone_e164)} — ${row.label}`
+          : normalizePhone(row.phone_e164) || row.label || "Nomor WA",
+      })),
+    }));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
 });
 
-app.post(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const body = await c.req.json();
@@ -2700,12 +3704,15 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
     const mode = String(body.mode ?? "text").trim();
     const templateId = body.templateId ?? null;
     const templateVariables = body.templateVariables ?? null;
-    const scheduledAt = body.scheduledAt ?? null;
+    const schedule = parseScheduledAt(body.scheduledAt ?? null);
+    const scheduledAt = schedule.value;
 
     if (!title) return c.json(jsonFail("title wajib"), 400);
     if (!numberId) return c.json(jsonFail("numberId wajib"), 400);
     if (recipients.length === 0) return c.json(jsonFail("recipients wajib"), 400);
+    if (!['text', 'template'].includes(mode)) return c.json(jsonFail("mode broadcast tidak valid"), 400);
     if (mode === "text" && !message) return c.json(jsonFail("message wajib"), 400);
+    if (schedule.error) return c.json(jsonFail(schedule.error), 400);
 
     const { data: numberRow, error: numberErr } = await supa
       .from("wa_numbers")
@@ -2717,13 +3724,155 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
     if (numberErr) return c.json(jsonFail(numberErr.message), 500);
     if (!numberRow) return c.json(jsonFail("Nomor tidak ditemukan"), 404);
 
-    const { data: broadcast, error: bErr } = await supa
+    let templateRow: any = null;
+    if (mode === "template") {
+      if (!templateId) return c.json(jsonFail("templateId wajib"), 400);
+      const { data: template, error: templateErr } = await supa
+        .from("wa_templates")
+        .select("*")
+        .eq("id", templateId)
+        .eq("org_id", user.org_id)
+        .maybeSingle();
+      if (templateErr) return c.json(jsonFail(templateErr.message), 500);
+      if (!template) return c.json(jsonFail("Template tidak ditemukan"), 404);
+      templateRow = template;
+    }
+
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const requestedContactIds = [...new Set(
+      recipients
+        .map((recipient: any) => String(recipient?.contactId ?? "").trim())
+        .filter((id: string) => uuidPattern.test(id)),
+    )];
+    const ownedContactIds = new Set<string>();
+    if (requestedContactIds.length > 0) {
+      const validationBatches = chunkValues(
+        requestedContactIds,
+        BROADCAST_CONTACT_VALIDATION_BATCH_SIZE,
+      );
+
+      for (
+        let waveStart = 0;
+        waveStart < validationBatches.length;
+        waveStart += BROADCAST_CONTACT_VALIDATION_CONCURRENCY
+      ) {
+        const wave = validationBatches.slice(
+          waveStart,
+          waveStart + BROADCAST_CONTACT_VALIDATION_CONCURRENCY,
+        );
+        const results = await Promise.all(wave.map((batch) =>
+          supa
+            .from("wa_contacts")
+            .select("id")
+            .eq("org_id", user.org_id)
+            .in("id", batch)
+        ));
+
+        for (const result of results) {
+          if (result.error) return c.json(jsonFail(result.error.message), 500);
+          for (const contact of result.data ?? []) ownedContactIds.add(String(contact.id));
+        }
+      }
+    }
+
+    const templateRequirements = getTemplateSendRequirements(templateRow);
+    const seenPhones = new Set<string>();
+    const preparedRecipients = recipients.map((rawRecipient: any, recipientIndex: number) => {
+      const recipient = rawRecipient && typeof rawRecipient === "object" ? rawRecipient : {};
+      const phoneValidation = validatePhoneDestination(recipient.phone);
+      const phone = phoneValidation.normalized;
+      const name = String(recipient.name ?? "").trim();
+      const rawVars = recipient.vars;
+      const vars = rawVars && typeof rawVars === "object" && !Array.isArray(rawVars) ? rawVars : {};
+      const indexedVariables = new Map<number, string>();
+      for (const [key, value] of Object.entries(vars)) {
+        const match = /^var(\d+)$/i.exec(key);
+        if (match) indexedVariables.set(Number(match[1]), String(value ?? "").trim());
+      }
+      const highestVariableIndex = Math.max(
+        templateRequirements.bodyVariableCount,
+        0,
+        ...indexedVariables.keys(),
+      );
+      const bodyVariables = Array.from(
+        { length: highestVariableIndex },
+        (_, index) => indexedVariables.get(index + 1) ?? "",
+      );
+      const mediaUrl = String(recipient.mediaUrl ?? "").trim();
+      const fileName = String(recipient.fileName ?? "").trim();
+      const contactId = String(recipient.contactId ?? "").trim();
+      const rejectionReasons: string[] = [];
+
+      if (!rawRecipient || typeof rawRecipient !== "object") rejectionReasons.push("Baris recipient malformed");
+      if (!phoneValidation.valid) rejectionReasons.push(String(phoneValidation.reason));
+      if (phone && seenPhones.has(phone)) rejectionReasons.push("Nomor duplikat dalam broadcast yang sama");
+      if (phone) seenPhones.add(phone);
+      if (contactId && (!uuidPattern.test(contactId) || !ownedContactIds.has(contactId))) {
+        rejectionReasons.push("Contact tidak ditemukan pada organisasi ini");
+      }
+      if (mode === "template" && (!rawVars || typeof rawVars !== "object" || Array.isArray(rawVars))) {
+        rejectionReasons.push("Data variable template malformed");
+      }
+      if (mode === "template") {
+        for (let index = 0; index < templateRequirements.bodyVariableCount; index++) {
+          if (!String(bodyVariables[index] ?? "").trim()) {
+            rejectionReasons.push(`Variable template {{${index + 1}}} kosong`);
+          }
+        }
+        if (templateRequirements.requiresMedia && !mediaUrl) {
+          rejectionReasons.push("Media header template wajib diisi");
+        }
+      }
+
+      const finalMessage = mode === "text"
+        ? renderTemplate(message, { name, ...vars })
+        : JSON.stringify({
+            kind: "template_payload",
+            vars,
+            bodyVariables,
+            mediaUrl,
+            fileName,
+            rowNumber: recipient.rowNumber ?? null,
+          });
+      if (!String(finalMessage).trim()) rejectionReasons.push("Payload recipient kosong");
+
+      return {
+        contact_id: contactId && ownedContactIds.has(contactId) ? contactId : null,
+        phone_e164: phone,
+        recipient_name: name || null,
+        message: finalMessage,
+        status: rejectionReasons.length === 0 ? "pending" : "failed",
+        error: rejectionReasons.length === 0
+          ? null
+          : `RECIPIENT_VALIDATION_FAILED: ${rejectionReasons.join("; ")}`,
+        sequence_no: recipientIndex + 1,
+      };
+    });
+    const validRecipientCount = preparedRecipients.filter((recipient: any) => recipient.status === "pending").length;
+    const rejectedRecipientCount = preparedRecipients.length - validRecipientCount;
+    if (validRecipientCount > BROADCAST_MAX_RECIPIENTS) {
+      const excess = validRecipientCount - BROADCAST_MAX_RECIPIENTS;
+      const formatCount = (value: number) => new Intl.NumberFormat("id-ID").format(value);
+      return c.json(
+        jsonFail(
+          `Maksimal ${formatCount(BROADCAST_MAX_RECIPIENTS)} penerima dalam satu broadcast. Saat ini terdapat ${formatCount(validRecipientCount)} penerima valid. Kurangi ${formatCount(excess)} penerima untuk melanjutkan.`,
+        ),
+        413,
+      );
+    }
+    const finalBroadcastStatus = validRecipientCount === 0 ? "failed" : "queued";
+
+    const { data: createdBroadcast, error: bErr } = await supa
       .from("wa_broadcasts")
       .insert({
         org_id: user.org_id,
         number_id: numberId,
         title,
-        status: "queued",
+        // The deployed broadcast_status enum has no `scheduled` value.
+        // scheduled_at is the authoritative due-time discriminator for queued work.
+        // Keep an immediate broadcast ineligible for scheduler/worker claims
+        // until every recipient chunk has been persisted successfully.
+        status: validRecipientCount === 0 ? "failed" : "paused",
         mode,
         template_id: templateId,
         template_variables: templateVariables,
@@ -2738,45 +3887,40 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
       .single();
 
     if (bErr) return c.json(jsonFail(bErr.message), 500);
+    let broadcast = createdBroadcast;
 
-    const recipientRows = recipients.map((r: any, recipientIndex: number) => {
-      const phone = normalizePhone(r.phone);
-      const name = String(r.name ?? "").trim();
-      const vars = typeof r.vars === "object" && r.vars ? r.vars : {};
-      const bodyVariables = Object.keys(vars)
-        .filter((key) => /^var\d+$/i.test(key))
-        .sort((a, b) => Number(a.replace(/\D/g, "")) - Number(b.replace(/\D/g, "")))
-        .map((key) => String(vars[key] ?? ""));
-
-      const finalMessage =
-        mode === "text"
-          ? renderTemplate(message, { name, ...vars })
-          : JSON.stringify({
-              kind: "template_payload",
-              vars,
-              bodyVariables,
-              mediaUrl: String(r.mediaUrl ?? "").trim(),
-              fileName: String(r.fileName ?? "").trim(),
-              rowNumber: r.rowNumber ?? null,
-            });
-
-      return {
+    const recipientRows = preparedRecipients.map((recipient: any) => ({
         org_id: user.org_id,
         broadcast_id: broadcast.id,
-        contact_id: r.contactId ?? null,
-        phone_e164: phone,
-        recipient_name: name || null,
-        message: finalMessage,
-        status: "pending",
-        sequence_no: recipientIndex + 1,
-      };
-    });
+        ...recipient,
+      }));
 
-    const { error: recErr } = await supa.from("wa_broadcast_recipients").insert(recipientRows);
-    if (recErr) return c.json(jsonFail(recErr.message), 500);
+    const recipientInsertBatches = chunkValues(
+      recipientRows,
+      BROADCAST_RECIPIENT_INSERT_BATCH_SIZE,
+    );
+    for (const recipientBatch of recipientInsertBatches) {
+      const { error: recErr } = await supa
+        .from("wa_broadcast_recipients")
+        .insert(recipientBatch);
+      if (recErr) return c.json(jsonFail(recErr.message), 500);
+    }
+
+    if (validRecipientCount > 0) {
+      const { data: queuedBroadcast, error: queueErr } = await supa
+        .from("wa_broadcasts")
+        .update({ status: finalBroadcastStatus })
+        .eq("id", broadcast.id)
+        .eq("org_id", user.org_id)
+        .eq("status", "paused")
+        .select("*")
+        .single();
+      if (queueErr) return c.json(jsonFail(queueErr.message), 500);
+      broadcast = queuedBroadcast;
+    }
 
     // Auto-trigger background worker if not scheduled
-    if (!scheduledAt) {
+    if (!scheduledAt && validRecipientCount > 0) {
       const baseUrl = new URL(c.req.url).origin;
       const sessionToken = c.get("sessionToken");
       runBroadcastWorkerInBackground(supa, user.org_id, user.id, broadcast.id, sessionToken, baseUrl, c);
@@ -2787,7 +3931,14 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
       actor_user_id: user.id,
       type: "broadcast_created",
       message: `Broadcast dibuat: ${title}`,
-      meta: { broadcast_id: broadcast.id, total_recipients: recipients.length, mode },
+      meta: {
+        broadcast_id: broadcast.id,
+        total_recipients: recipients.length,
+        valid_recipients: validRecipientCount,
+        rejected_recipients: rejectedRecipientCount,
+        scheduled_at: scheduledAt,
+        mode,
+      },
     });
 
     return c.json(
@@ -2796,6 +3947,8 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
         title: broadcast.title,
         status: broadcast.status,
         totalRecipients: recipients.length,
+        validRecipients: validRecipientCount,
+        rejectedRecipients: rejectedRecipientCount,
       }),
     );
   } catch (e) {
@@ -2808,15 +3961,27 @@ app.get(`${API_PREFIX}/broadcasts/:id/recipients`, requireAuth, async (c) => {
     const user = c.get("authUser");
     const id = c.req.param("id");
     const supa = sb();
+    const { page, pageSize, from, to } = parseListPagination(c, BROADCAST_RECIPIENT_DEFAULT_PAGE_SIZE, BROADCAST_RECIPIENT_MAX_PAGE_SIZE);
+    const search = safeListSearch(c.req.query("search"));
+    const status = safeListSearch(c.req.query("status"));
 
-    const { data: recipients, error: recErr } = await supa
+    let query = supa
       .from("wa_broadcast_recipients")
-      .select("*, wa_messages(status)")
+      .select("id, broadcast_id, recipient_name, phone_e164, status, sent_at, updated_at, created_at, error, sequence_no, wa_messages(status)", { count: "exact" })
       .eq("org_id", user.org_id)
-      .eq("broadcast_id", id)
+      .eq("broadcast_id", id);
+
+    if (search) query = query.or(`recipient_name.ilike.%${search}%,phone_e164.ilike.%${search}%`);
+    if (status) {
+      if (status === "sent") query = query.in("status", ["accepted", "processing", "sent", "delivered", "read"]);
+      else query = query.eq("status", status);
+    }
+
+    const { data: recipients, error: recErr, count } = await query
       .order("sequence_no", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: true })
-      .order("id", { ascending: true });
+      .order("id", { ascending: true })
+      .range(from, to);
 
     if (recErr) return c.json(jsonFail(recErr.message), 500);
 
@@ -2836,7 +4001,7 @@ app.get(`${API_PREFIX}/broadcasts/:id/recipients`, requireAuth, async (c) => {
       };
     });
 
-    return c.json(jsonOk(mapped));
+    return c.json(jsonOk(pagedPayload(mapped, count, page, pageSize)));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -2847,11 +4012,6 @@ app.get(`${API_PREFIX}/broadcasts/:id/stats`, requireAuth, async (c) => {
     const user = c.get("authUser");
     const id = c.req.param("id");
     const supa = sb();
-
-    // Keep the campaign summary in sync even if a previous Edge Function
-    // invocation ended before reaching its final reconciliation step.
-    await replayBufferedWebhookStatuses(supa, id, user.org_id);
-    await recalculateBroadcastStats(supa, id, user.org_id);
 
     const { data: b, error: bErr } = await supa
       .from("wa_broadcasts")
@@ -2906,74 +4066,236 @@ app.get(`${API_PREFIX}/broadcasts/:id/stats`, requireAuth, async (c) => {
   }
 });
 
-app.post(`${API_PREFIX}/broadcasts/:id/cancel`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/broadcasts/:id/cancel`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const id = c.req.param("id");
     const supa = sb();
 
-    const { data: b, error: bErr } = await supa
+    const { data: existing, error: existingErr } = await supa
       .from("wa_broadcasts")
-      .select("id, status, title")
+      .select("id, status, title, started_at")
       .eq("org_id", user.org_id)
       .eq("id", id)
       .maybeSingle();
 
-    if (bErr) return c.json(jsonFail(bErr.message), 500);
-    if (!b) return c.json(jsonFail("Broadcast tidak ditemukan"), 404);
+    if (existingErr) return c.json(jsonFail(existingErr.message), 500);
+    if (!existing) return c.json(jsonFail("Broadcast tidak ditemukan"), 404);
 
-    if (b.status === "completed" || b.status === "cancelled") {
-      return c.json(jsonFail("Broadcast sudah selesai atau dibatalkan"), 400);
+    if (existing.status === "cancelled") {
+      if (!existing.started_at) {
+        return c.json(jsonFail("Broadcast ini tidak dibatalkan dari proses pengiriman aktif"), 409);
+      }
+
+      const { error: retryRecErr } = await supa
+        .from("wa_broadcast_recipients")
+        .update({ status: "cancelled", updated_at: nowIso() })
+        .eq("org_id", user.org_id)
+        .eq("broadcast_id", existing.id)
+        .eq("status", "pending");
+      if (retryRecErr) return c.json(jsonFail(retryRecErr.message), 500);
+
+      await recalculateBroadcastStats(supa, existing.id, user.org_id);
+
+      return c.json(jsonOk({ success: true, duplicate: true, status: "cancelled" }));
     }
 
-    await recoverStaleProcessingRecipients(supa, b.id);
+    if (existing.status !== "sending" || !existing.started_at) {
+      return c.json(jsonFail("Hanya broadcast yang sedang berjalan yang dapat dihentikan melalui endpoint ini"), 409);
+    }
 
-    const { error: updErr } = await supa
+    const cancelledAt = nowIso();
+    const { data: cancelled, error: cancelErr } = await supa
       .from("wa_broadcasts")
       .update({
         status: "cancelled",
-        finished_at: nowIso(),
-        updated_at: nowIso(),
+        finished_at: cancelledAt,
+        updated_at: cancelledAt,
       })
-      .eq("id", b.id);
+      .eq("org_id", user.org_id)
+      .eq("id", existing.id)
+      .eq("status", "sending")
+      .not("started_at", "is", null)
+      .select("id, status, title")
+      .maybeSingle();
 
-    if (updErr) return c.json(jsonFail(updErr.message), 500);
+    if (cancelErr) return c.json(jsonFail(cancelErr.message), 500);
+    if (!cancelled) {
+      const { data: current, error: currentErr } = await supa
+        .from("wa_broadcasts")
+        .select("status, started_at")
+        .eq("org_id", user.org_id)
+        .eq("id", existing.id)
+        .maybeSingle();
 
-    // Only cancel recipients that have not been claimed. A recipient already
-    // processing is allowed to finish its in-flight Meta request, preventing a
-    // sent message from being incorrectly labelled as cancelled.
+      if (currentErr) return c.json(jsonFail(currentErr.message), 500);
+      if (current?.status === "cancelled" && current?.started_at) {
+        const { error: retryRecErr } = await supa
+          .from("wa_broadcast_recipients")
+          .update({ status: "cancelled", updated_at: nowIso() })
+          .eq("org_id", user.org_id)
+          .eq("broadcast_id", existing.id)
+          .eq("status", "pending");
+        if (retryRecErr) return c.json(jsonFail(retryRecErr.message), 500);
+        await recalculateBroadcastStats(supa, existing.id, user.org_id);
+        return c.json(jsonOk({ success: true, duplicate: true, status: "cancelled" }));
+      }
+      return c.json(jsonFail("Broadcast sudah tidak berada dalam state sending yang dapat dihentikan"), 409);
+    }
+
+    // pending is the cancellation boundary. A processing recipient already
+    // owns the in-flight send and must finish through the existing billing /
+    // Meta compensation lifecycle; terminal recipients are never rewritten.
     const { error: recErr } = await supa
       .from("wa_broadcast_recipients")
-      .update({
-        status: "cancelled",
-        updated_at: nowIso(),
-      })
-      .eq("broadcast_id", b.id)
+      .update({ status: "cancelled", updated_at: cancelledAt })
+      .eq("org_id", user.org_id)
+      .eq("broadcast_id", cancelled.id)
       .eq("status", "pending");
-
     if (recErr) return c.json(jsonFail(recErr.message), 500);
+
+    await recalculateBroadcastStats(supa, cancelled.id, user.org_id);
 
     await supa.from("app_activity").insert({
       org_id: user.org_id,
       actor_user_id: user.id,
-      type: "broadcast_cancelled",
-      message: `Membatalkan broadcast: ${b.title || id}`,
-      meta: { broadcast_id: b.id },
+      type: "broadcast_sending_cancelled",
+      message: `Menghentikan sisa pengiriman broadcast: ${cancelled.title || id}`,
+      meta: { broadcast_id: cancelled.id },
     });
 
-    return c.json(jsonOk({ success: true }));
+    return c.json(jsonOk({ success: true, duplicate: false, status: "cancelled" }));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
 });
 
-app.post(`${API_PREFIX}/broadcasts/delete`, requireAuth, async (c) => {
+// Cancel a scheduled broadcast before processing starts. This remains separate
+// from active cancellation so each lifecycle boundary is enforced atomically.
+app.post(`${API_PREFIX}/broadcasts/:id/cancel-schedule`, requireAuth, requireOrgAdmin, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const id = c.req.param("id");
+    const supa = sb();
+
+    const { data: existing, error: existingErr } = await supa
+      .from("wa_broadcasts")
+      .select("id, status, title, scheduled_at, started_at")
+      .eq("org_id", user.org_id)
+      .eq("id", id)
+      .maybeSingle();
+
+    if (existingErr) return c.json(jsonFail(existingErr.message), 500);
+    if (!existing) return c.json(jsonFail("Broadcast tidak ditemukan"), 404);
+
+    if (existing.status === "cancelled") {
+      if (!existing.scheduled_at || existing.started_at) {
+        return c.json(jsonFail("Broadcast ini bukan jadwal yang dibatalkan sebelum pemrosesan dimulai"), 409);
+      }
+
+      // A retry also reconciles pending recipients in case the first request
+      // committed the broadcast state but lost the following recipient update.
+      const { error: retryRecErr } = await supa
+        .from("wa_broadcast_recipients")
+        .update({
+          status: "cancelled",
+          updated_at: nowIso(),
+        })
+        .eq("org_id", user.org_id)
+        .eq("broadcast_id", existing.id)
+        .eq("status", "pending");
+      if (retryRecErr) return c.json(jsonFail(retryRecErr.message), 500);
+
+      await recalculateBroadcastStats(supa, existing.id, user.org_id);
+
+      return c.json(jsonOk({ success: true, duplicate: true, status: "cancelled" }));
+    }
+
+    if (!existing.scheduled_at || existing.status !== "queued" || existing.started_at) {
+      return c.json(jsonFail("Hanya broadcast terjadwal yang belum mulai diproses yang dapat dibatalkan"), 409);
+    }
+
+    const cancelledAt = nowIso();
+    const { data: cancelled, error: cancelErr } = await supa
+      .from("wa_broadcasts")
+      .update({
+        status: "cancelled",
+        finished_at: cancelledAt,
+        updated_at: cancelledAt,
+      })
+      .eq("org_id", user.org_id)
+      .eq("id", existing.id)
+      .eq("status", "queued")
+      .not("scheduled_at", "is", null)
+      .is("started_at", null)
+      .select("id, status, title")
+      .maybeSingle();
+
+    if (cancelErr) return c.json(jsonFail(cancelErr.message), 500);
+
+    // The scheduler may have won the atomic status race after the initial read.
+    // Re-read only to distinguish an idempotent retry from an already-started job.
+    if (!cancelled) {
+      const { data: current, error: currentErr } = await supa
+        .from("wa_broadcasts")
+        .select("status, started_at")
+        .eq("org_id", user.org_id)
+        .eq("id", existing.id)
+        .maybeSingle();
+
+      if (currentErr) return c.json(jsonFail(currentErr.message), 500);
+      if (current?.status === "cancelled" && !current?.started_at) {
+        const { error: retryRecErr } = await supa
+          .from("wa_broadcast_recipients")
+          .update({ status: "cancelled", updated_at: nowIso() })
+          .eq("org_id", user.org_id)
+          .eq("broadcast_id", existing.id)
+          .eq("status", "pending");
+        if (retryRecErr) return c.json(jsonFail(retryRecErr.message), 500);
+        await recalculateBroadcastStats(supa, existing.id, user.org_id);
+        return c.json(jsonOk({ success: true, duplicate: true, status: "cancelled" }));
+      }
+
+      return c.json(jsonFail("Broadcast sudah mulai diproses dan tidak dapat dibatalkan"), 409);
+    }
+
+    const { error: recErr } = await supa
+      .from("wa_broadcast_recipients")
+      .update({
+        status: "cancelled",
+        updated_at: cancelledAt,
+      })
+      .eq("org_id", user.org_id)
+      .eq("broadcast_id", cancelled.id)
+      .eq("status", "pending");
+
+    if (recErr) return c.json(jsonFail(recErr.message), 500);
+
+    await recalculateBroadcastStats(supa, cancelled.id, user.org_id);
+
+    await supa.from("app_activity").insert({
+      org_id: user.org_id,
+      actor_user_id: user.id,
+      type: "broadcast_schedule_cancelled",
+      message: `Membatalkan jadwal broadcast: ${cancelled.title || id}`,
+      meta: { broadcast_id: cancelled.id },
+    });
+
+    return c.json(jsonOk({ success: true, duplicate: false, status: "cancelled" }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/broadcasts/delete`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const body = await c.req.json();
     const supa = sb();
 
-    const ids = Array.isArray(body.ids) ? body.ids : [];
+    const ids = Array.isArray(body.ids)
+      ? Array.from(new Set(body.ids.map((value: unknown) => String(value || "").trim()).filter(Boolean)))
+      : [];
     const deleteAll = body.all === true;
 
     if (ids.length === 0 && !deleteAll) {
@@ -2981,27 +4303,27 @@ app.post(`${API_PREFIX}/broadcasts/delete`, requireAuth, async (c) => {
     }
 
     if (deleteAll) {
-      const { error: recErr } = await supa
-        .from("wa_broadcast_recipients")
-        .delete()
-        .eq("org_id", user.org_id);
-      
-      if (recErr) return c.json(jsonFail(recErr.message), 500);
-
-      const { error: bErr } = await supa
-        .from("wa_broadcasts")
-        .delete()
-        .eq("org_id", user.org_id);
-
-      if (bErr) return c.json(jsonFail(bErr.message), 500);
-
-      await supa.from("app_activity").insert({
-        org_id: user.org_id,
-        actor_user_id: user.id,
-        type: "broadcasts_deleted_all",
-        message: "Menghapus semua riwayat broadcast",
-      });
+      return c.json(jsonFail("Hapus semua dinonaktifkan agar broadcast aktif tidak terhapus"), 409);
     } else {
+      const { data: selectedBroadcasts, error: selectedErr } = await supa
+        .from("wa_broadcasts")
+        .select("id, status")
+        .eq("org_id", user.org_id)
+        .in("id", ids);
+      if (selectedErr) return c.json(jsonFail(selectedErr.message), 500);
+
+      if ((selectedBroadcasts ?? []).length !== ids.length) {
+        return c.json(jsonFail("Satu atau lebih broadcast tidak ditemukan"), 404);
+      }
+
+      const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
+      const containsActive = (selectedBroadcasts ?? []).some(
+        (broadcast: any) => !terminalStatuses.has(String(broadcast.status || "").toLowerCase()),
+      );
+      if (containsActive) {
+        return c.json(jsonFail("Broadcast Pending, Sending, atau Dijeda harus dibatalkan/diselesaikan sebelum dihapus"), 409);
+      }
+
       const { error: recErr } = await supa
         .from("wa_broadcast_recipients")
         .delete()
@@ -3063,10 +4385,45 @@ async function recoverStaleProcessingRecipients(supa: any, broadcastId: string) 
     .is("provider_message_id", null);
 }
 
+async function recoverCancelledBroadcastProcessingRecipients(supa: any) {
+  const staleBefore = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+  const { data: staleRows, error: staleErr } = await supa
+    .from("wa_broadcast_recipients")
+    .select("broadcast_id")
+    .eq("status", "processing")
+    .lt("updated_at", staleBefore)
+    .order("updated_at", { ascending: true })
+    .limit(100);
+
+  if (staleErr) {
+    console.warn("[SCHEDULER] Failed to inspect stale cancelled recipients:", staleErr.message);
+    return;
+  }
+
+  const broadcastIds = Array.from(new Set((staleRows ?? []).map((row: any) => String(row.broadcast_id))));
+  if (broadcastIds.length === 0) return;
+
+  const { data: cancelledBroadcasts, error: cancelledErr } = await supa
+    .from("wa_broadcasts")
+    .select("id")
+    .in("id", broadcastIds)
+    .eq("status", "cancelled");
+
+  if (cancelledErr) {
+    console.warn("[SCHEDULER] Failed to inspect cancelled broadcasts:", cancelledErr.message);
+    return;
+  }
+
+  for (const broadcast of cancelledBroadcasts ?? []) {
+    await recoverStaleProcessingRecipients(supa, broadcast.id);
+    await recalculateBroadcastStats(supa, broadcast.id);
+  }
+}
+
 async function runBroadcastWorker(
   supa: any,
   orgId: string,
-  actorUserId: string,
+  actorUserId: string | null,
   broadcastId: string,
   sessionToken?: string,
   baseUrl?: string,
@@ -3094,19 +4451,44 @@ async function runBroadcastWorker(
       return;
     }
 
+    if (broadcast.org_id !== orgId) {
+      console.error(`[WORKER] Organization mismatch for broadcast ${broadcastId}`);
+      return;
+    }
+
+    const broadcastStatus = String(broadcast.status || "").toLowerCase();
+    const scheduledTimestamp = broadcast.scheduled_at ? new Date(broadcast.scheduled_at).getTime() : null;
+    if (scheduledTimestamp !== null && scheduledTimestamp > Date.now()) {
+      console.log(`[WORKER] Broadcast ${broadcastId} is scheduled for the future. Skipping.`);
+      return;
+    }
+    if (!["queued", "sending"].includes(broadcastStatus)) {
+      console.log(`[WORKER] Broadcast ${broadcastId} is ${broadcastStatus || "unknown"}. Skipping.`);
+      return;
+    }
+
     await recoverStaleProcessingRecipients(supa, broadcastId);
 
-    if (broadcast.status === "queued") {
-      await supa
+    if (broadcastStatus === "queued") {
+      const { data: startedBroadcast, error: startErr } = await supa
         .from("wa_broadcasts")
         .update({ status: "sending", started_at: broadcast.started_at ?? nowIso(), updated_at: nowIso() })
-        .eq("id", broadcastId);
+        .eq("id", broadcastId)
+        .eq("org_id", orgId)
+        .eq("status", "queued")
+        .select("id")
+        .maybeSingle();
+      if (startErr || !startedBroadcast) {
+        console.log(`[WORKER] Broadcast ${broadcastId} changed state before execution. Skipping.`);
+        return;
+      }
     }
 
     const { data: numberRow, error: numberErr } = await supa
       .from("wa_numbers")
       .select("*")
       .eq("id", broadcast.number_id)
+      .eq("org_id", orgId)
       .maybeSingle();
 
     if (numberErr || !numberRow || !numberRow.access_token || !numberRow.phone_number_id) {
@@ -3169,6 +4551,58 @@ async function runBroadcastWorker(
       broadcastTemplate = template;
     }
 
+    // Preflight is an atomic, service-role-only database operation. A completed
+    // campaign takes the application fast path and never asks PostgreSQL to
+    // scan recipient validation data again.
+    if (broadcast.recipient_preflight_status !== "completed") {
+      const requirements = getTemplateSendRequirements(broadcastTemplate);
+      const { data: preflightRows, error: preflightErr } = await supa.rpc(
+        "preflight_wa_broadcast_recipients",
+        {
+          p_broadcast_id: broadcastId,
+          p_org_id: orgId,
+          p_body_variable_count: requirements.bodyVariableCount,
+          p_requires_media: requirements.requiresMedia,
+        },
+      );
+
+      if (preflightErr) {
+        console.error(`[WORKER] Recipient preflight failed for ${broadcastId}:`, preflightErr);
+        return;
+      }
+
+      const preflightResult = Array.isArray(preflightRows) ? preflightRows[0] : preflightRows;
+      if (preflightResult?.preflight_status !== "completed") {
+        console.error(`[WORKER] Recipient preflight did not complete for ${broadcastId}`);
+        return;
+      }
+    }
+
+    // Cancellation can serialize behind the RPC's broadcast-row lock. Always
+    // re-read authoritative lifecycle and durable preflight state before the
+    // first recipient claim, billing debit, or Meta request.
+    const { data: postPreflightBroadcast, error: postPreflightErr } = await supa
+      .from("wa_broadcasts")
+      .select("status, recipient_preflight_status")
+      .eq("id", broadcastId)
+      .eq("org_id", orgId)
+      .maybeSingle();
+
+    if (postPreflightErr || !postPreflightBroadcast) {
+      console.error(`[WORKER] Could not refresh broadcast ${broadcastId} after preflight:`, postPreflightErr);
+      return;
+    }
+
+    if (
+      postPreflightBroadcast.status !== "sending" ||
+      postPreflightBroadcast.recipient_preflight_status !== "completed"
+    ) {
+      console.log(
+        `[WORKER] Broadcast ${broadcastId} is ${postPreflightBroadcast.status} after preflight. Skipping sends.`,
+      );
+      return;
+    }
+
     let processedThisRun = 0;
     const MAX_PROCESS_PER_RUN = 50;
     const workerStartTime = Date.now();
@@ -3189,7 +4623,7 @@ async function runBroadcastWorker(
           .maybeSingle(),
       ]);
 
-      if (currentBroadcast?.status === "cancelled" || currentBroadcast?.status === "paused") {
+      if (currentBroadcast?.status !== "sending") {
         console.log(`[WORKER] Broadcast ${broadcastId} is ${currentBroadcast?.status}. Stopping worker.`);
         break;
       }
@@ -3238,7 +4672,7 @@ async function runBroadcastWorker(
         .eq("id", broadcastId)
         .maybeSingle();
 
-      if (statusAfterWait?.status === "cancelled" || statusAfterWait?.status === "paused") {
+      if (statusAfterWait?.status !== "sending") {
         break;
       }
 
@@ -3275,7 +4709,14 @@ async function runBroadcastWorker(
         continue;
       }
 
-      const tokenResult = await consumeOneToken(orgId);
+      const tokenResult = await consumeBroadcastToken({
+        orgId,
+        recipientId: rec.id,
+        broadcastId,
+        broadcastTitle: broadcast.title,
+        phone: rec.phone_e164,
+        actorUserId,
+      });
       if (!tokenResult.success) {
         console.warn(`[WORKER] Out of tokens for org ${orgId}. Pausing broadcast ${broadcastId}.`);
         await supa
@@ -3413,17 +4854,6 @@ async function runBroadcastWorker(
             .eq("id", rec.id);
         }
 
-        await supa.from("billing_transactions").insert({
-          org_id: orgId,
-          type: "usage",
-          tokens_delta: -1,
-          amount_idr: 1500,
-          description: `Pemakaian token broadcast: ${broadcast.title} -> ${rec.phone_e164}`,
-          ref_type: "broadcast_recipient",
-          ref_id: rec.id,
-          created_by: actorUserId,
-        });
-
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[WORKER] Recipient ${rec.phone_e164} send error:`, message);
@@ -3437,16 +4867,6 @@ async function runBroadcastWorker(
           })
           .eq("id", rec.id);
 
-        await supa.from("billing_transactions").insert({
-          org_id: orgId,
-          type: "usage",
-          tokens_delta: -1,
-          amount_idr: 1500,
-          description: `Pemakaian token broadcast: ${broadcast.title} -> ${rec.phone_e164} (gagal)`,
-          ref_type: "broadcast_recipient",
-          ref_id: rec.id,
-          created_by: actorUserId,
-        });
       }
 
       if (sendAttemptStartedAt !== null) {
@@ -3529,7 +4949,7 @@ async function runBroadcastWorker(
 function runBroadcastWorkerInBackground(
   supa: any,
   orgId: string,
-  actorUserId: string,
+  actorUserId: string | null,
   broadcastId: string,
   sessionToken?: string,
   baseUrl?: string,
@@ -3555,7 +4975,58 @@ function runBroadcastWorkerInBackground(
   }
 }
 
-app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, async (c) => {
+app.post(`${API_PREFIX}/jobs/process-due-broadcasts`, async (c) => {
+  try {
+    const configuredSecret = String(Deno.env.get("BROADCAST_SCHEDULER_SECRET") || "").trim();
+    const suppliedSecret = String(c.req.header(SCHEDULER_HEADER) || "").trim();
+    if (!configuredSecret) {
+      return c.json(jsonFail("Scheduler broadcast belum dikonfigurasi"), 503);
+    }
+    if (!suppliedSecret || !constantTimeEqual(suppliedSecret, configuredSecret)) {
+      return c.json(jsonFail("Scheduler secret tidak valid"), 403);
+    }
+
+    const requestedLimit = Number(c.req.query("limit") ?? 5);
+    const claimLimit = Math.max(1, Math.min(Number.isInteger(requestedLimit) ? requestedLimit : 5, 25));
+    const claimToken = crypto.randomUUID();
+    const supa = sb();
+    await recoverCancelledBroadcastProcessingRecipients(supa);
+    const { data: claimed, error: claimErr } = await supa.rpc("claim_due_wa_broadcasts", {
+      p_claim_token: claimToken,
+      p_limit: claimLimit,
+      p_lease_seconds: 180,
+    });
+    if (claimErr) return c.json(jsonFail(claimErr.message), 500);
+
+    const claimedBroadcasts = Array.isArray(claimed) ? claimed : [];
+    for (const broadcast of claimedBroadcasts) {
+      runBroadcastWorkerInBackground(
+        supa,
+        String(broadcast.org_id),
+        broadcast.created_by ? String(broadcast.created_by) : null,
+        String(broadcast.id),
+        undefined,
+        undefined,
+        c,
+      );
+    }
+
+    return c.json(jsonOk({
+      claimToken,
+      claimedCount: claimedBroadcasts.length,
+      broadcasts: claimedBroadcasts.map((broadcast: any) => ({
+        id: broadcast.id,
+        orgId: broadcast.org_id,
+        scheduledAt: broadcast.scheduled_at,
+        recoveredStaleClaim: Boolean(broadcast.recovered_stale_claim),
+      })),
+    }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/jobs/process-broadcasts`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
@@ -3651,7 +5122,7 @@ async function recalculateBroadcastStats(supa: any, broadcastId: string, expecte
         : "completed";
     } else if (["paused", "failed", "cancelled"].includes(currentStatus)) {
       nextStatus = currentStatus;
-    } else if (scheduledForFuture && ["queued", "scheduled"].includes(currentStatus)) {
+    } else if (scheduledForFuture && currentStatus === "queued") {
       nextStatus = currentStatus;
     } else {
       nextStatus = "sending";
@@ -3778,53 +5249,145 @@ async function applyWebhookStatusFallback(
   };
 }
 
-async function replayBufferedWebhookStatuses(
+async function processAutoReplyForInbound(
   supa: any,
-  broadcastId: string,
-  orgId: string,
+  numberRow: any,
+  contact: any,
+  from: string,
+  inboundMessageId: string,
 ) {
-  const { data: recipients } = await supa
-    .from("wa_broadcast_recipients")
-    .select("provider_message_id")
-    .eq("broadcast_id", broadcastId)
-    .eq("org_id", orgId)
-    .not("provider_message_id", "is", null)
-    .limit(2000);
+  let autoReplyEnabled = true;
+  let replyText =
+    "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.";
 
-  const messageIds = [...new Set(
-    (recipients ?? [])
-      .map((recipient: any) => String(recipient.provider_message_id || ""))
-      .filter(Boolean),
-  )];
+  const { data: numKeyRow } = await supa
+    .from("key_info")
+    .select("value")
+    .eq("key", `autoreply_num_${numberRow.id}`)
+    .maybeSingle();
 
-  for (let index = 0; index < messageIds.length; index += 100) {
-    const batch = messageIds.slice(index, index + 100);
-    const keys = batch.map((messageId) => `webhook_status:${messageId}`);
-    const { data: bufferedRows } = await supa
-      .from("key_info")
-      .select("key, value")
-      .in("key", keys);
+  if (numKeyRow?.value) {
+    autoReplyEnabled = numKeyRow.value.autoReplyEnabled !== false;
+    replyText = numKeyRow.value.autoReplyMessage || replyText;
+  } else {
+    const { data: orgData } = await supa
+      .from("orgs")
+      .select("auto_reply_enabled, auto_reply_message")
+      .eq("id", numberRow.org_id)
+      .maybeSingle();
 
-    for (const bufferedRow of bufferedRows ?? []) {
-      const metaMessageId = String(bufferedRow.key || "").replace(/^webhook_status:/, "");
-      const buffered = bufferedRow.value || {};
-      if (!metaMessageId || !buffered.status) continue;
-
-      const fallbackResult = await applyWebhookStatusFallback(
-        supa,
-        metaMessageId,
-        {
-          status: buffered.status,
-          error: buffered.error ?? null,
-          meta_status_payload: buffered.meta_status_payload ?? buffered,
-        },
-        buffered.timestamp || nowIso(),
-      );
-
-      if (fallbackResult.linkedFound) {
-        await supa.from("key_info").delete().eq("key", bufferedRow.key);
-      }
+    if (orgData) {
+      autoReplyEnabled = orgData.auto_reply_enabled !== false;
+      replyText = orgData.auto_reply_message || replyText;
     }
+  }
+
+  if (!autoReplyEnabled || !numberRow.phone_number_id || !numberRow.access_token) return;
+
+  const claimDate = new Date().toISOString().slice(0, 10);
+  const { data: claimed, error: claimErr } = await supa.rpc("claim_meta_auto_reply", {
+    p_number_id: numberRow.id,
+    p_contact_id: contact.id,
+    p_claim_date: claimDate,
+    p_inbound_message_id: inboundMessageId,
+  });
+
+  if (claimErr) throw claimErr;
+  if (!claimed) {
+    console.log("Auto-reply skipped: daily claim already exists.", {
+      numberId: numberRow.id,
+      contactId: contact.id,
+      inboundMessageId,
+    });
+    return;
+  }
+
+  // Preserve the existing one-auto-reply-per-day policy for rows sent before
+  // the claim table existed.
+  const startOfClaimDay = new Date(`${claimDate}T00:00:00.000Z`).toISOString();
+  const { data: existingAutoReply } = await supa
+    .from("wa_messages")
+    .select("id, payload")
+    .eq("number_id", numberRow.id)
+    .eq("contact_id", contact.id)
+    .eq("direction", "out")
+    .gte("sent_at", startOfClaimDay);
+
+  const alreadyReplied = existingAutoReply?.some(
+    (message: any) => message.payload?.source === "auto_reply",
+  );
+  if (alreadyReplied) {
+    await supa
+      .from("meta_auto_reply_claims")
+      .update({ status: "skipped_existing", updated_at: nowIso() })
+      .eq("number_id", numberRow.id)
+      .eq("contact_id", contact.id)
+      .eq("claim_date", claimDate);
+    return;
+  }
+
+  try {
+    await sleep(2000);
+    const metaReplyRes = await sendMetaTextMessage({
+      phoneNumberId: numberRow.phone_number_id,
+      accessToken: numberRow.access_token,
+      to: from,
+      text: replyText,
+    });
+    const replyMetaId = metaReplyRes?.messages?.[0]?.id ?? null;
+    if (!replyMetaId) throw new Error("Meta tidak mengembalikan message_id untuk auto-reply");
+
+    // Mark the claim first after Meta accepts the send. A later local insert
+    // failure must not make a webhook replay send the reply again.
+    const { error: claimUpdateErr } = await supa
+      .from("meta_auto_reply_claims")
+      .update({
+        status: "sent",
+        reply_meta_message_id: replyMetaId,
+        updated_at: nowIso(),
+      })
+      .eq("number_id", numberRow.id)
+      .eq("contact_id", contact.id)
+      .eq("claim_date", claimDate);
+
+    if (claimUpdateErr) {
+      console.error("Auto-reply accepted but claim update failed; reconciliation required.", {
+        numberId: numberRow.id,
+        contactId: contact.id,
+        replyMetaId,
+      });
+    }
+
+    const { error: replyInsertErr } = await supa.from("wa_messages").insert({
+      org_id: numberRow.org_id,
+      number_id: numberRow.id,
+      contact_id: contact.id,
+      direction: "out",
+      status: "sent",
+      meta_message_id: replyMetaId,
+      meta_status_payload: metaReplyRes,
+      message_type: "text",
+      text_body: replyText,
+      payload: { source: "auto_reply", inbound_message_id: inboundMessageId },
+      sent_at: nowIso(),
+    });
+
+    if (replyInsertErr && replyInsertErr.code !== "23505") {
+      console.error("Auto-reply accepted but message persistence failed; reconciliation required.", {
+        numberId: numberRow.id,
+        contactId: contact.id,
+        replyMetaId,
+        errorCode: replyInsertErr.code || "unknown",
+      });
+    }
+  } catch (error) {
+    await supa
+      .from("meta_auto_reply_claims")
+      .update({ status: "failed", updated_at: nowIso() })
+      .eq("number_id", numberRow.id)
+      .eq("contact_id", contact.id)
+      .eq("claim_date", claimDate);
+    throw error;
   }
 }
 
@@ -3851,18 +5414,40 @@ const handleWebhookGet = async (c: any) => {
 
 const handleWebhookPost = async (c: any) => {
   try {
-    const payload = await c.req.json();
-    console.log("Webhook POST payload received:", JSON.stringify(payload));
-    const supa = sb();
+    // Meta signs the exact request bytes. Read and verify the raw body before
+    // JSON parsing and before creating a database client (fail closed).
+    const rawBodyBytes = new Uint8Array(await c.req.arrayBuffer());
+    const rawBody = new TextDecoder().decode(rawBodyBytes);
+    const signature = c.req.header("x-hub-signature-256") || "";
+    const appSecret = Deno.env.get("META_APP_SECRET") || "";
+    const verification = await verifyMetaWebhookSignature(rawBodyBytes, signature, appSecret);
 
-    // Log payload to app_activity
-    await supa.from("app_activity").insert({
-      org_id: null,
-      actor_user_id: null,
-      type: "webhook_payload",
-      message: `Webhook POST received`,
-      meta: { payload },
+    if (!verification.ok) {
+      if (verification.reason === "missing_secret") {
+        console.error("Meta webhook rejected: META_APP_SECRET is not configured.");
+        return c.json(jsonFail("Meta webhook verification is not configured"), 503);
+      }
+
+      console.warn(`Meta webhook rejected: ${verification.reason}.`);
+      return c.json(
+        jsonFail(verification.reason === "missing_signature" ? "Missing webhook signature" : "Invalid webhook signature"),
+        verification.reason === "missing_signature" ? 401 : 403,
+      );
+    }
+
+    let payload: any;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      return c.json(jsonFail("Invalid webhook JSON"), 400);
+    }
+
+    const correlationId = String(payload?.entry?.[0]?.id || crypto.randomUUID());
+    console.log("Authenticated Meta webhook received:", {
+      correlationId,
+      entryCount: Array.isArray(payload?.entry) ? payload.entry.length : 0,
     });
+    const supa = sb();
 
     const entries = Array.isArray(payload?.entry) ? payload.entry : [];
 
@@ -3916,23 +5501,22 @@ const handleWebhookPost = async (c: any) => {
                 actor_user_id: null,
                 type: "webhook_error",
                 message: `Error querying wa_numbers: ${numErr.message}`,
-                meta: { phoneNumberId, error: numErr },
+                meta: { phoneNumberId, errorCode: numErr.code || "unknown" },
               });
             }
             numberRow = data;
             
             if (!numberRow) {
-              const { data: allNums } = await supa.from("wa_numbers").select("phone_number_id, phone_e164");
-              console.warn("WABA number NOT found in DB. Received:", phoneNumberId, ". Configured in DB:", allNums);
+              console.warn("WABA number not found for authenticated webhook.", { phoneNumberId });
               await supa.from("app_activity").insert({
                 org_id: null,
                 actor_user_id: null,
                 type: "webhook_warn",
                 message: `WABA number not found in DB for ID: ${phoneNumberId}`,
-                meta: { phoneNumberId, configuredNumbers: allNums },
+                meta: { phoneNumberId },
               });
             } else {
-              console.log("Matched WABA number in DB:", numberRow.phone_e164);
+              console.log("Authenticated webhook matched WABA number.", { numberId: numberRow.id });
             }
           } else {
             console.warn("Missing phone_number_id in webhook payload metadata.");
@@ -3941,7 +5525,7 @@ const handleWebhookPost = async (c: any) => {
               actor_user_id: null,
               type: "webhook_warn",
               message: "Missing phone_number_id in webhook payload metadata.",
-              meta: { value },
+              meta: { correlationId },
             });
           }
 
@@ -4066,13 +5650,16 @@ const handleWebhookPost = async (c: any) => {
           for (const incoming of messages) {
             const from = normalizePhone(incoming?.from ?? "");
             if (!from || !numberRow) {
-              console.warn("Skipping message: from =", from, ", numberRow found =", !!numberRow);
+              console.warn("Inbound message skipped because routing data is incomplete.", {
+                hasSender: Boolean(from),
+                numberMatched: Boolean(numberRow),
+              });
               await supa.from("app_activity").insert({
                 org_id: numberRow?.org_id || null,
                 actor_user_id: null,
                 type: "webhook_warn",
-                message: `Skipping message: from=${from}, numberRow found=${!!numberRow}`,
-                meta: { incoming },
+                message: "Inbound message skipped because routing data is incomplete",
+                meta: { inboundMessageId: incoming?.id ?? null, numberId: numberRow?.id ?? null },
               });
               continue;
             }
@@ -4091,7 +5678,7 @@ const handleWebhookPost = async (c: any) => {
               .maybeSingle();
 
             if (!contact) {
-              console.log("Creating new contact in DB for:", from, "with name:", displayName);
+              console.log("Creating contact for authenticated inbound message.", { numberId: numberRow.id });
               const inserted = await supa
                 .from("wa_contacts")
                 .insert({
@@ -4109,20 +5696,32 @@ const handleWebhookPost = async (c: any) => {
                   org_id: numberRow.org_id,
                   actor_user_id: null,
                   type: "webhook_error",
-                  message: `Error creating contact for ${from}: ${inserted.error.message}`,
-                  meta: { from, displayName, error: inserted.error },
+                  message: `Error creating contact for inbound message: ${inserted.error.message}`,
+                  meta: { numberId: numberRow.id, errorCode: inserted.error.code || "unknown" },
                 });
                 throw inserted.error;
               }
               contact = inserted.data;
             } else {
-              console.log("Found existing contact in DB for:", from);
+              console.log("Matched contact for authenticated inbound message.", {
+                numberId: numberRow.id,
+                contactId: contact.id,
+              });
               await supa
                 .from("wa_contacts")
                 .update({
                   last_message_at: nowIso(),
                 })
                 .eq("id", contact.id);
+            }
+
+            const inboundMessageId = String(incoming?.id ?? "").trim();
+            if (!inboundMessageId) {
+              console.warn("Inbound Meta message skipped: provider message ID is missing.", {
+                numberId: numberRow.id,
+                contactId: contact.id,
+              });
+              continue;
             }
 
             const messageType = String(incoming?.type ?? "text");
@@ -4133,139 +5732,66 @@ const handleWebhookPost = async (c: any) => {
               incoming?.interactive?.list_reply?.title ??
               `[${messageType}]`;
 
-            console.log("Inserting incoming message into wa_messages:", textBody, "type:", messageType);
-            const { error: insertErr } = await supa.from("wa_messages").insert({
-              org_id: numberRow.org_id,
-              number_id: numberRow.id,
-              contact_id: contact.id,
-              direction: "in",
-              status: "delivered",
-              meta_message_id: incoming?.id ?? null,
-              meta_status_payload: incoming,
-              message_type: messageType,
-              text_body: textBody,
-              payload: incoming,
-              delivered_at: nowIso(),
-            });
+            const { data: insertedMessage, error: insertErr } = await supa
+              .from("wa_messages")
+              .insert({
+                org_id: numberRow.org_id,
+                number_id: numberRow.id,
+                contact_id: contact.id,
+                direction: "in",
+                status: "delivered",
+                meta_message_id: inboundMessageId,
+                meta_status_payload: incoming,
+                message_type: messageType,
+                text_body: textBody,
+                payload: incoming,
+                delivered_at: nowIso(),
+              })
+              .select("id")
+              .single();
 
             if (insertErr) {
-              console.error("Error inserting incoming message into wa_messages:", insertErr.message);
-              await supa.from("app_activity").insert({
-                org_id: numberRow.org_id,
-                actor_user_id: null,
-                type: "webhook_error",
-                message: `Error inserting incoming message from ${from}: ${insertErr.message}`,
-                meta: { from, textBody, error: insertErr },
+              if (insertErr.code === "23505") {
+                console.log("Duplicate inbound Meta message ignored.", {
+                  inboundMessageId,
+                  numberId: numberRow.id,
+                });
+                continue;
+              }
+
+              console.error("Inbound Meta message persistence failed.", {
+                inboundMessageId,
+                numberId: numberRow.id,
+                errorCode: insertErr.code || "unknown",
               });
             } else {
-              console.log("Incoming message inserted successfully!");
+              console.log("Inbound Meta message persisted.", {
+                inboundMessageId,
+                localMessageId: insertedMessage?.id,
+                numberId: numberRow.id,
+              });
               await supa.from("app_activity").insert({
                 org_id: numberRow.org_id,
                 actor_user_id: null,
                 type: "webhook_success",
-                message: `Incoming message processed successfully from ${from}`,
-                meta: { from, textBody, messageType },
+                message: "Inbound Meta message processed successfully",
+                meta: { inboundMessageId, localMessageId: insertedMessage?.id, messageType },
               });
 
-              // Check and trigger Auto-Reply (Per-Number with Org fallback)
               try {
-                let autoReplyEnabled = true;
-                let replyText =
-                  "Nomor ini hanya digunakan untuk pengiriman broadcast. Apabila Anda membutuhkan informasi lebih lanjut, silakan hubungi Customer Service kami.";
-
-                // Check per-number setting in key_info
-                if (numberRow?.id) {
-                  const { data: numKeyRow } = await supa
-                    .from("key_info")
-                    .select("value")
-                    .eq("key", `autoreply_num_${numberRow.id}`)
-                    .maybeSingle();
-
-                  if (numKeyRow?.value) {
-                    autoReplyEnabled = numKeyRow.value.autoReplyEnabled !== false;
-                    replyText = numKeyRow.value.autoReplyMessage || replyText;
-                  } else {
-                    const { data: orgData } = await supa
-                      .from("orgs")
-                      .select("auto_reply_enabled, auto_reply_message")
-                      .eq("id", numberRow.org_id)
-                      .maybeSingle();
-
-                    if (orgData) {
-                      autoReplyEnabled = orgData.auto_reply_enabled !== false;
-                      replyText = orgData.auto_reply_message || replyText;
-                    }
-                  }
-                }
-
-                if (autoReplyEnabled) {
-                  // Check if auto-reply was ALREADY sent to this contact today
-                  const startOfToday = new Date();
-                  startOfToday.setHours(0, 0, 0, 0);
-
-                  const { data: existingAutoReply } = await supa
-                    .from("wa_messages")
-                    .select("id, payload")
-                    .eq("number_id", numberRow.id)
-                    .eq("contact_id", contact.id)
-                    .eq("direction", "out")
-                    .gte("sent_at", startOfToday.toISOString());
-
-                  const alreadyRepliedToday = existingAutoReply?.some(
-                    (msg: any) =>
-                      msg.payload &&
-                      (msg.payload.source === "auto_reply" || msg.payload?.source === "auto_reply")
-                  );
-
-                  if (alreadyRepliedToday) {
-                    console.log(`Auto-reply skipped for ${from}: already sent auto-reply today.`);
-                  } else {
-                    // Add 2-second delay after client chat
-                    await sleep(2000);
-
-                    // Re-check after 2-second sleep to prevent race conditions
-                    const { data: recheckAutoReply } = await supa
-                      .from("wa_messages")
-                      .select("id, payload")
-                      .eq("number_id", numberRow.id)
-                      .eq("contact_id", contact.id)
-                      .eq("direction", "out")
-                      .gte("sent_at", startOfToday.toISOString());
-
-                    const stillAlreadyReplied = recheckAutoReply?.some(
-                      (msg: any) =>
-                        msg.payload &&
-                        (msg.payload.source === "auto_reply" || msg.payload?.source === "auto_reply")
-                    );
-
-                    if (!stillAlreadyReplied && numberRow.phone_number_id && numberRow.access_token) {
-                      const metaReplyRes = await sendMetaTextMessage({
-                        phoneNumberId: numberRow.phone_number_id,
-                        accessToken: numberRow.access_token,
-                        to: from,
-                        text: replyText,
-                      });
-
-                      const replyMetaId = metaReplyRes?.messages?.[0]?.id ?? null;
-                      await supa.from("wa_messages").insert({
-                        org_id: numberRow.org_id,
-                        number_id: numberRow.id,
-                        contact_id: contact.id,
-                        direction: "out",
-                        status: "sent",
-                        meta_message_id: replyMetaId,
-                        meta_status_payload: metaReplyRes,
-                        message_type: "text",
-                        text_body: replyText,
-                        payload: { source: "auto_reply" },
-                        sent_at: nowIso(),
-                      });
-                      console.log("Auto-reply successfully sent to:", from);
-                    }
-                  }
-                }
+                await processAutoReplyForInbound(
+                  supa,
+                  numberRow,
+                  contact,
+                  from,
+                  inboundMessageId,
+                );
               } catch (autoReplyErr) {
-                console.error("Error executing auto-reply for incoming message:", autoReplyErr);
+                console.error("Auto-reply processing failed.", {
+                  inboundMessageId,
+                  numberId: numberRow.id,
+                  error: autoReplyErr instanceof Error ? autoReplyErr.message : String(autoReplyErr),
+                });
               }
             }
           }
@@ -4280,170 +5806,10 @@ const handleWebhookPost = async (c: any) => {
 };
 
 app.get("/webhook", handleWebhookGet);
-app.get(`${API_PREFIX}/webhook`, handleWebhookGet);
 app.get("/webhooks/meta", handleWebhookGet);
-app.get(`${API_PREFIX}/webhooks/meta`, handleWebhookGet);
 
 app.post("/webhook", handleWebhookPost);
-app.post(`${API_PREFIX}/webhook`, handleWebhookPost);
 app.post("/webhooks/meta", handleWebhookPost);
-app.post(`${API_PREFIX}/webhooks/meta`, handleWebhookPost);
-
-app.get(`${API_PREFIX}/dev/check-columns`, requireAuth, requireSuperadmin, async (c) => {
-  return c.json({ success: true, message: "Diagnostic endpoint active" });
-});
-
-app.get(`${API_PREFIX}/dev/webhook-debug`, requireAuth, requireSuperadmin, async (c) => {
-  try {
-    const supa = sb();
-    const { data: logs } = await supa
-      .from("app_activity")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(15);
-
-    const { data: broadcasts } = await supa
-      .from("wa_broadcasts")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(3);
-
-    const { data: recipients } = await supa
-      .from("wa_broadcast_recipients")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(10);
-
-    const { data: numbers } = await supa
-      .from("wa_numbers")
-      .select("id, name, phone_e164, phone_number_id");
-
-    return c.json({
-      success: true,
-      logs,
-      broadcasts,
-      recipients,
-      numbers,
-    });
-  } catch (e) {
-    return c.json({ success: false, error: String(e) }, 500);
-  }
-});
-
-app.get(`${API_PREFIX}/dev/sync-read-statuses`, requireAuth, requireSuperadmin, async (c) => {
-  try {
-    const supa = sb();
-    const { data: allBroadcasts } = await supa.from("wa_broadcasts").select("id");
-
-    for (const broadcast of allBroadcasts ?? []) {
-      await recalculateBroadcastStats(supa, broadcast.id);
-    }
-
-    return c.json({
-      success: true,
-      message: "Status penerima tidak diubah. Delivered/read hanya boleh berasal dari webhook Meta.",
-      reconciledBroadcasts: allBroadcasts?.length ?? 0,
-    });
-  } catch (e) {
-    return c.json({ success: false, error: String(e) }, 500);
-  }
-});
-
-app.get(`${API_PREFIX}/dev/fix-all-broadcasts`, requireAuth, requireSuperadmin, async (c) => {
-  try {
-    const supa = sb();
-    const { data: allBroadcasts } = await supa.from("wa_broadcasts").select("id");
-
-    for (const broadcast of allBroadcasts ?? []) {
-      await recalculateBroadcastStats(supa, broadcast.id);
-    }
-
-    return c.json({
-      success: true,
-      message: "Counter broadcast berhasil direkonsiliasi tanpa merekayasa status penerima.",
-      reconciledBroadcasts: allBroadcasts?.length ?? 0,
-    });
-  } catch (e) {
-    return c.json({ success: false, error: String(e) }, 500);
-  }
-});
-
-app.get(`${API_PREFIX}/dev/resume-broadcasts`, requireAuth, requireSuperadmin, async (c) => {
-  try {
-    const supa = sb();
-    const { data: broadcasts } = await supa
-      .from("wa_broadcasts")
-      .select("*")
-      .in("status", ["queued", "sending"])
-      .order("created_at", { ascending: true });
-
-    if (!broadcasts || broadcasts.length === 0) {
-      return c.json({ success: true, message: "Tidak ada broadcast pending/sending" });
-    }
-
-    const resumed: string[] = [];
-    const sessionToken = c.get("sessionToken");
-    const baseUrl = new URL(c.req.url).origin;
-    for (const b of broadcasts) {
-      runBroadcastWorkerInBackground(supa, b.org_id, b.created_by, b.id, sessionToken, baseUrl, c);
-      resumed.push(b.id);
-    }
-
-    return c.json({ success: true, resumedCount: resumed.length, resumedIds: resumed });
-  } catch (e) {
-    return c.json({ success: false, error: String(e) }, 500);
-  }
-});
-
-app.get(`${API_PREFIX}/dev/inspect-latest`, requireAuth, requireSuperadmin, async (c) => {
-  try {
-    const supa = sb();
-    const { data: broadcasts } = await supa
-      .from("wa_broadcasts")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(3);
-
-    if (!broadcasts || broadcasts.length === 0) {
-      return c.json({ success: true, message: "No broadcasts found" });
-    }
-
-    const latest = broadcasts[0];
-    const { data: recs } = await supa
-      .from("wa_broadcast_recipients")
-      .select("*")
-      .eq("broadcast_id", latest.id)
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true });
-
-    const statusCounts: Record<string, number> = {};
-    (recs || []).forEach((r: any) => {
-      statusCounts[r.status] = (statusCounts[r.status] || 0) + 1;
-    });
-
-    const sampleRecipients = (recs || []).map((r: any, idx: number) => ({
-      index: idx + 1,
-      id: r.id,
-      phone: r.phone_e164,
-      name: r.recipient_name,
-      status: r.status,
-      error: r.error,
-      updated_at: r.updated_at,
-    }));
-
-    return c.json({
-      success: true,
-      latestBroadcast: latest,
-      statusCounts,
-      totalRecipients: recs?.length ?? 0,
-      recipientsAround51: sampleRecipients.slice(45, 60),
-    });
-  } catch (e) {
-    return c.json({ success: false, error: String(e) }, 500);
-  }
-});
-
-
 
 // ===== SETTINGS =====
 app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
@@ -4456,7 +5822,8 @@ app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
       { data: me, error: userErr },
       { data: avatarRow },
       { data: addressRow },
-      { data: numberAutoReplyRows }
+      { data: numberAutoReplyRows },
+      { data: ownedNumbers },
     ] = await Promise.all([
       supa
         .from("orgs")
@@ -4482,16 +5849,21 @@ app.get(`${API_PREFIX}/settings`, requireAuth, async (c) => {
         .from("key_info")
         .select("key, value")
         .like("key", "autoreply_num_%"),
+      supa
+        .from("wa_numbers")
+        .select("id")
+        .eq("org_id", user.org_id),
     ]);
 
     if (orgErr) return c.json(jsonFail(orgErr.message), 500);
     if (userErr) return c.json(jsonFail(userErr.message), 500);
 
     const numberAutoReplies: Record<string, { autoReplyEnabled: boolean; autoReplyMessage: string }> = {};
+    const ownedNumberIds = new Set((ownedNumbers ?? []).map((row: any) => String(row.id)));
     if (Array.isArray(numberAutoReplyRows)) {
       for (const row of numberAutoReplyRows) {
         const numId = String(row.key || "").replace("autoreply_num_", "");
-        if (numId && row.value) {
+        if (numId && ownedNumberIds.has(numId) && row.value) {
           const valObj = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
           numberAutoReplies[numId] = {
             autoReplyEnabled: valObj.autoReplyEnabled !== false,
@@ -4625,7 +5997,7 @@ app.put(`${API_PREFIX}/settings/profile`, requireAuth, async (c) => {
   }
 });
 
-app.put(`${API_PREFIX}/settings/org`, requireAuth, async (c) => {
+app.put(`${API_PREFIX}/settings/org`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
@@ -4716,7 +6088,7 @@ app.put(`${API_PREFIX}/settings/contact-labels`, requireAuth, async (c) => {
   }
 });
 
-app.put(`${API_PREFIX}/settings/messaging`, requireAuth, async (c) => {
+app.put(`${API_PREFIX}/settings/messaging`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
@@ -4729,6 +6101,15 @@ app.put(`${API_PREFIX}/settings/messaging`, requireAuth, async (c) => {
     const throttlePerMin = Math.max(1, Number(body.throttlePerMin ?? 30));
 
     if (numberId) {
+      const { data: ownedNumber, error: ownedNumberError } = await supa
+        .from("wa_numbers")
+        .select("id")
+        .eq("id", numberId)
+        .eq("org_id", user.org_id)
+        .maybeSingle();
+      if (ownedNumberError) return c.json(jsonFail(ownedNumberError.message), 500);
+      if (!ownedNumber) return c.json(jsonFail("Nomor tidak ditemukan"), 404);
+
       const keyStr = `autoreply_num_${numberId}`;
       const payloadVal = {
         autoReplyEnabled,
@@ -4841,98 +6222,26 @@ app.put(`${API_PREFIX}/settings/password`, requireAuth, async (c) => {
 // ===== SUPERADMIN ENDPOINTS =====
 async function requireSuperadmin(c: any, next: any) {
   const user = c.get("authUser");
-  const superadminEmail = Deno.env.get("SUPERADMIN_EMAIL") || "mckuadratid@gmail.com";
-  if (user?.email !== superadminEmail) {
+  if (!isConfiguredSuperadmin(user)) {
+    const superadminUserId = String(Deno.env.get("SUPERADMIN_USER_ID") || "").trim();
+    const superadminEmail = normalizeEmail(Deno.env.get("SUPERADMIN_EMAIL"));
+    if (!superadminUserId && !superadminEmail) {
+      console.error("Superadmin authorization is not configured");
+      return c.json(jsonFail("Konfigurasi otorisasi superadmin belum tersedia"), 503);
+    }
     return c.json(jsonFail("Hanya pemilik yang dapat mengakses halaman ini"), 403);
   }
   await next();
 }
 
-app.post(`${API_PREFIX}/superadmin/fix-stuck-broadcasts`, requireAuth, requireSuperadmin, async (c) => {
-  try {
-    const supa = sb();
-
-    const { data: broadcasts, error: bErr } = await supa
-      .from("wa_broadcasts")
-      .select("id, title, status")
-      .in("status", ["queued", "sending"]);
-
-    if (bErr) return c.json(jsonFail(bErr.message), 500);
-
-    let updatedRecsCount = 0;
-    let updatedMsgsCount = 0;
-    const fixedBroadcasts = [];
-
-    for (const b of (broadcasts ?? [])) {
-      const { data: rpcRes, error: rpcErr } = await supa.rpc("fix_stuck_broadcast", {
-        p_broadcast_id: b.id,
-      });
-
-      if (!rpcErr && rpcRes) {
-        updatedRecsCount += (rpcRes.updated_sent ?? 0) + (rpcRes.updated_failed ?? 0);
-        updatedMsgsCount += (rpcRes.updated_sent ?? 0) + (rpcRes.updated_failed ?? 0);
-        await recalculateBroadcastStats(supa, b.id);
-        fixedBroadcasts.push(`${b.title} (advanced: ${rpcRes.updated_sent}, failed: ${rpcRes.updated_failed})`);
-      } else {
-        await recalculateBroadcastStats(supa, b.id);
-        fixedBroadcasts.push(`${b.title} (recalculated only)`);
-      }
-    }
-
-    return c.json(jsonOk({
-      message: "Berhasil memperbaiki broadcast yang tersangkut",
-      fixedBroadcasts,
-      updatedRecipients: updatedRecsCount,
-      updatedMessages: updatedMsgsCount
-    }));
-  } catch (e) {
-    return c.json(jsonFail(e), 500);
-  }
-});
-
-app.post(`${API_PREFIX}/superadmin/reset-broadcast`, requireAuth, requireSuperadmin, async (c) => {
-  try {
-    const supa = sb();
-    const body = await c.req.json();
-    const broadcastId = String(body.broadcastId ?? "").trim();
-
-    if (!broadcastId) return c.json(jsonFail("broadcastId wajib"), 400);
-
-    const { error: bErr } = await supa
-      .from("wa_broadcasts")
-      .update({
-        status: "queued",
-        total_sent: 0,
-        total_failed: 0,
-        started_at: null,
-        finished_at: null,
-        updated_at: nowIso(),
-      })
-      .eq("id", broadcastId);
-
-    if (bErr) return c.json(jsonFail(bErr.message), 500);
-
-    const { error: rErr } = await supa
-      .from("wa_broadcast_recipients")
-      .update({
-        status: "pending",
-        wa_message_id: null,
-        provider_message_id: null,
-        sent_at: null,
-        updated_at: nowIso(),
-        error: null,
-      })
-      .eq("broadcast_id", broadcastId);
-
-    if (rErr) return c.json(jsonFail(rErr.message), 500);
-
-    return c.json(jsonOk({
-      message: `Broadcast ${broadcastId} berhasil di-reset ke antrean (queued)`,
-    }));
-  } catch (e) {
-    return c.json(jsonFail(e), 500);
-  }
-});
+function isConfiguredSuperadmin(user: any) {
+  const superadminUserId = String(Deno.env.get("SUPERADMIN_USER_ID") || "").trim();
+  const superadminEmail = normalizeEmail(Deno.env.get("SUPERADMIN_EMAIL"));
+  if (!superadminUserId && !superadminEmail) return false;
+  return superadminUserId
+    ? user?.auth_user_id === superadminUserId
+    : normalizeEmail(user?.auth_email) === superadminEmail;
+}
 
 app.get(`${API_PREFIX}/superadmin/orgs`, requireAuth, requireSuperadmin, async (c) => {
   try {
@@ -4982,7 +6291,9 @@ app.get(`${API_PREFIX}/superadmin/orgs`, requireAuth, requireSuperadmin, async (
         throttlePerMin: org.throttle_per_min ?? 30,
         createdAt: org.created_at,
         tokensBalance: balance ? Number(balance.tokens_balance ?? 0) : 0,
-        tokenPrice: balance ? Number(balance.token_price_idr ?? 1500) : 1500,
+        tokenPrice: balance
+          ? requireCanonicalTokenPrice(balance.token_price_idr, org.id)
+          : null,
         numbers: orgNumbers.map((n: any) => ({
           id: n.id,
           label: n.label,
@@ -5106,55 +6417,48 @@ app.post(`${API_PREFIX}/superadmin/orgs/:orgId/tokens`, requireAuth, requireSupe
     if (orgErr) return c.json(jsonFail(`Gagal memeriksa instansi: ${orgErr.message}`), 500);
     if (!org) return c.json(jsonFail("Instansi tidak ditemukan"), 404);
 
-    const { data: balance, error: balErr } = await supa
-      .from("billing_balance")
-      .select("tokens_balance")
-      .eq("org_id", orgId)
-      .maybeSingle();
+    const adjustmentReference = crypto.randomUUID();
+    const mutation = await applyBillingMutation({
+      orgId,
+      tokenDelta: tokensDelta,
+      transactionType: "adjustment",
+      amountIdr: 0,
+      description,
+      refType: "admin_adjustment",
+      refId: adjustmentReference,
+      actorUserId: c.get("authUser").id,
+      provider: "adjustment",
+      externalReference: adjustmentReference,
+      metadata: { requested_delta: tokensDelta, reason: description },
+      // Preserve the existing endpoint behavior: an oversized debit floors the
+      // balance at zero and records the actually applied delta.
+      floorAtZero: true,
+    });
 
-    if (balErr) return c.json(jsonFail(balErr.message), 500);
-
-    const currentBalance = balance ? Number(balance.tokens_balance ?? 0) : 0;
-    const newBalance = Math.max(0, currentBalance + tokensDelta);
-    const appliedDelta = newBalance - currentBalance;
-
-    const balanceWrite = balance
-      ? await supa
-          .from("billing_balance")
-          .update({ tokens_balance: newBalance, updated_at: nowIso() })
-          .eq("org_id", orgId)
-      : await supa
-          .from("billing_balance")
-          .insert({ org_id: orgId, tokens_balance: newBalance, updated_at: nowIso() });
-
-    if (balanceWrite.error) {
-      return c.json(jsonFail(`Gagal memperbarui saldo token: ${balanceWrite.error.message}`), 500);
-    }
-
-    const { error: txErr } = await supa
-      .from("billing_transactions")
-      .insert({
-        org_id: orgId,
-        type: appliedDelta >= 0 ? "topup" : "adjustment",
-        tokens_delta: appliedDelta,
-        amount_idr: 0,
-        description,
-        created_by: c.get("authUser").id,
-      });
-
-    if (txErr) {
-      console.warn("Failed to insert billing transaction record for superadmin update:", txErr);
-    }
+    const currentBalance = Number(mutation?.balance_before ?? 0);
+    const newBalance = Number(mutation?.new_balance ?? currentBalance);
+    const appliedDelta = Number(mutation?.applied_delta ?? 0);
 
     await supa.from("app_activity").insert({
       org_id: orgId,
       actor_user_id: c.get("authUser").id,
       type: "billing_adjustment",
       message: `Penyesuaian token manual untuk ${org.name}: ${appliedDelta >= 0 ? "+" : ""}${appliedDelta}`,
-      meta: { previous_balance: currentBalance, new_balance: newBalance, requested_delta: tokensDelta },
+      meta: {
+        previous_balance: currentBalance,
+        new_balance: newBalance,
+        requested_delta: tokensDelta,
+        billing_ledger_id: mutation?.ledger_id ?? null,
+        adjustment_reference: adjustmentReference,
+      },
     });
 
-    return c.json(jsonOk({ tokensBalance: newBalance, appliedDelta }));
+    return c.json(jsonOk({
+      tokensBalance: newBalance,
+      appliedDelta,
+      ledgerId: mutation?.ledger_id ?? null,
+      adjustmentReference,
+    }));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -5173,10 +6477,14 @@ app.put(`${API_PREFIX}/superadmin/orgs/:orgId`, requireAuth, requireSuperadmin, 
     const supportEmail = String(body.supportEmail ?? "").trim();
     const sendDelayMs = Number(body.sendDelayMs ?? 2000);
     const throttlePerMin = Number(body.throttlePerMin ?? 30);
-    const tokenPrice = Number(body.tokenPrice ?? 1500);
+    const hasTokenPrice = body.tokenPrice !== undefined && body.tokenPrice !== null;
+    const tokenPrice = hasTokenPrice ? Number(body.tokenPrice) : null;
 
     if (!name) return c.json(jsonFail("Nama instansi wajib diisi"), 400);
     if (!slug) return c.json(jsonFail("Slug wajib diisi"), 400);
+    if (hasTokenPrice && (!Number.isFinite(tokenPrice) || Number(tokenPrice) <= 0)) {
+      return c.json(jsonFail("Harga token wajib berupa angka lebih besar dari nol"), 400);
+    }
 
     const { data, error } = await supa
       .from("orgs")
@@ -5203,14 +6511,15 @@ app.put(`${API_PREFIX}/superadmin/orgs/:orgId`, requireAuth, requireSuperadmin, 
       .eq("org_id", orgId);
 
     // Update token price in billing_balance
-    if (!Number.isNaN(tokenPrice) && tokenPrice > 0) {
-      await supa
+    if (hasTokenPrice) {
+      const { error: priceError } = await supa
         .from("billing_balance")
         .upsert({
           org_id: orgId,
-          token_price_idr: tokenPrice,
+          token_price_idr: Number(tokenPrice),
           updated_at: nowIso(),
         }, { onConflict: "org_id" });
+      if (priceError) return c.json(jsonFail(priceError.message), 500);
     }
 
     return c.json(jsonOk(data));
@@ -5535,6 +6844,12 @@ app.post(`${API_PREFIX}/billing/midtrans/create`, requireAuth, async (c) => {
 });
 
 app.post(`${API_PREFIX}/billing/midtrans/webhook`, async (c) => {
+  // Legacy C-01 route intentionally disabled. The Batch 9 primary flow is
+  // direct payment + manual verification and never depends on this webhook.
+  // Keep the old implementation below only as historical reference until the
+  // separate signed webhook migration is retired in a future gateway batch.
+  return c.json(jsonFail("Webhook gateway legacy tidak aktif"), 410);
+  /* c8 ignore start */
   try {
     const body = await c.req.json();
     console.log("Midtrans Webhook Received:", JSON.stringify(body));
@@ -5585,52 +6900,48 @@ app.post(`${API_PREFIX}/billing/midtrans/webhook`, async (c) => {
       nextStatus = "pending";
     }
 
-    // Check if status is updated
-    if (txObj.status !== nextStatus) {
+    let billingMutation: any = null;
+    if (shouldAddTokens) {
+      // Provider handling only produces a verified-event-shaped input here.
+      // C-01 remains open for this legacy route because it still does not
+      // verify the Midtrans signature; accounting itself is now centralized.
+      billingMutation = await applyBillingMutation({
+        orgId,
+        tokenDelta: tokens,
+        transactionType: "topup",
+        amountIdr: amount,
+        description: `Top-up Midtrans berhasil (${tokens} token)`,
+        refType: "midtrans",
+        refId: orderId,
+        actorUserId: txObj.user_id,
+        provider: "midtrans",
+        externalReference: orderId,
+        metadata: {
+          transaction_status: transactionStatus,
+          fraud_status: fraudStatus ?? null,
+          source_handler: "server_legacy_midtrans_webhook",
+        },
+      });
+
+      console.log(
+        `Midtrans billing event ${orderId}: ${billingMutation?.applied ? "applied" : "duplicate"}.`,
+      );
+    }
+
+    if (txObj.status !== nextStatus || shouldAddTokens) {
       txObj.status = nextStatus;
       txObj.updated_at = new Date().toISOString();
       txObj.raw_webhook_payload = body;
+      if (billingMutation?.ledger_id) {
+        txObj.billing_ledger_id = billingMutation.ledger_id;
+      }
 
-      // Update inside key_info
-      await supa
+      const { error: statusUpdateErr } = await supa
         .from("key_info")
         .update({ value: txObj })
         .eq("key", `midtrans_tx:${orderId}`);
 
-      if (shouldAddTokens) {
-        // 1. Get current balance
-        const { data: balance } = await supa
-          .from("billing_balance")
-          .select("tokens_balance")
-          .eq("org_id", orgId)
-          .maybeSingle();
-
-        const currentBalance = Number(balance?.tokens_balance ?? 0);
-        const newBalance = currentBalance + tokens;
-
-        // 2. Update balance
-        await supa
-          .from("billing_balance")
-          .upsert({
-            org_id: orgId,
-            tokens_balance: newBalance,
-            updated_at: new Date().toISOString(),
-          }, { onConflict: "org_id" });
-
-        // 3. Write into billing_transactions
-        await supa
-          .from("billing_transactions")
-          .insert({
-            org_id: orgId,
-            type: "topup",
-            tokens_delta: tokens,
-            amount_idr: amount,
-            description: `Top-up Midtrans berhasil (${tokens} token)`,
-            created_by: txObj.user_id,
-          });
-
-        console.log(`Successfully added ${tokens} tokens to org ${orgId} via Midtrans webhook.`);
-      }
+      if (statusUpdateErr) throw statusUpdateErr;
     }
 
     return c.json(jsonOk("Webhook processed successfully"));
@@ -5641,6 +6952,68 @@ app.post(`${API_PREFIX}/billing/midtrans/webhook`, async (c) => {
 });
 
 // ===== MANUAL BILLING ENDPOINTS =====
+app.get(`${API_PREFIX}/billing/payment-destinations`, requireAuth, async (c) => {
+  try {
+    const supa = sb();
+    const { data, error } = await supa
+      .from("payment_destinations")
+      .select("id, method, provider_name, account_reference, account_holder, qris_object_path, instructions, display_order")
+      .eq("active", true)
+      .order("display_order", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("Payment destination load failed", error);
+      return c.json(jsonFail("Metode pembayaran belum dapat dimuat"), 500);
+    }
+
+    return c.json(jsonOk((data ?? []).map((destination: any) => ({
+      id: destination.id,
+      method: destination.method,
+      provider_name: destination.provider_name,
+      account_reference: destination.account_reference,
+      account_holder: destination.account_holder,
+      instructions: destination.instructions,
+      has_qris: Boolean(destination.qris_object_path),
+    }))));
+  } catch (error) {
+    console.error("Payment destination load crashed", error);
+    return c.json(jsonFail("Metode pembayaran belum dapat dimuat"), 500);
+  }
+  /* c8 ignore stop */
+});
+
+app.get(`${API_PREFIX}/billing/payment-destinations/:id/qris`, requireAuth, async (c) => {
+  try {
+    const supa = sb();
+    const { data: destination, error } = await supa
+      .from("payment_destinations")
+      .select("qris_object_path")
+      .eq("id", c.req.param("id"))
+      .eq("method", "qris_static")
+      .eq("active", true)
+      .maybeSingle();
+    if (error) console.error("QRIS destination lookup failed", error);
+    if (!destination?.qris_object_path) return c.json(jsonFail("QRIS tidak tersedia"), 404);
+
+    const { data: file, error: downloadError } = await supa.storage
+      .from(PAYMENT_ASSET_BUCKET)
+      .download(destination.qris_object_path);
+    if (downloadError || !file) {
+      console.error("QRIS asset download failed", downloadError);
+      return c.json(jsonFail("QRIS belum dapat dimuat"), 500);
+    }
+    return c.body(await file.arrayBuffer(), 200, {
+      "Content-Type": file.type || "image/png",
+      "Cache-Control": "private, max-age=60",
+      "X-Content-Type-Options": "nosniff",
+    });
+  } catch (error) {
+    console.error("QRIS asset request crashed", error);
+    return c.json(jsonFail("QRIS belum dapat dimuat"), 500);
+  }
+});
+
 app.get(`${API_PREFIX}/billing/payment-settings`, requireAuth, async (c) => {
   try {
     const supa = sb();
@@ -5661,87 +7034,267 @@ app.get(`${API_PREFIX}/billing/manual-requests`, requireAuth, async (c) => {
   try {
     const user = c.get("authUser");
     const supa = sb();
-    const prefix = `payment_request:${user.org_id}:`;
     const { data, error } = await supa
+      .from("manual_payment_requests")
+      .select("*, destination:payment_destinations(id, method, provider_name, account_reference, account_holder, qris_object_path, instructions)")
+      .eq("org_id", user.org_id)
+      .order("created_at", { ascending: false })
+      .limit(100);
+
+    if (error) {
+      console.error("Manual payment list failed", error);
+      return c.json(jsonFail("Riwayat pembayaran belum dapat dimuat"), 500);
+    }
+
+    const requests = (data ?? []).map(paymentRequestDto);
+    const { data: legacyRows, error: legacyError } = await supa
       .from("key_info")
-      .select("key, value")
-      .like("key", prefix + "%");
-
-    if (error) return c.json(jsonFail(error.message), 500);
-
-    const requests = (data ?? []).map((row: any) => row.value);
+      .select("value")
+      .like("key", `payment_request:${user.org_id}:%`)
+      .limit(100);
+    if (legacyError) console.warn("Legacy manual payment history load failed", legacyError);
+    const knownIds = new Set(requests.map((request: any) => request.id));
+    for (const row of legacyRows ?? []) {
+      const legacy = legacyPaymentRequestDto(row.value);
+      if (!knownIds.has(legacy.id)) requests.push({ ...legacy, legacy_manual: true });
+    }
     requests.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
     return c.json(jsonOk(requests));
-  } catch (e) {
-    return c.json(jsonFail(e), 500);
+  } catch (error) {
+    console.error("Manual payment list crashed", error);
+    return c.json(jsonFail("Riwayat pembayaran belum dapat dimuat"), 500);
   }
 });
 
 app.post(`${API_PREFIX}/billing/manual-requests`, requireAuth, async (c) => {
   try {
     const user = c.get("authUser");
-    const { tokens, receipt_data, amount_idr } = await c.req.json();
+    const { tokens, destinationId, note } = await c.req.json();
+    const requestedTokens = Number(tokens);
 
-    if (!tokens || tokens <= 0) {
+    if (!Number.isSafeInteger(requestedTokens) || requestedTokens <= 0) {
       return c.json(jsonFail("Jumlah token tidak valid"), 400);
     }
-    if (!receipt_data) {
-      return c.json(jsonFail("Bukti transfer wajib diunggah"), 400);
+    if (!destinationId) {
+      return c.json(jsonFail("Pilih metode pembayaran"), 400);
     }
 
     const supa = sb();
-
-    const { data: orgRow, error: orgErr } = await supa
-      .from("orgs")
-      .select("name")
-      .eq("id", user.org_id)
+    const { data: destination, error: destinationError } = await supa
+      .from("payment_destinations")
+      .select("id, method, provider_name, account_reference, account_holder, qris_object_path, instructions")
+      .eq("id", destinationId)
+      .eq("active", true)
       .maybeSingle();
+    if (destinationError) console.error("Payment destination validation failed", destinationError);
+    if (!destination) return c.json(jsonFail("Metode pembayaran tidak tersedia"), 400);
 
-    if (orgErr) return c.json(jsonFail(orgErr.message), 500);
-    const orgName = orgRow?.name || "Instansi Tanpa Nama";
-
-    const { data: balance, error: balErr } = await supa
-      .from("billing_balance")
-      .select("token_price_idr")
-      .eq("org_id", user.org_id)
-      .maybeSingle();
-
-    if (balErr) return c.json(jsonFail(balErr.message), 500);
-    const price = Number(balance?.token_price_idr ?? 1500);
-
-    let finalAmount = amount_idr;
-    if (!finalAmount) {
-      const referralCode = Math.floor(Math.random() * 900) + 100;
-      finalAmount = (tokens * price) + referralCode;
+    const price = await getCanonicalTokenPrice(supa, user.org_id);
+    const referenceDate = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+    const amountRequested = requestedTokens * price;
+    let created: any = null;
+    for (let attempt = 0; attempt < PAYMENT_UNIQUE_CODE_ATTEMPTS; attempt += 1) {
+      const requestId = crypto.randomUUID();
+      const paymentReference = `PAY-${referenceDate}-${requestId.slice(0, 8).toUpperCase()}`;
+      const requestRow = {
+        id: requestId,
+        org_id: user.org_id,
+        requested_by: user.id,
+        tokens_requested: requestedTokens,
+        token_price_idr: price,
+        amount_requested: amountRequested,
+        unique_code: generatePaymentUniqueCode(),
+        payment_method: destination.method,
+        destination_account_id: destination.id,
+        payment_reference: paymentReference,
+        note: typeof note === "string" && note.trim() ? note.trim().slice(0, 500) : null,
+        status: "draft",
+      };
+      const result = await supa
+        .from("manual_payment_requests")
+        .insert(requestRow)
+        .select("*")
+        .single();
+      if (!result.error) {
+        created = result.data;
+        break;
+      }
+      if (result.error.code !== "23505") {
+        console.error("Manual payment create failed", result.error);
+        return c.json(jsonFail("Permintaan pembayaran belum dapat dibuat"), 500);
+      }
+    }
+    if (!created) {
+      return c.json(jsonFail("Kode unik pembayaran sedang penuh. Silakan coba lagi."), 409);
     }
 
-    const requestId = crypto.randomUUID();
-    const requestObj = {
-      id: requestId,
-      org_id: user.org_id,
-      org_name: orgName,
-      amount_tokens: tokens,
-      amount_idr: finalAmount,
-      status: "pending",
-      receipt_url: receipt_data,
-      created_by_email: user.email,
-      created_at: nowIso(),
-      approved_at: null,
-      approved_by: null,
-      notes: null,
-    };
+    return c.json(jsonOk(paymentRequestDto({ ...created, destination })), 201);
+  } catch (error) {
+    console.error("Manual payment create crashed", error);
+    return c.json(jsonFail("Permintaan pembayaran belum dapat dibuat"), 500);
+  }
+});
 
-    const key = `payment_request:${user.org_id}:${requestId}`;
-    const { error: saveErr } = await supa
-      .from("key_info")
-      .upsert({ key, value: requestObj });
+app.post(`${API_PREFIX}/billing/manual-requests/:id/proof`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const requestId = c.req.param("id");
+    const form = await c.req.formData();
+    const proof = form.get("proof");
+    if (!(proof instanceof File) || proof.size <= 0) {
+      return c.json(jsonFail("Pilih bukti pembayaran"), 400);
+    }
+    const extension = PAYMENT_PROOF_MIME_EXTENSIONS.get(proof.type);
+    if (!extension) {
+      return c.json(jsonFail("Format bukti harus JPG, PNG, WEBP, atau PDF"), 400);
+    }
+    if (proof.size > PAYMENT_PROOF_MAX_BYTES) {
+      return c.json(jsonFail("Ukuran bukti pembayaran maksimal 5 MB"), 413);
+    }
 
-    if (saveErr) return c.json(jsonFail(saveErr.message), 500);
+    const supa = sb();
+    const { data: requestRow, error: requestError } = await supa
+      .from("manual_payment_requests")
+      .select("id, org_id, status, proof_object_path")
+      .eq("id", requestId)
+      .eq("org_id", user.org_id)
+      .maybeSingle();
+    if (requestError) console.error("Payment proof request lookup failed", requestError);
+    if (!requestRow) return c.json(jsonFail("Permintaan pembayaran tidak ditemukan"), 404);
+    if (requestRow.status !== "draft") {
+      return c.json(jsonFail("Bukti pembayaran tidak dapat diubah setelah dikirim"), 409);
+    }
 
-    return c.json(jsonOk(requestObj));
-  } catch (e) {
-    return c.json(jsonFail(e), 500);
+    const objectPath = `${user.org_id}/${requestId}/${crypto.randomUUID()}.${extension}`;
+    const { error: uploadError } = await supa.storage
+      .from(PAYMENT_PROOF_BUCKET)
+      .upload(objectPath, proof, { contentType: proof.type, upsert: false });
+    if (uploadError) {
+      console.error("Payment proof upload failed", uploadError);
+      return c.json(jsonFail("Bukti pembayaran belum dapat diunggah"), 500);
+    }
+
+    const { data: updated, error: updateError } = await supa
+      .from("manual_payment_requests")
+      .update({
+        proof_object_path: objectPath,
+        proof_mime_type: proof.type,
+        proof_size_bytes: proof.size,
+        proof_file_name: safePaymentProofFileName(proof.name),
+        updated_at: nowIso(),
+      })
+      .eq("id", requestId)
+      .eq("org_id", user.org_id)
+      .eq("status", "draft")
+      .select("*")
+      .maybeSingle();
+    if (updateError || !updated) {
+      await supa.storage.from(PAYMENT_PROOF_BUCKET).remove([objectPath]);
+      console.error("Payment proof metadata update failed", updateError);
+      return c.json(jsonFail("Bukti pembayaran belum dapat disimpan"), 409);
+    }
+    if (requestRow.proof_object_path && requestRow.proof_object_path !== objectPath) {
+      const { error: cleanupError } = await supa.storage
+        .from(PAYMENT_PROOF_BUCKET)
+        .remove([requestRow.proof_object_path]);
+      if (cleanupError) console.warn("Old payment proof cleanup failed", cleanupError);
+    }
+
+    return c.json(jsonOk(paymentRequestDto(updated)));
+  } catch (error) {
+    console.error("Payment proof upload crashed", error);
+    return c.json(jsonFail("Bukti pembayaran belum dapat diunggah"), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/billing/manual-requests/:id/submit`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const requestId = c.req.param("id");
+    const supa = sb();
+    const { data: requestRow, error: requestError } = await supa
+      .from("manual_payment_requests")
+      .select("*, destination:payment_destinations(id, method, provider_name, account_reference, account_holder, qris_object_path, instructions, active)")
+      .eq("id", requestId)
+      .eq("org_id", user.org_id)
+      .maybeSingle();
+    if (requestError) console.error("Manual payment submit lookup failed", requestError);
+    if (!requestRow) return c.json(jsonFail("Permintaan pembayaran tidak ditemukan"), 404);
+    if (["submitted", "approved"].includes(requestRow.status)) {
+      return c.json(jsonOk(paymentRequestDto(requestRow)));
+    }
+    if (requestRow.status !== "draft") {
+      return c.json(jsonFail("Permintaan pembayaran sudah diproses"), 409);
+    }
+    const destination = Array.isArray(requestRow.destination) ? requestRow.destination[0] : requestRow.destination;
+    if (!destination?.active) return c.json(jsonFail("Metode pembayaran sudah tidak aktif"), 409);
+    if (!requestRow.proof_object_path) return c.json(jsonFail("Bukti pembayaran wajib diunggah"), 400);
+
+    const submittedAt = nowIso();
+    const { data: submitted, error: submitError } = await supa
+      .from("manual_payment_requests")
+      .update({ status: "submitted", submitted_at: submittedAt, updated_at: submittedAt })
+      .eq("id", requestId)
+      .eq("org_id", user.org_id)
+      .eq("status", "draft")
+      .select("*")
+      .maybeSingle();
+    if (submitError || !submitted) {
+      console.error("Manual payment submit failed", submitError);
+      return c.json(jsonFail("Permintaan pembayaran belum dapat dikirim"), 409);
+    }
+    return c.json(jsonOk(paymentRequestDto({ ...submitted, destination })));
+  } catch (error) {
+    console.error("Manual payment submit crashed", error);
+    return c.json(jsonFail("Permintaan pembayaran belum dapat dikirim"), 500);
+  }
+});
+
+app.get(`${API_PREFIX}/billing/manual-requests/:id/proof`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const requestId = c.req.param("id");
+    const supa = sb();
+    let query = supa
+      .from("manual_payment_requests")
+      .select("org_id, proof_object_path, proof_mime_type")
+      .eq("id", requestId);
+    if (!isConfiguredSuperadmin(user)) query = query.eq("org_id", user.org_id);
+    const { data: requestRow, error: requestError } = await query.maybeSingle();
+    if (requestError) console.error("Payment proof access lookup failed", requestError);
+    if (!requestRow?.proof_object_path) {
+      let legacyQuery = supa.from("key_info").select("value");
+      legacyQuery = isConfiguredSuperadmin(user)
+        ? legacyQuery.like("key", `payment_request:%:${requestId}`)
+        : legacyQuery.eq("key", `payment_request:${user.org_id}:${requestId}`);
+      const { data: legacyRows } = await legacyQuery.limit(1);
+      const decoded = decodeLegacyDataUrl(legacyRows?.[0]?.value?.receipt_url);
+      if (!decoded) return c.json(jsonFail("Bukti pembayaran tidak ditemukan"), 404);
+      return c.body(decoded.bytes.buffer, 200, {
+        "Content-Type": decoded.mime,
+        "Content-Disposition": "inline",
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+      });
+    }
+
+    const { data: file, error: downloadError } = await supa.storage
+      .from(PAYMENT_PROOF_BUCKET)
+      .download(requestRow.proof_object_path);
+    if (downloadError || !file) {
+      console.error("Payment proof download failed", downloadError);
+      return c.json(jsonFail("Bukti pembayaran belum dapat dimuat"), 500);
+    }
+    return c.body(await file.arrayBuffer(), 200, {
+      "Content-Type": requestRow.proof_mime_type || file.type || "application/octet-stream",
+      "Content-Disposition": "inline",
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
+  } catch (error) {
+    console.error("Payment proof request crashed", error);
+    return c.json(jsonFail("Bukti pembayaran belum dapat dimuat"), 500);
   }
 });
 
@@ -5812,67 +7365,83 @@ app.put(`${API_PREFIX}/superadmin/payment-settings`, requireAuth, requireSuperad
 app.get(`${API_PREFIX}/superadmin/manual-requests`, requireAuth, requireSuperadmin, async (c) => {
   try {
     const supa = sb();
+    const statusFilter = String(c.req.query("status") || "submitted").toLowerCase();
+    if (!["draft", "submitted", "approved", "rejected", "all"].includes(statusFilter)) {
+      return c.json(jsonFail("Filter status pembayaran tidak valid"), 400);
+    }
+    let requestQuery = supa
+      .from("manual_payment_requests")
+      .select("*, destination:payment_destinations(id, method, provider_name, account_reference, account_holder, qris_object_path, instructions), organization:orgs!org_id(name), requester:app_users!requested_by(email)")
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (statusFilter !== "all") requestQuery = requestQuery.eq("status", statusFilter);
+    const { data, error } = await requestQuery;
+    if (error) {
+      console.error("Manual payment review queue failed", error);
+      return c.json(jsonFail("Antrean verifikasi belum dapat dimuat"), 500);
+    }
 
-    // 1. Fetch manual requests
-    const { data: manualData } = await supa
+    const manualRequests = (data ?? []).map(paymentRequestDto);
+
+    const { data: legacyManualData, error: legacyManualError } = await supa
+      .from("key_info")
+      .select("value")
+      .like("key", "payment_request:%")
+      .limit(100);
+    if (legacyManualError) console.warn("Legacy manual payment queue load failed", legacyManualError);
+    const knownManualIds = new Set(manualRequests.map((request: any) => request.id));
+    for (const row of legacyManualData ?? []) {
+      const legacy = legacyPaymentRequestDto(row.value);
+      if (!knownManualIds.has(legacy.id) && (statusFilter === "all" || legacy.status === statusFilter)) {
+        manualRequests.push({ ...legacy, legacy_manual: true });
+      }
+    }
+
+    // Historical gateway records remain visible for compatibility, but they
+    // are never part of the primary direct-payment approval path.
+    const { data: midtransData, error: midtransError } = await supa
       .from("key_info")
       .select("key, value")
-      .like("key", "payment_request:%");
-
-    const manualRequests = (manualData ?? []).map((row: any) => {
-      const v = row.value;
+      .like("key", "midtrans_tx:%")
+      .limit(100);
+    if (midtransError) console.warn("Legacy gateway history load failed", midtransError);
+    const { data: orgs } = await supa.from("orgs").select("id, name");
+    const orgMap = new Map((orgs ?? []).map((org: any) => [org.id, org.name]));
+    const gatewayHistory = (midtransData ?? []).map((row: any) => {
+      const value = row.value ?? {};
       return {
-        id: v.id,
-        org_name: v.org_name,
-        created_by_email: v.created_by_email,
-        amount_tokens: Number(v.amount_tokens),
-        amount_idr: Number(v.amount_idr),
-        payment_method: "Manual",
-        status: v.status, // pending, approved, rejected
-        created_at: v.created_at,
-        approved_at: v.approved_at,
-        approved_by: v.approved_by,
-      };
-    });
-
-    // 2. Fetch Midtrans transactions
-    const { data: midtransData } = await supa
-      .from("key_info")
-      .select("key, value")
-      .like("key", "midtrans_tx:%");
-
-    const { data: orgs } = await supa
-      .from("orgs")
-      .select("id, name");
-    const orgMap = new Map((orgs ?? []).map((o: any) => [o.id, o.name]));
-
-    const midtransRequests = (midtransData ?? []).map((row: any) => {
-      const v = row.value;
-      return {
-        id: v.id,
-        org_name: orgMap.get(v.org_id) || "Organisasi Tidak Dikenal",
-        created_by_email: v.user_email,
-        amount_tokens: Number(v.amount_tokens),
-        amount_idr: Number(v.amount_idr),
-        payment_method: "Midtrans",
-        status: (v.status === "success" || v.status === "settlement" || v.status === "capture")
+        id: value.id,
+        org_name: orgMap.get(value.org_id) || "Organisasi Tidak Dikenal",
+        created_by_email: value.user_email,
+        amount_tokens: Number(value.amount_tokens || 0),
+        amount_idr: Number(value.amount_idr || 0),
+        payment_method: "Gateway (Legacy)",
+        payment_reference: value.order_id || value.id,
+        proof_available: false,
+        status: ["success", "settlement", "capture"].includes(value.status)
           ? "approved"
-          : (v.status === "failed" || v.status === "expire" || v.status === "cancel" || v.status === "deny")
+          : ["failed", "expire", "cancel", "deny"].includes(value.status)
             ? "rejected"
-            : "pending",
-        created_at: v.created_at,
-        approved_at: v.updated_at || v.created_at,
-        approved_by: "System (Midtrans)",
+            : "submitted",
+        status_label: ["success", "settlement", "capture"].includes(value.status)
+          ? "Disetujui"
+          : ["failed", "expire", "cancel", "deny"].includes(value.status)
+            ? "Ditolak"
+            : "Menunggu Verifikasi",
+        created_at: value.created_at,
+        reviewed_at: value.updated_at || value.created_at,
+        reviewed_by: "Sistem gateway legacy",
+        legacy_gateway: true,
       };
-    });
+    }).filter((request: any) => statusFilter === "all" || request.status === statusFilter);
 
-    // Merge both lists
-    const allPurchases = [...manualRequests, ...midtransRequests];
+    const allPurchases = [...manualRequests, ...gatewayHistory];
     allPurchases.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
     return c.json(jsonOk(allPurchases));
-  } catch (e) {
-    return c.json(jsonFail(e), 500);
+  } catch (error) {
+    console.error("Manual payment review queue crashed", error);
+    return c.json(jsonFail("Antrean verifikasi belum dapat dimuat"), 500);
   }
 });
 
@@ -5880,159 +7449,131 @@ app.post(`${API_PREFIX}/superadmin/manual-requests/:id/approve`, requireAuth, re
   try {
     const requestId = c.req.param("id");
     const supa = sb();
-
-    const { data: searchRows, error: searchErr } = await supa
-      .from("key_info")
-      .select("key, value")
-      .like("key", `%:${requestId}`)
-      .limit(1);
-
-    if (searchErr) return c.json(jsonFail(searchErr.message), 500);
-    if (!searchRows || searchRows.length === 0) {
-      return c.json(jsonFail("Permintaan pembayaran tidak ditemukan"), 404);
+    const { data: requestRow, error: requestError } = await supa
+      .from("manual_payment_requests")
+      .select("id, org_id, status")
+      .eq("id", requestId)
+      .maybeSingle();
+    if (requestError) {
+      console.error("Manual payment approval lookup failed", requestError);
+      return c.json(jsonFail("Permintaan pembayaran belum dapat diperiksa"), 500);
     }
-
-    const { key, value: requestObj } = searchRows[0];
-
-    if (requestObj.status !== "pending") {
-      return c.json(jsonFail("Permintaan pembayaran ini sudah diproses sebelumnya"), 400);
+    let key = requestRow ? `payment_request:${requestRow.org_id}:${requestRow.id}` : "";
+    if (!key) {
+      const { data: legacyRows, error: legacyError } = await supa
+        .from("key_info")
+        .select("key")
+        .like("key", `payment_request:%:${requestId}`)
+        .limit(1);
+      if (legacyError) console.error("Legacy manual payment approval lookup failed", legacyError);
+      key = legacyRows?.[0]?.key || "";
     }
+    if (!key) return c.json(jsonFail("Permintaan pembayaran tidak ditemukan"), 404);
 
     const adminUser = c.get("authUser");
+    const { data: approvalResult, error: approvalErr } = await supa.rpc(
+      "approve_manual_payment_with_billing",
+      {
+        p_request_key: key,
+        p_actor_user_id: adminUser.id,
+        p_actor_email: adminUser.email,
+      },
+    );
 
-    const { data: balance, error: balErr } = await supa
-      .from("billing_balance")
-      .select("tokens_balance")
-      .eq("org_id", requestObj.org_id)
-      .maybeSingle();
-
-    if (balErr) return c.json(jsonFail(balErr.message), 500);
-
-    const currentBalance = balance ? Number(balance.tokens_balance ?? 0) : 0;
-    const newBalance = currentBalance + Number(requestObj.amount_tokens);
-
-    const { error: upsertErr } = await supa
-      .from("billing_balance")
-      .upsert({
-        org_id: requestObj.org_id,
-        tokens_balance: newBalance,
-        updated_at: nowIso(),
-      }, { onConflict: "org_id" });
-
-    if (upsertErr) return c.json(jsonFail(upsertErr.message), 500);
-
-    const { error: txErr } = await supa
-      .from("billing_transactions")
-      .insert({
-        org_id: requestObj.org_id,
-        type: "topup",
-        tokens_delta: Number(requestObj.amount_tokens),
-        amount_idr: Number(requestObj.amount_idr),
-        description: `Top-up manual disetujui (${requestObj.amount_tokens} token)`,
-        created_by: adminUser.id,
-      });
-
-    if (txErr) {
-      console.warn("Failed to insert billing transaction record for manual topup approval:", txErr);
+    if (approvalErr) {
+      console.error("Manual payment approval failed", approvalErr);
+      const friendly = String(approvalErr.message || "").includes("belum siap")
+        ? "Permintaan pembayaran belum siap disetujui"
+        : "Permintaan pembayaran belum dapat disetujui";
+      return c.json(jsonFail(friendly), 409);
     }
 
-    requestObj.status = "approved";
-    requestObj.approved_at = nowIso();
-    requestObj.approved_by = adminUser.email;
-
-    const { error: saveErr } = await supa
-      .from("key_info")
-      .upsert({ key, value: requestObj });
-
-    if (saveErr) return c.json(jsonFail(saveErr.message), 500);
-
-    return c.json(jsonOk(requestObj));
-  } catch (e) {
-    return c.json(jsonFail(e), 500);
+    return c.json(jsonOk({
+      ...(approvalResult?.request ?? {}),
+      billing: approvalResult?.billing ?? null,
+      duplicate: Boolean(approvalResult?.duplicate),
+    }));
+  } catch (error) {
+    console.error("Manual payment approval crashed", error);
+    return c.json(jsonFail("Permintaan pembayaran belum dapat disetujui"), 500);
   }
 });
 
 app.post(`${API_PREFIX}/superadmin/manual-requests/:id/reject`, requireAuth, requireSuperadmin, async (c) => {
   try {
     const requestId = c.req.param("id");
-    const { notes } = await c.req.json();
+    const body = await c.req.json();
+    const reason = String(body.reason ?? body.notes ?? "").trim();
+    if (reason.length < 3 || reason.length > 500) {
+      return c.json(jsonFail("Alasan penolakan wajib diisi (3-500 karakter)"), 400);
+    }
     const adminUser = c.get("authUser");
     const supa = sb();
-
-    const { data: searchRows, error: searchErr } = await supa
-      .from("key_info")
-      .select("key, value")
-      .like("key", `%:${requestId}`)
-      .limit(1);
-
-    if (searchErr) return c.json(jsonFail(searchErr.message), 500);
-    if (!searchRows || searchRows.length === 0) {
-      return c.json(jsonFail("Permintaan pembayaran tidak ditemukan"), 404);
+    const reviewedAt = nowIso();
+    const { data: rejected, error: rejectError } = await supa
+      .from("manual_payment_requests")
+      .update({
+        status: "rejected",
+        rejection_reason: reason,
+        reviewed_at: reviewedAt,
+        reviewed_by: adminUser.id,
+        updated_at: reviewedAt,
+      })
+      .eq("id", requestId)
+      .eq("status", "submitted")
+      .select("*")
+      .maybeSingle();
+    if (rejectError) {
+      console.error("Manual payment rejection failed", rejectError);
+      return c.json(jsonFail("Permintaan pembayaran belum dapat ditolak"), 500);
+    }
+    if (!rejected) {
+      const { data: existing } = await supa
+        .from("manual_payment_requests")
+        .select("status")
+        .eq("id", requestId)
+        .maybeSingle();
+      if (!existing) {
+        const { data: legacyRows, error: legacyLookupError } = await supa
+          .from("key_info")
+          .select("key, value")
+          .like("key", `payment_request:%:${requestId}`)
+          .limit(1);
+        if (legacyLookupError) console.error("Legacy manual payment rejection lookup failed", legacyLookupError);
+        const legacyRow = legacyRows?.[0];
+        if (!legacyRow) return c.json(jsonFail("Permintaan pembayaran tidak ditemukan"), 404);
+        if (legacyRow.value?.status !== "pending") {
+          return c.json(jsonFail("Permintaan pembayaran ini sudah diproses sebelumnya"), 409);
+        }
+        const legacyValue = {
+          ...legacyRow.value,
+          status: "rejected",
+          approved_at: reviewedAt,
+          approved_by: adminUser.email,
+          notes: reason,
+        };
+        const { error: legacySaveError } = await supa
+          .from("key_info")
+          .update({ value: legacyValue })
+          .eq("key", legacyRow.key);
+        if (legacySaveError) {
+          console.error("Legacy manual payment rejection failed", legacySaveError);
+          return c.json(jsonFail("Permintaan pembayaran belum dapat ditolak"), 500);
+        }
+        return c.json(jsonOk({ ...legacyPaymentRequestDto(legacyValue), legacy_manual: true }));
+      }
+      return c.json(jsonFail("Permintaan pembayaran ini sudah diproses sebelumnya"), 409);
     }
 
-    const { key, value: requestObj } = searchRows[0];
-
-    if (requestObj.status !== "pending") {
-      return c.json(jsonFail("Permintaan pembayaran ini sudah diproses sebelumnya"), 400);
-    }
-
-    requestObj.status = "rejected";
-    requestObj.approved_at = nowIso();
-    requestObj.approved_by = adminUser.email;
-    requestObj.notes = notes || "Ditolak oleh admin";
-
-    const { error: saveErr } = await supa
-      .from("key_info")
-      .upsert({ key, value: requestObj });
-
-    if (saveErr) return c.json(jsonFail(saveErr.message), 500);
-
-    return c.json(jsonOk(requestObj));
-  } catch (e) {
-    return c.json(jsonFail(e), 500);
+    return c.json(jsonOk(paymentRequestDto(rejected)));
+  } catch (error) {
+    console.error("Manual payment rejection crashed", error);
+    return c.json(jsonFail("Permintaan pembayaran belum dapat ditolak"), 500);
   }
 });
 
 app.delete(`${API_PREFIX}/superadmin/manual-requests/:id`, requireAuth, requireSuperadmin, async (c) => {
-  try {
-    const id = c.req.param("id");
-    const supa = sb();
-
-    const { data: searchRows, error: searchErr } = await supa
-      .from("key_info")
-      .select("key")
-      .like("key", `%:${id}`)
-      .limit(1);
-
-    if (searchErr) return c.json(jsonFail(searchErr.message), 500);
-    
-    let keyToDelete = searchRows?.[0]?.key;
-    if (!keyToDelete) {
-      const { data: midtransRows, error: midtransErr } = await supa
-        .from("key_info")
-        .select("key")
-        .eq("key", `midtrans_tx:${id}`)
-        .limit(1);
-
-      if (midtransErr) return c.json(jsonFail(midtransErr.message), 500);
-      keyToDelete = midtransRows?.[0]?.key;
-    }
-
-    if (!keyToDelete) {
-      return c.json(jsonFail("Riwayat transaksi tidak ditemukan"), 404);
-    }
-
-    const { error: deleteErr } = await supa
-      .from("key_info")
-      .delete()
-      .eq("key", keyToDelete);
-
-    if (deleteErr) return c.json(jsonFail(deleteErr.message), 500);
-
-    return c.json(jsonOk({ message: "Riwayat transaksi berhasil dihapus" }));
-  } catch (e) {
-    return c.json(jsonFail(e), 500);
-  }
+  return c.json(jsonFail("Riwayat pembayaran dipertahankan sebagai audit trail dan tidak dapat dihapus"), 405);
 });
 
 // ===== 404 fallback =====

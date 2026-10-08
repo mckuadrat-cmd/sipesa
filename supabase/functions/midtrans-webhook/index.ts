@@ -130,48 +130,30 @@ app.post("/", async (c) => {
       transaction_status === "expire";
 
     if (isSuccess) {
-      const { data: balance, error: balErr } = await supa
-        .from("billing_balance")
-        .select("tokens_balance")
-        .eq("org_id", tx.org_id)
-        .maybeSingle();
+      // Signature verification above belongs to the provider boundary. The
+      // accounting mutation below is provider-independent and database-atomic.
+      const { data: mutation, error: mutationErr } = await supa.rpc("apply_billing_mutation", {
+        p_org_id: tx.org_id,
+        p_token_delta: Number(tx.amount_tokens),
+        p_transaction_type: "topup",
+        p_amount_idr: Number(tx.amount_idr),
+        p_description: `Top-up otomatis (${tx.amount_tokens} token) - Order ID: ${order_id}`,
+        p_ref_type: "midtrans",
+        p_ref_id: order_id,
+        p_actor_user_id: tx.user_id || null,
+        p_provider: "midtrans",
+        p_external_reference: order_id,
+        p_metadata: {
+          transaction_status,
+          fraud_status: fraud_status || null,
+          gross_amount,
+        },
+        p_floor_at_zero: false,
+      });
 
-      if (balErr) {
-        console.error("Gagal mendapatkan billing_balance:", balErr);
-        return c.json({ error: balErr.message }, 500);
-      }
-
-      const currentBalance = balance ? Number(balance.tokens_balance ?? 0) : 0;
-      const newBalance = currentBalance + Number(tx.amount_tokens);
-
-      const { error: upsertErr } = await supa
-        .from("billing_balance")
-        .upsert({
-          org_id: tx.org_id,
-          tokens_balance: newBalance,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: "org_id" });
-
-      if (upsertErr) {
-        console.error("Gagal update billing_balance:", upsertErr);
-        return c.json({ error: upsertErr.message }, 500);
-      }
-
-      const { error: txErr } = await supa
-        .from("billing_transactions")
-        .insert({
-          org_id: tx.org_id,
-          type: "topup",
-          tokens_delta: Number(tx.amount_tokens),
-          amount_idr: Number(tx.amount_idr),
-          description: `Top-up otomatis (${tx.amount_tokens} token) - Order ID: ${order_id}`,
-          ref_type: "midtrans",
-          ref_id: order_id,
-          created_by: tx.user_id || null,
-        });
-
-      if (txErr) {
-        console.warn("Gagal menambahkan riwayat billing_transactions:", txErr);
+      if (mutationErr) {
+        console.error("Gagal menerapkan billing mutation:", mutationErr);
+        return c.json({ error: mutationErr.message }, 500);
       }
 
       const { error: actErr } = await supa.from("app_activity").insert({
@@ -187,6 +169,7 @@ app.post("/", async (c) => {
 
       tx.status = "success";
       tx.settled_at = new Date().toISOString();
+      tx.billing_ledger_id = mutation?.ledger_id || tx.billing_ledger_id || null;
       const { error: keyErr } = await supa.from("key_info").update({ value: tx }).eq("key", txKey);
       if (keyErr) {
         console.error("Gagal update key_info:", keyErr);

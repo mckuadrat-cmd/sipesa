@@ -8,7 +8,7 @@ import { SettingsView } from "./components/settings-view";
 import { AddNumberView } from "./components/add-number-view";
 import { BroadcastView } from "./components/broadcast-view";
 import { TemplateManagement } from "./components/template-management";
-import { BroadcastHistory } from "./components/broadcast-history";
+import { BroadcastHistory, type BroadcastDetailContext } from "./components/broadcast-history";
 import { BroadcastDetailView } from "./components/broadcast-detail-view";
 import { LoginView } from "./components/login-view";
 import { LandingPageView } from "./components/landing-page-view";
@@ -16,7 +16,10 @@ import { ContactListView } from "./components/contact-list-view";
 import { SuperadminDashboardView } from "./components/superadmin-dashboard-view";
 import { RulesView } from "./components/rules-view";
 import { VerifiedView } from "./components/verified-view";
+import { PasswordRecoveryView } from "./components/password-recovery-view";
 import { api } from "./lib/api";
+import { getAuthToken } from "./lib/apiClient";
+import { supabase } from "./lib/supabaseClient";
 import { toast } from "sonner";
 import { Lock } from "lucide-react";
 
@@ -34,6 +37,12 @@ type BillingData = {
   tokenPrice: number;
 };
 
+type DashboardSectionState = {
+  loading: boolean;
+  hasData: boolean;
+  error: boolean;
+};
+
 type Transaction = {
   id: string;
   type: "topup" | "usage" | "adjustment" | "refund" | "midtrans";
@@ -46,15 +55,58 @@ type Transaction = {
   amountIdr?: number;
 };
 
+type AppRefreshPlan = {
+  stats: boolean;
+  numbers: boolean;
+  billing: boolean;
+  transactions: boolean;
+  activity: boolean;
+  usage: boolean;
+  settings: boolean;
+};
+
+function getAppRefreshPlan(view: string): AppRefreshPlan {
+  const none: AppRefreshPlan = {
+    stats: false,
+    numbers: false,
+    billing: false,
+    transactions: false,
+    activity: false,
+    usage: false,
+    settings: false,
+  };
+
+  if (view === "initial") {
+    return Object.fromEntries(Object.keys(none).map((key) => [key, true])) as AppRefreshPlan;
+  }
+  if (view === "dashboard") {
+    return { ...none, stats: true, numbers: true, billing: true, transactions: true, activity: true, usage: true };
+  }
+  if (view === "billing") return { ...none, billing: true, transactions: true };
+  if (view === "settings") return { ...none, numbers: true, settings: true };
+  if (view === "inbox" || view === "broadcast") return { ...none, numbers: true, billing: true };
+
+  return none;
+}
+
 function parseHash() {
   const hash = window.location.hash;
+  const callbackParams = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
+  const recoveryMarker = new URLSearchParams(window.location.search).get("recovery") === "1";
   let view = "dashboard";
   let numId: string | null = null;
   let bcId: string | null = null;
 
   // Tangkap callback dari Supabase Auth (setelah user klik link email)
   if (hash.includes("access_token=") || hash.includes("error_description=") || hash.includes("type=signup") || hash.includes("type=recovery")) {
-    return { view: "callback", numId: null, bcId: null, isSignup: hash.includes("type=signup") };
+    return {
+      view: "callback",
+      numId: null,
+      bcId: null,
+      isSignup: hash.includes("type=signup"),
+      isRecovery: recoveryMarker || hash.includes("type=recovery"),
+      callbackError: callbackParams.get("error_description"),
+    };
   }
 
   if (hash.startsWith("#/")) {
@@ -68,21 +120,41 @@ function parseHash() {
   } else if (hash === "" || hash === "#") {
     view = "landing";
   }
-  return { view, numId, bcId, isSignup: false };
+  return { view, numId, bcId, isSignup: false, isRecovery: false, callbackError: null };
 }
 
 export default function App() {
-  const { view: initialView, numId: initialNum, bcId: initialBc, isSignup: initialIsSignup } = parseHash();
+  const {
+    view: initialView,
+    numId: initialNum,
+    bcId: initialBc,
+    isSignup: initialIsSignup,
+    isRecovery: initialIsRecovery,
+    callbackError: initialCallbackError,
+  } = parseHash();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isSignupCallback, setIsSignupCallback] = useState(initialIsSignup || false);
+  const [isRecoveryCallback, setIsRecoveryCallback] = useState(initialIsRecovery || false);
+  const [recoveryCallbackError, setRecoveryCallbackError] = useState<string | null>(initialCallbackError);
   const [user, setUser] = useState<any>(null);
   const [activeView, setActiveView] = useState(initialView);
   const [selectedNumber, setSelectedNumber] = useState<string | null>(initialNum);
   const [selectedBroadcast, setSelectedBroadcast] = useState<string | null>(initialBc);
+  const [selectedBroadcastContext, setSelectedBroadcastContext] = useState<BroadcastDetailContext | null>(null);
   const [showAddNumberModal, setShowAddNumberModal] = useState(false);
+  const loadDataInFlightRef = useRef(false);
+  const pendingLoadDataRef = useRef<{ currentUser?: any; requestedView: string } | null>(null);
+  const inboxSummaryRefreshInFlightRef = useRef<Promise<void> | null>(null);
+  const inboxSummaryRefreshPendingRef = useRef(false);
 
   const [dashboardActivity, setDashboardActivity] = useState<any[]>([]);
   const [usage7d, setUsage7d] = useState<any[]>([]);
+  const [dashboardStatsState, setDashboardStatsState] = useState<DashboardSectionState>({ loading: true, hasData: false, error: false });
+  const [dashboardUsageState, setDashboardUsageState] = useState<DashboardSectionState>({ loading: true, hasData: false, error: false });
+  const dashboardStatsRequestRef = useRef(0);
+  const dashboardUsageRequestRef = useRef(0);
+  const [inboxNumbersState, setInboxNumbersState] = useState<DashboardSectionState>({ loading: true, hasData: false, error: false });
+  const inboxNumbersRequestRef = useRef(0);
 
   const [dashboardStats, setDashboardStats] = useState<DashboardStats>({
     totalMessages: 0,
@@ -96,7 +168,7 @@ export default function App() {
   const [billingData, setBillingData] = useState<BillingData>({
     currentTokens: 0,
     totalSpent: 0,
-    tokenPrice: 1500,
+    tokenPrice: 0,
   });
 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -104,6 +176,10 @@ export default function App() {
 
   useEffect(() => {
     const initializeApp = async () => {
+      if (initialIsRecovery) {
+        setLoading(false);
+        return;
+      }
       try {
         const session = await api.checkSession();
 
@@ -123,7 +199,7 @@ export default function App() {
         const userIsActive = sData?.is_active ?? (sData?.status ? sData.status === "active" : true);
         if (userIsActive && session.data?.email?.toLowerCase() !== "mckuadratid@gmail.com") {
           await api.init();
-          await loadData(session.data);
+          await loadData(session.data, "initial");
         }
       } catch (error) {
         console.error("Error initializing app:", error);
@@ -152,6 +228,7 @@ export default function App() {
       setUser(null);
       setSelectedNumber(null);
       setSelectedBroadcast(null);
+      setSelectedBroadcastContext(null);
       setActiveView("dashboard");
       window.location.hash = "";
     };
@@ -159,20 +236,6 @@ export default function App() {
     window.addEventListener("sipesa-unauthorized", handleUnauthorized);
     return () => window.removeEventListener("sipesa-unauthorized", handleUnauthorized);
   }, []);
-
-  useEffect(() => {
-    if (!isAuthenticated || user?.email?.toLowerCase() === "mckuadratid@gmail.com") return;
-
-    const interval = setInterval(async () => {
-      try {
-        await loadData();
-      } catch (err) {
-        console.error("Error polling real-time data:", err);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isAuthenticated]);
 
   useEffect(() => {
     if (loading) return; // Prevent overwriting hash on initial load
@@ -210,17 +273,19 @@ export default function App() {
       } else if (activeView === "login" || activeView === "register" || activeView === "" || activeView === "callback" || activeView === "landing") {
         setActiveView(user?.email?.toLowerCase() === "mckuadratid@gmail.com" ? "superadmin" : "dashboard");
       }
-    } else if (!loading && activeView === "callback") {
+    } else if (!loading && activeView === "callback" && !isRecoveryCallback) {
       // Jika loading selesai tapi tidak terautentikasi (mungkin link kadaluarsa)
       setTimeout(() => {
         setActiveView("login");
       }, 3000);
     }
-  }, [isAuthenticated, activeView, user, loading, isSignupCallback]);
+  }, [isAuthenticated, activeView, user, loading, isSignupCallback, isRecoveryCallback]);
 
   useEffect(() => {
     const handleHashChange = () => {
-      const { view, numId, bcId } = parseHash();
+      const { view, numId, bcId, isRecovery, callbackError } = parseHash();
+      setIsRecoveryCallback(isRecovery);
+      setRecoveryCallbackError(callbackError);
       
       // Cegah hashchange mereset view jika sedang memproses callback signup
       setActiveView((prev) => {
@@ -254,7 +319,7 @@ export default function App() {
       const userIsActive = u?.is_active ?? (u?.status ? u.status === "active" : true);
       if (userIsActive && result.data.user?.email?.toLowerCase() !== "mckuadratid@gmail.com") {
         await api.init();
-        await loadData(result.data.user);
+        await loadData(result.data.user, "initial");
       }
       return;
     }
@@ -290,12 +355,17 @@ export default function App() {
       const userIsActive = u?.is_active ?? (u?.status ? u.status === "active" : true);
       if (userIsActive && result.data.user?.email?.toLowerCase() !== "mckuadratid@gmail.com") {
         await api.init();
-        await loadData(result.data.user);
+        await loadData(result.data.user, "initial");
       }
       return { emailVerificationRequired: false };
     }
 
     throw new Error("Registrasi gagal");
+  };
+
+  const handleForgotPassword = async (email: string) => {
+    const result = await api.requestPasswordReset(email);
+    if ("error" in result) throw new Error(result.error);
   };
 
   const handleLogout = async () => {
@@ -316,145 +386,349 @@ export default function App() {
     }
   };
 
-  const loadData = async (currentUser?: any) => {
-    const activeUser = currentUser || user;
-    if (activeUser?.email?.toLowerCase() === "mckuadratid@gmail.com") return;
+  const loadDashboardStatsSection = async () => {
+    const requestVersion = ++dashboardStatsRequestRef.current;
+    setDashboardStatsState((previous) => ({ ...previous, loading: true, error: false }));
     try {
       const statsRes = await api.getStats();
-      if (!("error" in statsRes)) {
-        const raw = statsRes.data ?? {};
-        setDashboardStats({
-          totalMessages: Number(raw.totalMessages ?? 0),
-          totalContacts: Number(raw.totalContacts ?? 0),
-          tokensRemaining: Number(raw.tokensRemaining ?? raw.tokenRemaining ?? 0),
-          tokensUsed: Number(raw.tokensUsed ?? 0),
-          activeNumbers: Number(raw.activeNumbers ?? 0),
-        });
-      }
+      if (requestVersion !== dashboardStatsRequestRef.current) return;
+      if ("error" in statsRes) throw new Error(statsRes.error);
+      const raw = statsRes.data ?? {};
+      setDashboardStats({
+        totalMessages: Number(raw.totalMessages ?? 0),
+        totalContacts: Number(raw.totalContacts ?? 0),
+        tokensRemaining: Number(raw.tokensRemaining ?? raw.tokenRemaining ?? 0),
+        tokensUsed: Number(raw.tokensUsed ?? 0),
+        activeNumbers: Number(raw.activeNumbers ?? 0),
+      });
+      setDashboardStatsState({ loading: false, hasData: true, error: false });
+    } catch (error) {
+      if (requestVersion !== dashboardStatsRequestRef.current) return;
+      console.error("Error fetching dashboard stats:", error);
+      setDashboardStatsState((previous) => ({ ...previous, loading: false, error: true }));
+    }
+  };
 
+  const loadDashboardUsageSection = async () => {
+    const requestVersion = ++dashboardUsageRequestRef.current;
+    setDashboardUsageState((previous) => ({ ...previous, loading: true, error: false }));
+    try {
+      const usageRes = await api.getUsage7d();
+      if (requestVersion !== dashboardUsageRequestRef.current) return;
+      if ("error" in usageRes) throw new Error(usageRes.error);
+      setUsage7d(usageRes.data ?? []);
+      setDashboardUsageState({ loading: false, hasData: true, error: false });
+    } catch (error) {
+      if (requestVersion !== dashboardUsageRequestRef.current) return;
+      console.error("Error fetching dashboard usage:", error);
+      setDashboardUsageState((previous) => ({ ...previous, loading: false, error: true }));
+    }
+  };
+
+  const loadInboxNumbersSection = async () => {
+    const requestVersion = ++inboxNumbersRequestRef.current;
+    setInboxNumbersState((previous) => ({ ...previous, loading: true, error: false }));
+    try {
       const numbersRes = await api.getNumbers();
-      if (!("error" in numbersRes)) {
-        setWhatsappNumbers(numbersRes.data ?? []);
+      if (requestVersion !== inboxNumbersRequestRef.current) return;
+      if ("error" in numbersRes) throw new Error(numbersRes.error);
+      setWhatsappNumbers(numbersRes.data ?? []);
+      setInboxNumbersState({ loading: false, hasData: true, error: false });
+    } catch (error) {
+      if (requestVersion !== inboxNumbersRequestRef.current) return;
+      console.error("Error fetching WhatsApp numbers:", error);
+      setInboxNumbersState((previous) => ({ ...previous, loading: false, error: true }));
+    }
+  };
+
+  const loadData = async (currentUser?: any, requestedView = activeView) => {
+    const activeUser = currentUser || user;
+    if (activeUser?.email?.toLowerCase() === "mckuadratid@gmail.com") return;
+    if (loadDataInFlightRef.current) {
+      const pending = pendingLoadDataRef.current;
+      pendingLoadDataRef.current = {
+        currentUser: currentUser || pending?.currentUser,
+        requestedView: pending && pending.requestedView !== requestedView
+          ? "initial"
+          : requestedView,
+      };
+      return;
+    }
+
+    const plan = getAppRefreshPlan(requestedView);
+    if (!Object.values(plan).some(Boolean)) return;
+
+    loadDataInFlightRef.current = true;
+    try {
+      if (plan.stats) {
+        await loadDashboardStatsSection();
       }
 
-      const billingRes = await api.getBilling();
-      if (!("error" in billingRes)) {
-        const raw = billingRes.data ?? {};
-
-        const currentTokens = Number(
-          raw.currentTokens ?? raw.tokens_remaining ?? raw.tokensRemaining ?? 0,
-        );
-
-        const totalSpent = Number(
-          raw.totalSpent ??
-            raw.rupiah_spent ??
-            raw.rupiah_used ??
-            raw.rupiah_balance_used ??
-            0,
-        );
-
-        const tokenPrice = Number(raw.tokenPrice ?? 1500);
-
-        setBillingData({
-          currentTokens,
-          totalSpent,
-          tokenPrice,
-        });
+      if (plan.numbers) {
+        await loadInboxNumbersSection();
       }
 
-      const txnRes = await api.getTransactions();
-      if (!("error" in txnRes)) {
-        const rows = (txnRes.data ?? []) as any[];
+      if (plan.billing) {
+        const billingRes = await api.getBilling();
+        if (!("error" in billingRes)) {
+          const raw = billingRes.data ?? {};
 
-        const normalized: Transaction[] = rows.map((r) => {
-          const amount = Number(r.amount ?? r.tokens ?? r.token_amount ?? r.token_delta ?? 0);
+          const currentTokens = Number(
+            raw.currentTokens ?? raw.tokens_remaining ?? raw.tokensRemaining ?? 0,
+          );
 
-          const typeRaw = String(r.type ?? r.txn_type ?? r.kind ?? "");
-          let type: Transaction["type"] = "usage";
+          const totalSpent = Number(
+            raw.totalSpent ??
+              raw.rupiah_spent ??
+              raw.rupiah_used ??
+              raw.rupiah_balance_used ??
+              0,
+          );
 
-          if (typeRaw === "midtrans") {
-            type = "midtrans";
-          } else if (typeRaw === "topup" || typeRaw === "credit" || amount > 0) {
-            type = "topup";
-          } else if (typeRaw === "refund") {
-            type = "refund";
-          } else if (typeRaw === "adjustment") {
-            type = "adjustment";
-          }
+          const rawTokenPrice = Number(raw.tokenPrice);
+          const tokenPrice = Number.isFinite(rawTokenPrice) && rawTokenPrice > 0
+            ? rawTokenPrice
+            : 0;
 
-          const dateIso = r.date ?? r.created_at ?? r.createdAt ?? new Date().toISOString();
-          const description =
-            r.description ??
-            r.note ??
-            (type === "topup" ? "Top-up token" : "Pemakaian token");
+          setBillingData({
+            currentTokens,
+            totalSpent,
+            tokenPrice,
+          });
+        }
+      }
 
-          return {
-            id: String(r.id ?? crypto.randomUUID()),
-            type,
-            amount: Math.abs(amount),
-            date: dateIso,
-            description,
-            status: r.status,
-            snapToken: r.snapToken ?? r.snap_token,
-            snapUrl: r.snapUrl ?? r.snap_url,
-            amountIdr: r.amountIdr ?? r.amount_idr,
-          };
-        });
+      if (plan.transactions) {
+        const txnRes = await api.getTransactions();
+        if (!("error" in txnRes)) {
+          const rows = (txnRes.data ?? []) as any[];
 
+          const normalized: Transaction[] = rows.map((r) => {
+            const amount = Number(r.amount ?? r.tokens ?? r.token_amount ?? r.token_delta ?? 0);
+
+            const typeRaw = String(r.type ?? r.txn_type ?? r.kind ?? "");
+            let type: Transaction["type"] = "usage";
+
+            if (typeRaw === "midtrans") {
+              type = "midtrans";
+            } else if (typeRaw === "topup" || typeRaw === "credit" || amount > 0) {
+              type = "topup";
+            } else if (typeRaw === "refund") {
+              type = "refund";
+            } else if (typeRaw === "adjustment") {
+              type = "adjustment";
+            }
+
+            const dateIso = r.date ?? r.created_at ?? r.createdAt ?? new Date().toISOString();
+            const description =
+              r.description ??
+              r.note ??
+              (type === "topup" ? "Top-up token" : "Pemakaian token");
+
+            return {
+              id: String(r.id ?? crypto.randomUUID()),
+              type,
+              amount: Math.abs(amount),
+              date: dateIso,
+              description,
+              status: r.status,
+              snapToken: r.snapToken ?? r.snap_token,
+              snapUrl: r.snapUrl ?? r.snap_url,
+              amountIdr: r.amountIdr ?? r.amount_idr,
+            };
+          });
+
+          setTransactions(normalized);
+        }
+      }
+
+      if (plan.activity) {
         const activityRes = await api.getDashboardActivity();
-          if (!("error" in activityRes)) {
-            setDashboardActivity(activityRes.data ?? []);
-          }
-
-          const usageRes = await api.getUsage7d();
-          if (!("error" in usageRes)) {
-            setUsage7d(usageRes.data ?? []);
-          }
-
-        setTransactions(normalized);
+        if (!("error" in activityRes)) {
+          setDashboardActivity(activityRes.data ?? []);
+        }
       }
 
-      const settingsRes = await api.getSettings();
-      if (!("error" in settingsRes)) {
-        const profile = settingsRes.data.profile;
-        const org = settingsRes.data.org;
-        const userId = profile?.id;
-        const orgId = org?.id;
+      if (plan.usage) {
+        await loadDashboardUsageSection();
+      }
 
-        if (userId) {
-          const avatarKey = `sipesa_avatar_${userId}`;
-          if (profile?.avatar) {
-            localStorage.setItem(avatarKey, profile.avatar);
-            window.dispatchEvent(new Event("sipesa-avatar-updated"));
-          } else if (profile?.avatar === null) {
-            localStorage.removeItem(avatarKey);
-            window.dispatchEvent(new Event("sipesa-avatar-updated"));
+      if (plan.settings) {
+        const settingsRes = await api.getSettings();
+        if (!("error" in settingsRes)) {
+          const profile = settingsRes.data.profile;
+          const org = settingsRes.data.org;
+          const userId = profile?.id;
+          const orgId = org?.id;
+
+          if (userId) {
+            const avatarKey = `sipesa_avatar_${userId}`;
+            if (profile?.avatar) {
+              localStorage.setItem(avatarKey, profile.avatar);
+              window.dispatchEvent(new Event("sipesa-avatar-updated"));
+            } else if (profile?.avatar === null) {
+              localStorage.removeItem(avatarKey);
+              window.dispatchEvent(new Event("sipesa-avatar-updated"));
+            }
           }
-        }
 
-        if (orgId) {
-          const addressKey = `sipesa_address_${orgId}`;
-          if (org?.address) {
-            localStorage.setItem(addressKey, org.address);
-          } else if (org?.address === null || org?.address === "") {
-            localStorage.removeItem(addressKey);
+          if (orgId) {
+            const addressKey = `sipesa_address_${orgId}`;
+            if (org?.address) {
+              localStorage.setItem(addressKey, org.address);
+            } else if (org?.address === null || org?.address === "") {
+              localStorage.removeItem(addressKey);
+            }
           }
-        }
 
-        setUser((prev: any) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            name: profile?.fullName || prev.name,
-            orgName: org?.name || prev.orgName || prev.org_name,
-            org_name: org?.name || prev.org_name || prev.orgName,
-          };
-        });
+          setUser((prev: any) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              name: profile?.fullName || prev.name,
+              orgName: org?.name || prev.orgName || prev.org_name,
+              org_name: org?.name || prev.org_name || prev.orgName,
+            };
+          });
+        }
       }
     } catch (error) {
       console.error("Error loading data:", error);
+    } finally {
+      loadDataInFlightRef.current = false;
+      const pending = pendingLoadDataRef.current;
+      pendingLoadDataRef.current = null;
+      if (pending) {
+        queueMicrotask(() => {
+          void loadData(pending.currentUser, pending.requestedView);
+        });
+      }
     }
   };
+
+  const refreshInboxSummary = async () => {
+    if (inboxSummaryRefreshInFlightRef.current) {
+      inboxSummaryRefreshPendingRef.current = true;
+      await inboxSummaryRefreshInFlightRef.current;
+      return;
+    }
+
+    const run = async () => {
+      do {
+        inboxSummaryRefreshPendingRef.current = false;
+        const numbersRes = await api.getNumbers();
+        if (!("error" in numbersRes)) {
+          setWhatsappNumbers(numbersRes.data ?? []);
+          setInboxNumbersState({ loading: false, hasData: true, error: false });
+        } else {
+          console.error("Error refreshing Inbox number summary:", numbersRes.error);
+          setInboxNumbersState((previous) => ({ ...previous, loading: false, error: true }));
+        }
+      } while (inboxSummaryRefreshPendingRef.current);
+    };
+
+    inboxSummaryRefreshInFlightRef.current = run();
+    try {
+      await inboxSummaryRefreshInFlightRef.current;
+    } finally {
+      inboxSummaryRefreshInFlightRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    const orgId = String(user?.org_id || "");
+    const isSuperadminSession = user?.email?.toLowerCase() === "mckuadratid@gmail.com";
+    if (!isAuthenticated || !orgId || isSuperadminSession) return;
+
+    let cancelled = false;
+    let debounceTimer: number | null = null;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    const scheduleInboxInvalidation = (source: "INSERT" | "UPDATE") => {
+      if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(() => {
+        debounceTimer = null;
+        if (cancelled) return;
+        if (import.meta.env.DEV) {
+          console.debug("[INBOX_REALTIME] refreshing server summary", { orgId, source });
+        }
+        void refreshInboxSummary();
+      }, 500);
+    };
+
+    void (async () => {
+      const token = getAuthToken();
+      if (!token) {
+        if (import.meta.env.DEV) {
+          console.debug("[INBOX_REALTIME] subscription skipped", { orgId, reason: "missing_token" });
+        }
+        return;
+      }
+
+      await supabase.realtime.setAuth(token);
+      if (cancelled) return;
+
+      channel = supabase
+        .channel(`global-inbox:${orgId}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "wa_messages", filter: `org_id=eq.${orgId}` },
+          (payload) => {
+            const row: any = payload.new;
+            if (String(row.org_id || "") !== orgId || row.direction !== "in") return;
+            scheduleInboxInvalidation("INSERT");
+          },
+        )
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "wa_messages", filter: `org_id=eq.${orgId}` },
+          (payload) => {
+            const row: any = payload.new;
+            if (String(row.org_id || "") !== orgId || row.direction !== "in") return;
+            if (!["delivered", "read"].includes(String(row.status || ""))) return;
+            scheduleInboxInvalidation("UPDATE");
+          },
+        )
+        .subscribe((status, error) => {
+          if (import.meta.env.DEV) {
+            console.debug("[INBOX_REALTIME] channel status", {
+              orgId,
+              status,
+              error: error?.message ?? null,
+            });
+          }
+        });
+    })().catch((error) => {
+      if (import.meta.env.DEV) {
+        console.debug("[INBOX_REALTIME] setup error", {
+          orgId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+      if (channel) void supabase.removeChannel(channel);
+      if (import.meta.env.DEV) {
+        console.debug("[INBOX_REALTIME] channel cleanup", { orgId, channelCreated: Boolean(channel) });
+      }
+    };
+  }, [isAuthenticated, user?.email, user?.org_id]);
+
+  useEffect(() => {
+    if (!isAuthenticated || user?.email?.toLowerCase() === "mckuadratid@gmail.com") return;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void loadData(undefined, activeView);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [activeView, isAuthenticated, user?.email]);
 
   const handleSelectNumber = (numberId: string) => {
     setSelectedNumber(numberId);
@@ -462,11 +736,11 @@ export default function App() {
 
   const handleBackFromChat = () => {
     setSelectedNumber(null);
-    loadData();
+    void loadData(undefined, "dashboard");
   };
 
   const handleAddNumber = async () => {
-    await loadData();
+    await loadData(undefined, "dashboard");
     setActiveView("dashboard");
   };
 
@@ -475,7 +749,7 @@ export default function App() {
       setShowAddNumberModal(true);
     } else {
       setActiveView(view);
-      loadData();
+      void loadData(undefined, view);
     }
   };
 
@@ -492,6 +766,19 @@ export default function App() {
 
   if (!isAuthenticated) {
     if (activeView === "callback") {
+      if (isRecoveryCallback) {
+        return (
+          <PasswordRecoveryView
+            callbackError={recoveryCallbackError}
+            onReturnToLogin={() => {
+              setIsRecoveryCallback(false);
+              setRecoveryCallbackError(null);
+              setActiveView("login");
+              window.history.replaceState(null, "", `${window.location.pathname}#/login`);
+            }}
+          />
+        );
+      }
       return (
         <div className="flex items-center justify-center h-screen bg-gray-50">
           <div className="text-center p-8 bg-white shadow rounded-lg max-w-sm w-full mx-4">
@@ -508,6 +795,7 @@ export default function App() {
         <LoginView 
           onLogin={handleLogin} 
           onSignup={handleSignup} 
+          onForgotPassword={handleForgotPassword}
           initialIsLogin={activeView === "login"} 
         />
       );
@@ -587,16 +875,19 @@ export default function App() {
       return (
         <>
           <BroadcastHistory
-            onViewDetail={(broadcastId) => {
+            onViewDetail={(broadcastId, context) => {
               setSelectedBroadcast(broadcastId);
+              setSelectedBroadcastContext(context);
               setActiveView("broadcast-detail");
             }}
           />
           {activeView === "broadcast-detail" && selectedBroadcast && (
             <BroadcastDetailView
               broadcastId={selectedBroadcast}
+              historyContext={selectedBroadcastContext}
               onBack={() => {
                 setSelectedBroadcast(null);
+                setSelectedBroadcastContext(null);
                 setActiveView("history");
               }}
             />
@@ -621,6 +912,11 @@ export default function App() {
             stats={dashboardStats}
             activities={dashboardActivity}
             usage7d={usage7d}
+            statsState={dashboardStatsState}
+            usageState={dashboardUsageState}
+            onRetryStats={() => void loadDashboardStatsSection()}
+            onRetryUsage={() => void loadDashboardUsageSection()}
+            tokenPrice={billingData.tokenPrice}
             user={user}
             onViewChange={handleViewChange}
           />
@@ -632,6 +928,8 @@ export default function App() {
             <InboxView
               numbers={whatsappNumbers}
               onSelectNumber={(numId: string) => setSelectedNumber(numId)}
+              state={inboxNumbersState}
+              onRetry={() => void loadInboxNumbersSection()}
             />
           );
         }
@@ -643,6 +941,10 @@ export default function App() {
             numberId={selectedNumber}
             numberName={currentNumber?.name || "Nomor WA"}
             onBack={handleBackFromChat}
+            onViewTemplates={() => {
+              setSelectedNumber(null);
+              setActiveView("templates");
+            }}
           />
         );
 
@@ -700,7 +1002,7 @@ export default function App() {
         );
 
       default:
-        return <DashboardView stats={dashboardStats} />;
+        return <DashboardView stats={dashboardStats} tokenPrice={billingData.tokenPrice} />;
     }
   };
 
@@ -719,7 +1021,7 @@ export default function App() {
         <AddNumberView
           onBack={() => setShowAddNumberModal(false)}
           onAddNumber={async () => {
-            await loadData();
+            await loadData(undefined, activeView);
             setShowAddNumberModal(false);
           }}
         />

@@ -1,49 +1,12 @@
-import { useState, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, ArrowUpCircle, CheckCircle2, Coins, CreditCard, Eye, History, RefreshCw, Trash2, Upload } from "lucide-react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Coins, CreditCard, ArrowUpCircle, History, AlertCircle, Upload, Eye, Image, Copy } from "lucide-react";
 import { Badge } from "./ui/badge";
-import { api } from "../lib/api";
 import { AppModal } from "./AppModal";
-import { toast } from "sonner";
-
-export function BankBrandLogo({ name }: { name: string }) {
-  const normalized = name.toUpperCase();
-  if (normalized === "BCA") {
-    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-blue-600 text-white tracking-wider shadow-sm select-none">BCA</span>;
-  }
-  if (normalized === "MANDIRI") {
-    return <span className="inline-flex items-center justify-center w-14 h-6 rounded text-[9px] font-bold bg-[#003D7C] text-[#F2A900] shadow-sm select-none">mandiri</span>;
-  }
-  if (normalized === "BRI") {
-    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-[#00529C] text-white shadow-sm select-none">BRI</span>;
-  }
-  if (normalized === "BNI") {
-    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-[#E05B26] text-teal-950 shadow-sm select-none">BNI</span>;
-  }
-  if (normalized === "BSI") {
-    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-teal-600 text-white shadow-sm select-none">BSI</span>;
-  }
-  return <span className="inline-flex items-center justify-center px-2 h-6 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 shadow-sm select-none">{name}</span>;
-}
-
-export function EWalletBrandLogo({ name }: { name: string }) {
-  const normalized = name.toUpperCase();
-  if (normalized === "GOPAY") {
-    return <span className="inline-flex items-center justify-center w-14 h-6 rounded text-[9px] font-extrabold bg-sky-500 text-white shadow-sm select-none">go pay</span>;
-  }
-  if (normalized === "OVO") {
-    return <span className="inline-flex items-center justify-center w-10 h-6 rounded text-[10px] font-extrabold bg-purple-700 text-white shadow-sm select-none">ovo</span>;
-  }
-  if (normalized === "DANA") {
-    return <span className="inline-flex items-center justify-center w-12 h-6 rounded text-[10px] font-extrabold bg-blue-600 text-white shadow-sm select-none">DANA</span>;
-  }
-  if (normalized === "LINKAJA") {
-    return <span className="inline-flex items-center justify-center w-14 h-6 rounded text-[9px] font-extrabold bg-red-600 text-white shadow-sm select-none">LinkAja!</span>;
-  }
-  return <span className="inline-flex items-center justify-center px-2 h-6 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 shadow-sm select-none">{name}</span>;
-}
+import { api, type ManualPaymentRequest, type PaymentDestination } from "../lib/api";
+import { useVisibilityRefresh } from "../hooks/use-visibility-refresh";
 
 type BillingData = {
   currentTokens?: number;
@@ -58,8 +21,6 @@ type Transaction = {
   date: string;
   description: string;
   status?: string;
-  snap_token?: string;
-  snap_url?: string;
   amount_idr?: number;
 };
 
@@ -69,734 +30,361 @@ type BillingViewProps = {
   onUpdate?: () => void;
 };
 
+const proofMimeTypes = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
+
+function formatDate(value?: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("id-ID");
+}
+
+function requestBadge(status: ManualPaymentRequest["status"]) {
+  switch (status) {
+    case "approved": return "bg-green-600 text-white";
+    case "rejected": return "bg-red-600 text-white";
+    case "submitted": return "bg-amber-500 text-slate-950";
+    default: return "bg-slate-500 text-white";
+  }
+}
+
 export function BillingView({ billingData, transactions, onUpdate }: BillingViewProps) {
-  const [topupAmount, setTopupAmount] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const copyToClipboard = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success(`${label} berhasil disalin ke clipboard.`);
-  };
-
   const safe = useMemo(() => {
     const currentTokens = Number(billingData?.currentTokens ?? 0);
     const totalSpent = Number(billingData?.totalSpent ?? 0);
-    const tokenPrice = Number(billingData?.tokenPrice ?? 1500);
+    const rawTokenPrice = Number(billingData?.tokenPrice);
+    const tokenPrice = Number.isFinite(rawTokenPrice) && rawTokenPrice > 0 ? rawTokenPrice : 0;
     return { currentTokens, totalSpent, tokenPrice };
   }, [billingData]);
 
-  // Manual payment states
-  const [paymentSettings, setPaymentSettings] = useState<any | null>(null);
-  const [manualRequests, setManualRequests] = useState<any[]>([]);
-  const [isTopupModalOpen, setIsTopupModalOpen] = useState(false);
-  const [referralCode, setReferralCode] = useState(0);
-  const [receiptBase64, setReceiptBase64] = useState<string | null>(null);
-  const [receiptFileName, setReceiptFileName] = useState("");
-  const [submittingRequest, setSubmittingRequest] = useState(false);
-  const [selectedReceipt, setSelectedReceipt] = useState<string | null>(null);
+  const [topupAmount, setTopupAmount] = useState("");
+  const [destinations, setDestinations] = useState<PaymentDestination[]>([]);
+  const [destinationsLoading, setDestinationsLoading] = useState(true);
+  const [destinationsError, setDestinationsError] = useState<string | null>(null);
+  const [selectedDestinationId, setSelectedDestinationId] = useState("");
+  const [requests, setRequests] = useState<ManualPaymentRequest[]>([]);
+  const [requestsLoading, setRequestsLoading] = useState(true);
+  const [requestsError, setRequestsError] = useState<string | null>(null);
+  const [flowOpen, setFlowOpen] = useState(false);
+  const [draft, setDraft] = useState<ManualPaymentRequest | null>(null);
+  const [proof, setProof] = useState<File | null>(null);
+  const [mutation, setMutation] = useState<"create" | "upload" | "submit" | null>(null);
+  const [flowError, setFlowError] = useState<string | null>(null);
+  const [qrisUrl, setQrisUrl] = useState<string | null>(null);
+  const [qrisError, setQrisError] = useState<string | null>(null);
+  const [qrisRetry, setQrisRetry] = useState(0);
+  const [proofViewer, setProofViewer] = useState<{ url: string; mime: string | null } | null>(null);
+  const [proofLoadingId, setProofLoadingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ title: string; message: string } | null>(null);
+  const proofInputRef = useRef<HTMLInputElement>(null);
 
-  const [notice, setNotice] = useState<{
-    open: boolean;
-    type: "success" | "error" | "info";
-    title: string;
-    message: string;
-  }>({
-    open: false,
-    type: "info",
-    title: "",
-    message: "",
-  });
-
-  const openNotice = (
-    type: "success" | "error" | "info",
-    title: string,
-    message: string,
-  ) => {
-    setNotice({ open: true, type, title, message });
-  };
-
-  const closeNotice = () => {
-    setNotice({ open: false, type: "info", title: "", message: "" });
-  };
-
-  const loadSettings = async () => {
-    const res = await api.getPaymentSettings();
-    if (res.success) {
-      setPaymentSettings(res.data);
+  const loadDestinations = useCallback(async () => {
+    setDestinationsLoading(true);
+    setDestinationsError(null);
+    const result = await api.getPaymentDestinations();
+    if (result.success) {
+      setDestinations(result.data);
+      setSelectedDestinationId((current) => current || result.data[0]?.id || "");
+    } else {
+      setDestinationsError(result.error);
     }
-  };
-
-  const loadManualRequests = async () => {
-    const res = await api.getManualRequests();
-    if (res.success) {
-      setManualRequests(res.data);
-    }
-  };
-
-  useEffect(() => {
-    loadSettings();
-    loadManualRequests();
-    onUpdate?.();
-
-    const interval = setInterval(() => {
-      loadManualRequests();
-    }, 1000);
-
-    // 1. Load Midtrans Snap JS dynamically
-    const isProduction = import.meta.env.VITE_MIDTRANS_IS_PRODUCTION === "true";
-    const snapUrl = isProduction
-      ? "https://app.midtrans.com/snap/snap.js"
-      : "https://app.sandbox.midtrans.com/snap/snap.js";
-    const clientKey = import.meta.env.VITE_MIDTRANS_CLIENT_KEY || "";
-
-    if (clientKey && !document.querySelector(`script[src="${snapUrl}"]`)) {
-      const script = document.createElement("script");
-      script.src = snapUrl;
-      script.setAttribute("data-client-key", clientKey);
-      script.async = true;
-      document.body.appendChild(script);
-    }
-
-    // 2. Detect redirect callback from Midtrans
-    const searchParams = new URLSearchParams(window.location.search);
-    let status = searchParams.get("status") || searchParams.get("transaction_status");
-    let orderId = searchParams.get("order_id");
-
-    if (!status || !orderId) {
-      const hash = window.location.hash;
-      if (hash.includes("?")) {
-        const queryStr = hash.split("?")[1];
-        const params = new URLSearchParams(queryStr);
-        status = params.get("status") || params.get("transaction_status");
-        orderId = params.get("order_id");
-      }
-    }
-
-    if (status && orderId) {
-      if (status === "success" || status === "settlement" || status === "capture") {
-        openNotice(
-          "success",
-          "Pembayaran Berhasil",
-          `Terima kasih! Pembayaran untuk transaksi #${orderId} telah berhasil diselesaikan. Saldo token Anda akan bertambah secara otomatis.`
-        );
-      } else if (status === "pending") {
-        openNotice(
-          "info",
-          "Pembayaran Pending",
-          `Transaksi #${orderId} sedang menunggu pembayaran. Harap selesaikan pembayaran Anda sesuai dengan petunjuk.`
-        );
-      } else if (status === "error" || status === "failure") {
-        openNotice(
-          "error",
-          "Pembayaran Gagal",
-          `Transaksi #${orderId} gagal atau dibatalkan. Silakan coba kembali.`
-        );
-      }
-
-      if (window.location.search) {
-        const newUrl = window.location.origin + window.location.pathname + window.location.hash;
-        window.history.replaceState({}, document.title, newUrl);
-      } else {
-        window.location.hash = "#/billing";
-      }
-      onUpdate?.();
-    }
-
-    return () => clearInterval(interval);
+    setDestinationsLoading(false);
   }, []);
 
-  const mergedHistory = useMemo(() => {
-    const list: any[] = [];
+  const loadRequests = useCallback(async (background = false) => {
+    if (!background) setRequestsLoading(true);
+    const result = await api.getManualRequests();
+    if (result.success) {
+      setRequests(result.data);
+      setRequestsError(null);
+    } else {
+      setRequestsError(result.error);
+    }
+    if (!background) setRequestsLoading(false);
+  }, []);
 
-    // Add transactions
-    (transactions || []).forEach((tx) => {
-      const rawTx = tx as any;
-      list.push({
-        id: tx.id,
-        itemType: "transaction",
-        type: tx.type,
-        amount: tx.amount,
-        date: tx.date,
-        timestamp: new Date(tx.date).getTime(),
-        description: tx.description,
-        status: rawTx.status,
-        snap_token: rawTx.snapToken || rawTx.snap_token,
-        snap_url: rawTx.snapUrl || rawTx.snap_url,
-        amount_idr: rawTx.amountIdr || rawTx.amount_idr,
+  const refreshRequests = useVisibilityRefresh(() => loadRequests(true), { intervalMs: 30_000 });
+
+  useEffect(() => {
+    void loadDestinations();
+    void loadRequests();
+  }, [loadDestinations, loadRequests]);
+
+  useEffect(() => {
+    const destination = draft?.destination;
+    if (!flowOpen || !destination?.has_qris) {
+      setQrisUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return null;
       });
+      setQrisError(null);
+      return;
+    }
+    let active = true;
+    void api.getPaymentDestinationQrisObjectUrl(destination.id).then((result) => {
+      if (!active) {
+        if (result.success) URL.revokeObjectURL(result.data);
+        return;
+      }
+      if (result.success) setQrisUrl(result.data);
+      else setQrisError(result.error);
     });
+    return () => { active = false; };
+  }, [draft?.destination, flowOpen, qrisRetry]);
 
-    // Add manual requests
-    (manualRequests || []).forEach((req) => {
-      list.push({
-        id: req.id,
-        itemType: "manual_request",
-        amount_tokens: req.amount_tokens,
-        amount_idr: req.amount_idr,
-        created_by_email: req.created_by_email,
-        receipt_url: req.receipt_url,
-        notes: req.notes,
-        status: req.status,
-        created_at: req.created_at,
-        approved_at: req.approved_at,
-        approved_by: req.approved_by,
-        timestamp: new Date(req.created_at).getTime(),
-      });
-    });
+  useEffect(() => () => {
+    if (qrisUrl) URL.revokeObjectURL(qrisUrl);
+    if (proofViewer?.url) URL.revokeObjectURL(proofViewer.url);
+  }, [proofViewer?.url, qrisUrl]);
 
-    // Sort by timestamp descending
-    return list.sort((a, b) => b.timestamp - a.timestamp);
-  }, [transactions, manualRequests]);
+  const selectedDestination = destinations.find((item) => item.id === selectedDestinationId) ?? null;
+  const amountTokens = Number.parseInt(topupAmount, 10);
+  const amountIsValid = Number.isSafeInteger(amountTokens) && amountTokens > 0 && safe.tokenPrice > 0;
 
-  const handleQuickTopup = (tokens: number) => {
-    setTopupAmount(tokens.toString());
+  const beginPayment = async () => {
+    if (!amountIsValid) {
+      setFlowError("Masukkan jumlah token yang valid dan pastikan harga token tersedia.");
+      return;
+    }
+    if (!selectedDestination) {
+      setFlowError("Pilih metode pembayaran yang tersedia.");
+      return;
+    }
+    if (mutation) return;
+    setMutation("create");
+    setFlowError(null);
+    const result = await api.createManualRequest(amountTokens, selectedDestination.id);
+    if (result.success) {
+      setDraft(result.data);
+      setProof(null);
+      if (proofInputRef.current) proofInputRef.current.value = "";
+      setFlowOpen(true);
+      void loadRequests(true);
+    } else {
+      setFlowError(result.error);
+    }
+    setMutation(null);
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const resumeDraft = (request: ManualPaymentRequest) => {
+    setDraft(request);
+    setTopupAmount(String(request.amount_tokens));
+    setSelectedDestinationId(request.destination?.id ?? "");
+    setProof(null);
+    if (proofInputRef.current) proofInputRef.current.value = "";
+    setFlowError(null);
+    setFlowOpen(true);
+  };
+
+  const selectProof = (file?: File) => {
     if (!file) return;
-
-    if (file.size > 5 * 1024 * 1024) {
-      openNotice("error", "Ukuran file terlalu besar", "Ukuran file bukti transfer maksimal 5MB.");
+    if (!proofMimeTypes.has(file.type)) {
+      setProof(null);
+      if (proofInputRef.current) proofInputRef.current.value = "";
+      setFlowError("Format bukti harus JPG, PNG, WEBP, atau PDF.");
       return;
     }
-
-    setReceiptFileName(file.name);
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setReceiptBase64(reader.result as string);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleProceedToPayment = () => {
-    const tokens = parseInt(topupAmount, 10);
-    if (!tokens || tokens <= 0) {
-      openNotice("error", "Jumlah token tidak valid", "Masukkan jumlah token yang valid.");
+    if (file.size <= 0 || file.size > 5 * 1024 * 1024) {
+      setProof(null);
+      if (proofInputRef.current) proofInputRef.current.value = "";
+      setFlowError("Ukuran bukti pembayaran maksimal 5 MB.");
       return;
     }
-    const code = Math.floor(Math.random() * 900) + 100;
-    setReferralCode(code);
-    setReceiptBase64(null);
-    setReceiptFileName("");
-    setIsTopupModalOpen(true);
+    setProof(file);
+    setFlowError(null);
   };
 
-  const handleMidtransPayment = async () => {
-    const tokens = parseInt(topupAmount, 10);
-    if (!tokens || tokens <= 0) {
-      openNotice("error", "Jumlah token tidak valid", "Masukkan jumlah token yang valid.");
+  const removeProof = () => {
+    setProof(null);
+    setFlowError(null);
+    if (proofInputRef.current) proofInputRef.current.value = "";
+  };
+
+  const submitPayment = async () => {
+    if (!draft || !proof || mutation) {
+      if (!proof) setFlowError("Unggah bukti pembayaran sebelum mengirim permintaan.");
       return;
     }
-
-    setLoading(true);
-    try {
-      const amount = tokens * safe.tokenPrice;
-      const res = await api.createMidtransPayment(amount, tokens);
-
-      if (res.success && res.data?.token) {
-        const { token } = res.data;
-        const snap = (window as any).snap;
-
-        if (snap) {
-          snap.pay(token, {
-            onSuccess: function (result: any) {
-              openNotice(
-                "success",
-                "Pembayaran Berhasil",
-                "Terima kasih! Pembayaran Anda berhasil dan saldo token akan bertambah secara otomatis."
-              );
-              setTopupAmount("");
-              onUpdate?.();
-            },
-            onPending: function (result: any) {
-              openNotice(
-                "info",
-                "Pembayaran Tertunda",
-                "Silakan selesaikan pembayaran Anda sesuai instruksi pada layar pembayaran."
-              );
-              setTopupAmount("");
-              onUpdate?.();
-            },
-            onError: function (result: any) {
-              openNotice("error", "Pembayaran Gagal", "Terjadi kesalahan saat memproses pembayaran. Silakan coba lagi.");
-            },
-            onClose: function () {
-              console.log("Snap popup closed by user");
-            },
-          });
-        } else {
-          if (res.data.redirect_url) {
-            window.location.href = res.data.redirect_url;
-          } else {
-            openNotice("error", "Gagal Memuat Pembayaran", "Sistem pembayaran gagal dimuat. Silakan muat ulang halaman.");
-          }
-        }
-      } else {
-        const errorMsg = "error" in res ? res.error : "Token transaksi tidak ditemukan.";
-        openNotice("error", "Gagal Memproses Pembayaran", errorMsg);
-      }
-    } catch (err) {
-      console.error(err);
-      openNotice("error", "Terjadi Kesalahan", "Gagal menghubungi server untuk memproses pembayaran otomatis.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSubmitManualPayment = async () => {
-    if (!receiptBase64) {
-      openNotice("error", "Bukti transfer belum diunggah", "Unggah bukti transfer Anda terlebih dahulu.");
+    setMutation("upload");
+    setFlowError(null);
+    const upload = await api.uploadManualPaymentProof(draft.id, proof);
+    if (!upload.success) {
+      setFlowError(upload.error);
+      setMutation(null);
       return;
     }
-
-    setSubmittingRequest(true);
-    try {
-      const tokens = parseInt(topupAmount, 10);
-      const finalAmount = (tokens * safe.tokenPrice) + referralCode;
-
-      const res = await api.createManualRequest(tokens, receiptBase64);
-      if (res.success) {
-        openNotice(
-          "success",
-          "Konfirmasi Terkirim",
-          "Bukti transfer Anda telah dikirim dan sedang menunggu persetujuan admin. Saldo token Anda akan bertambah setelah disetujui."
-        );
-        setIsTopupModalOpen(false);
-        setTopupAmount("");
-        setReceiptBase64(null);
-        setReceiptFileName("");
-        loadManualRequests();
-        onUpdate?.();
-      } else {
-        openNotice("error", "Gagal memproses pengajuan", "error" in res ? res.error : "Gagal memproses pengajuan.");
-      }
-    } catch (err) {
-      console.error(err);
-      openNotice("error", "Terjadi kesalahan", "Gagal menghubungi server untuk memproses pembayaran.");
-    } finally {
-      setSubmittingRequest(false);
+    setMutation("submit");
+    const submitted = await api.submitManualPayment(draft.id);
+    if (!submitted.success) {
+      setDraft({ ...upload.data, destination: upload.data.destination ?? draft.destination });
+      setFlowError(submitted.error);
+      setMutation(null);
+      return;
     }
+    setMutation(null);
+    setFlowOpen(false);
+    setDraft(null);
+    setProof(null);
+    if (proofInputRef.current) proofInputRef.current.value = "";
+    setTopupAmount("");
+    setNotice({
+      title: "Menunggu Verifikasi",
+      message: `Permintaan ${submitted.data.payment_reference} sudah dikirim. Saldo baru akan bertambah setelah disetujui.`,
+    });
+    await refreshRequests();
+    onUpdate?.();
   };
 
-  const formatDate = (date: string) => {
-    if (!date) return "-";
-    const d = new Date(date);
-    if (Number.isNaN(d.getTime())) return date;
-    return d.toLocaleString("id-ID");
-  };
-
-  const getTransactionColor = (type: Transaction["type"]) => {
-    switch (type) {
-      case "topup":
-        return "bg-green-500 text-white";
-      case "usage":
-        return "bg-blue-500 text-white";
-      case "refund":
-        return "bg-yellow-500 text-black";
-      case "adjustment":
-        return "bg-purple-500 text-white";
-      default:
-        return "bg-gray-500 text-white";
+  const showProof = async (request: ManualPaymentRequest) => {
+    if (!request.proof_available || proofLoadingId) return;
+    setProofLoadingId(request.id);
+    const result = await api.getManualPaymentProofObjectUrl(request.id);
+    if (result.success) {
+      setProofViewer((current) => {
+        if (current?.url) URL.revokeObjectURL(current.url);
+        return { url: result.data, mime: request.proof_mime_type };
+      });
+    } else {
+      setNotice({ title: "Bukti Belum Dapat Dimuat", message: result.error });
     }
+    setProofLoadingId(null);
   };
 
-  const getTransactionLabel = (type: Transaction["type"]) => {
-    switch (type) {
-      case "topup":
-        return "Top-up";
-      case "usage":
-        return "Pemakaian";
-      case "refund":
-        return "Refund";
-      case "adjustment":
-        return "Adjustment";
-      default:
-        return type;
-    }
-  };
+  const history = useMemo(() => {
+    const ledger = transactions.map((transaction) => ({
+      key: `ledger-${transaction.id}`,
+      timestamp: new Date(transaction.date).getTime(),
+      kind: "ledger" as const,
+      transaction,
+    }));
+    const payments = requests.map((request) => ({
+      key: `payment-${request.id}`,
+      timestamp: new Date(request.created_at).getTime(),
+      kind: "payment" as const,
+      request,
+    }));
+    return [...ledger, ...payments].sort((a, b) => b.timestamp - a.timestamp);
+  }, [requests, transactions]);
+
+  const transactionLabel = (type: Transaction["type"]) => ({
+    topup: "Top-up",
+    usage: "Pemakaian",
+    adjustment: "Penyesuaian",
+    refund: "Pengembalian",
+    midtrans: "Gateway (Legacy)",
+  })[type] ?? type;
 
   return (
-    <div className="w-full p-6 md:p-8 bg-white">
+    <div className="w-full p-4 sm:p-6 md:p-8 bg-white overflow-x-hidden">
       <div className="mb-6">
-        <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight leading-tight">Billing & Token</h1>
-        <p className="text-sm text-slate-500 mt-1.5 leading-relaxed break-words whitespace-normal max-w-2xl">
-          Kelola saldo token dan riwayat transaksi Anda.
-        </p>
+        <h1 className="text-2xl font-extrabold text-slate-900">Billing & Token</h1>
+        <p className="text-sm text-slate-500 mt-1.5 max-w-2xl">Tambah saldo melalui transfer langsung dan verifikasi manual.</p>
       </div>
 
-      {safe.currentTokens === 0 && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-          <div>
-            <h4 className="text-red-900 font-medium mb-1">Token Anda Habis!</h4>
-            <p className="text-sm text-red-700">
-              Anda tidak dapat mengirim pesan tanpa token. Silakan lakukan top-up segera.
-            </p>
-          </div>
+      {safe.currentTokens < 100 && (
+        <div className={`${safe.currentTokens === 0 ? "bg-red-50 border-red-200 text-red-800" : "bg-amber-50 border-amber-200 text-amber-800"} border rounded-lg p-4 mb-6 flex gap-3`}>
+          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" aria-hidden="true" />
+          <div><p className="font-semibold">{safe.currentTokens === 0 ? "Token habis" : "Token menipis"}</p><p className="text-sm">Saldo saat ini {safe.currentTokens.toLocaleString("id-ID")} token.</p></div>
         </div>
       )}
 
-      {safe.currentTokens > 0 && safe.currentTokens < 100 && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" />
-          <div>
-            <h4 className="text-yellow-900 font-medium mb-1">Token Menipis</h4>
-            <p className="text-sm text-yellow-700">
-              Saldo token Anda tinggal {safe.currentTokens}. Segera top-up agar pengiriman tidak terhenti.
-            </p>
-          </div>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-        <Card className="p-6" style={{ backgroundColor: "#F0EAC6" }}>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="bg-primary p-3 rounded-lg text-white">
-              <Coins className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-muted-foreground">Saldo Token</p>
-              <h2>{safe.currentTokens.toLocaleString("id-ID")}</h2>
-            </div>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            Setara Rp {(safe.currentTokens * safe.tokenPrice).toLocaleString("id-ID")}
-          </p>
-        </Card>
-
-        <Card className="p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="bg-accent p-3 rounded-lg text-white">
-              <CreditCard className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-muted-foreground">Total Pengeluaran</p>
-              <h2>Rp {safe.totalSpent.toLocaleString("id-ID")}</h2>
-            </div>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            Harga per token: Rp {safe.tokenPrice.toLocaleString("id-ID")}
-          </p>
-        </Card>
-
-        <Card className="p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="bg-primary p-3 rounded-lg text-white">
-              <ArrowUpCircle className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-muted-foreground">Estimasi Kapasitas</p>
-              <h2>{safe.currentTokens.toLocaleString("id-ID")} pesan</h2>
-            </div>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            Asumsi 1 token = 1 pengiriman pesan
-          </p>
-        </Card>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 mb-8">
+        <Card className="p-5 sm:p-6 bg-[#F0EAC6]"><div className="flex items-center gap-3"><div className="bg-primary p-3 rounded-lg text-white"><Coins className="w-6 h-6" aria-hidden="true" /></div><div><p className="text-muted-foreground">Saldo Token</p><h2>{safe.currentTokens.toLocaleString("id-ID")}</h2></div></div></Card>
+        <Card className="p-5 sm:p-6"><div className="flex items-center gap-3"><div className="bg-accent p-3 rounded-lg text-white"><CreditCard className="w-6 h-6" aria-hidden="true" /></div><div><p className="text-muted-foreground">Total Pengeluaran</p><h2>Rp {safe.totalSpent.toLocaleString("id-ID")}</h2></div></div></Card>
+        <Card className="p-5 sm:p-6"><div className="flex items-center gap-3"><div className="bg-primary p-3 rounded-lg text-white"><ArrowUpCircle className="w-6 h-6" aria-hidden="true" /></div><div><p className="text-muted-foreground">Harga per Token</p><h2>Rp {safe.tokenPrice.toLocaleString("id-ID")}</h2></div></div></Card>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card className="p-6">
-          <h3 className="mb-4">Top-up Token</h3>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            {[100, 250, 500, 1000].map((tokens) => {
-              const isSelected = topupAmount === tokens.toString();
-              return (
-                <Button
-                  key={tokens}
-                  variant={isSelected ? "default" : "outline"}
-                  onClick={() => handleQuickTopup(tokens)}
-                  className={`h-auto py-3 transition-all duration-200 ${isSelected ? "scale-[1.02] shadow-md opacity-90 border-primary" : "hover:border-primary/50"
-                    }`}
-                >
-                  <div className="text-center">
-                    <div className="font-medium">{tokens}</div>
-                    <div className={`text-xs ${isSelected ? "text-primary-foreground/80" : "text-muted-foreground"}`}>token</div>
-                  </div>
-                </Button>
-              );
-            })}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <Card className="p-5 sm:p-6 min-w-0">
+          <h3 className="mb-1">Top-up Token</h3>
+          <p className="text-sm text-slate-500 mb-5">Pilih nominal dan rekening tujuan. Saldo dikreditkan setelah bukti diverifikasi.</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+            {[100, 250, 500, 1000].map((tokens) => <Button key={tokens} type="button" variant={topupAmount === String(tokens) ? "default" : "outline"} onClick={() => setTopupAmount(String(tokens))}>{tokens.toLocaleString("id-ID")}</Button>)}
           </div>
+          <label htmlFor="topup-token-amount" className="block text-sm font-medium text-slate-700 mb-1.5">Jumlah token</label>
+          <Input id="topup-token-amount" type="number" min="1" value={topupAmount} onChange={(event) => setTopupAmount(event.target.value)} aria-invalid={Boolean(topupAmount && !amountIsValid)} disabled={Boolean(mutation)} />
+          <div className="bg-slate-50 border rounded-lg p-4 my-4"><p className="text-sm text-slate-500">Nominal top-up (belum termasuk kode unik)</p><p className="text-xl font-bold">Rp {((amountTokens || 0) * safe.tokenPrice).toLocaleString("id-ID")}</p></div>
 
-          <div className="space-y-4">
-            <Input
-              type="number"
-              min="1"
-              placeholder="Masukkan jumlah token"
-              value={topupAmount}
-              onChange={(e) => setTopupAmount(e.target.value)}
-            />
-
-            <div className="bg-gray-50 rounded-lg p-4 border">
-              <p className="text-sm text-muted-foreground mb-1">Estimasi pembayaran</p>
-              <h3>
-                Rp{" "}
-                {(
-                  (parseInt(topupAmount || "0", 10) || 0) * safe.tokenPrice
-                ).toLocaleString("id-ID")}
-              </h3>
-            </div>
-
-            <div className="flex flex-col gap-3">
-              <Button
-                onClick={handleMidtransPayment}
-                disabled={loading}
-                className="bg-primary hover:bg-primary/90 font-semibold"
-              >
-                Beli Token
-              </Button>
-            </div>
-          </div>
+          <fieldset disabled={Boolean(mutation)} className="space-y-2 mb-4">
+            <legend className="text-sm font-medium text-slate-700 mb-2">Metode pembayaran</legend>
+            {destinationsLoading ? <p className="text-sm text-slate-500">Memuat metode pembayaran…</p> : destinationsError ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"><p>{destinationsError}</p><Button type="button" variant="outline" size="sm" onClick={() => void loadDestinations()} className="mt-2"><RefreshCw className="w-4 h-4 mr-1" aria-hidden="true" />Coba Lagi</Button></div>
+            ) : destinations.length === 0 ? <p className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">Belum ada rekening atau QRIS aktif. Hubungi administrator.</p> : destinations.map((destination) => (
+              <label key={destination.id} className="flex items-start gap-3 border rounded-lg p-3 cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                <input type="radio" name="payment-destination" value={destination.id} checked={selectedDestinationId === destination.id} onChange={() => setSelectedDestinationId(destination.id)} className="mt-1" />
+                <span><span className="block font-semibold text-sm">{destination.provider_name}</span><span className="block text-xs text-slate-500">{destination.method === "qris_static" ? "QRIS Statis" : `Transfer Bank • ${destination.account_reference}`}</span></span>
+              </label>
+            ))}
+          </fieldset>
+          {flowError && !flowOpen && <p role="alert" className="text-sm text-red-700 mb-3">{flowError}</p>}
+          <Button type="button" onClick={() => void beginPayment()} disabled={!amountIsValid || !selectedDestination || Boolean(mutation)} className="w-full">{mutation === "create" ? "Membuat Permintaan…" : "Lanjutkan Pembayaran"}</Button>
+          {!selectedDestination && !destinationsLoading && destinations.length > 0 && <p className="text-xs text-slate-500 mt-2">Pilih metode pembayaran untuk melanjutkan.</p>}
         </Card>
 
-        <Card className="p-6">
-          <div className="flex items-center justify-between border-b pb-3 mb-4">
-            <div className="flex items-center gap-3">
-              <History className="w-5 h-5 text-primary" />
-              <h3 className="text-lg font-bold text-slate-800">Riwayat</h3>
-            </div>
-          </div>
-
-          <div className="space-y-3 max-h-[420px] overflow-auto pr-1">
-            {mergedHistory.length === 0 ? (
-              <div className="text-center py-10 text-muted-foreground text-sm">
-                Belum ada riwayat transaksi atau top-up
-              </div>
+        <Card className="p-5 sm:p-6 min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-3 mb-4"><div className="flex items-center gap-2"><History className="w-5 h-5 text-primary" aria-hidden="true" /><h3>Riwayat</h3></div><Button type="button" variant="ghost" size="sm" onClick={() => void refreshRequests()} aria-label="Perbarui riwayat pembayaran"><RefreshCw className="w-4 h-4" aria-hidden="true" /></Button></div>
+          {requestsError && <div className="mb-3 border border-amber-200 bg-amber-50 rounded-lg p-3 text-sm text-amber-800">{requests.length > 0 ? "Data terakhir ditampilkan. Gagal memperbarui riwayat." : requestsError}<Button type="button" variant="link" className="h-auto px-2" onClick={() => void loadRequests()}>Coba Lagi</Button></div>}
+          <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
+            {requestsLoading && history.length === 0 ? <p className="text-sm text-slate-500 py-10 text-center">Memuat riwayat…</p> : history.length === 0 ? <p className="text-sm text-slate-500 py-10 text-center">Belum ada riwayat pembayaran atau transaksi.</p> : history.map((item) => item.kind === "ledger" ? (
+              <div key={item.key} className="border rounded-lg p-4 flex justify-between gap-3"><div><Badge variant="outline">{transactionLabel(item.transaction.type)}</Badge><p className="text-sm font-medium mt-2 break-words">{item.transaction.description}</p><p className="text-xs text-slate-500">{formatDate(item.transaction.date)}</p></div><p className="text-sm font-semibold whitespace-nowrap">{item.transaction.type === "usage" ? "-" : "+"}{Number(item.transaction.amount).toLocaleString("id-ID")} token</p></div>
             ) : (
-              mergedHistory.map((item) => {
-                if (item.itemType === "transaction") {
-                  if (item.type === "midtrans") {
-                    const isPending = item.status === "pending";
-                    return (
-                      <div
-                        key={item.id}
-                        className="border rounded-lg p-4 space-y-3 bg-slate-50/30"
-                      >
-                        <div className="flex items-center justify-between">
-                          <Badge
-                            className={
-                              item.status === "success"
-                                ? "bg-green-500 text-white"
-                                : item.status === "failed"
-                                  ? "bg-red-500 text-white"
-                                  : "bg-yellow-500 text-black"
-                            }
-                          >
-                            Pembayaran ({item.status === "success" ? "Berhasil" : item.status === "failed" ? "Gagal" : "Menunggu Pembayaran"})
-                          </Badge>
-                          <span className="text-xs text-muted-foreground">
-                            {formatDate(item.date)}
-                          </span>
-                        </div>
-
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <p className="font-bold text-slate-800 text-sm">
-                              +{Number(item.amount ?? 0).toLocaleString("id-ID")} token
-                            </p>
-                            <p className="text-xs text-slate-600 mt-0.5">
-                              Nominal: <span className="font-semibold text-slate-900">Rp {Number(item.amount_idr ?? 0).toLocaleString("id-ID")}</span>
-                            </p>
-                            <p className="text-[10px] text-slate-400 mt-1">
-                              ID Transaksi: {item.id}
-                            </p>
-                          </div>
-
-                          {isPending && item.snap_token && (
-                            <Button
-                              variant="default"
-                              size="sm"
-                              onClick={() => {
-                                const snap = (window as any).snap;
-                                if (snap) {
-                                  snap.pay(item.snap_token, {
-                                    onSuccess: function (result: any) {
-                                      openNotice(
-                                        "success",
-                                        "Pembayaran Berhasil",
-                                        "Terima kasih! Pembayaran Anda berhasil dan saldo token akan bertambah secara otomatis."
-                                      );
-                                      onUpdate?.();
-                                    },
-                                    onPending: function (result: any) {
-                                      openNotice(
-                                        "info",
-                                        "Pembayaran Tertunda",
-                                        "Silakan selesaikan pembayaran Anda sesuai instruksi pada layar pembayaran."
-                                      );
-                                      onUpdate?.();
-                                    },
-                                    onError: function (result: any) {
-                                      openNotice(
-                                        "error",
-                                        "Pembayaran Gagal",
-                                        "Terjadi kesalahan saat memproses pembayaran. Silakan coba lagi."
-                                      );
-                                    },
-                                    onClose: function () {
-                                      console.log("Snap popup closed by user");
-                                    }
-                                  });
-                                } else if (item.snap_url) {
-                                  window.open(item.snap_url, "_blank");
-                                }
-                              }}
-                              className="bg-primary hover:bg-primary/90 text-white text-xs h-8 flex items-center gap-1 font-semibold"
-                            >
-                              <Coins className="w-3.5 h-3.5" />
-                              Bayar Sekarang
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div
-                      key={item.id}
-                      className="border rounded-lg p-4 flex items-start justify-between gap-4"
-                    >
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Badge className={getTransactionColor(item.type)}>
-                            {getTransactionLabel(item.type)}
-                          </Badge>
-                        </div>
-                        <p className="font-medium text-sm">{item.description}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {formatDate(item.date)}
-                        </p>
-                      </div>
-
-                      <div className="text-right">
-                        <p className="font-semibold text-sm">
-                          {item.type === "usage" ? "-" : "+"}
-                          {Number(item.amount ?? 0).toLocaleString("id-ID")} token
-                        </p>
-                      </div>
-                    </div>
-                  );
-                } else {
-                  return (
-                    <div
-                      key={item.id}
-                      className="border rounded-lg p-4 space-y-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <Badge
-                          className={
-                            item.status === "approved"
-                              ? "bg-green-500 text-white"
-                              : item.status === "rejected"
-                                ? "bg-red-500 text-white"
-                                : "bg-yellow-500 text-black"
-                          }
-                        >
-                          Top-up Manual ({item.status === "approved"
-                            ? "Disetujui"
-                            : item.status === "rejected"
-                              ? "Ditolak"
-                              : "Menunggu Approval"})
-                        </Badge>
-                        <span className="text-xs text-muted-foreground">
-                          {formatDate(item.created_at)}
-                        </span>
-                      </div>
-
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <p className="font-bold text-slate-800 text-sm">
-                            +{Number(item.amount_tokens ?? 0).toLocaleString("id-ID")} token
-                          </p>
-                          <p className="text-xs text-slate-600 mt-0.5">
-                            Nominal Transfer: <span className="font-semibold text-slate-900">Rp {Number(item.amount_idr ?? 0).toLocaleString("id-ID")}</span>
-                          </p>
-                          <p className="text-[10px] text-slate-400 mt-1">
-                            Diajukan oleh: {item.created_by_email}
-                          </p>
-                        </div>
-
-                        {item.receipt_url && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setSelectedReceipt(item.receipt_url)}
-                            className="flex items-center gap-1.5 text-xs h-8"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                            Bukti
-                          </Button>
-                        )}
-                      </div>
-
-                      {item.notes && (
-                        <div className="bg-slate-50 p-2.5 rounded text-xs text-slate-600 border border-slate-100">
-                          <span className="font-semibold text-slate-700">Catatan Admin:</span> {item.notes}
-                        </div>
-                      )}
-
-                      {item.approved_at && (
-                        <p className="text-[10px] text-slate-400 text-right">
-                          Diproses pada {formatDate(item.approved_at)} oleh {item.approved_by}
-                        </p>
-                      )}
-                    </div>
-                  );
-                }
-              })
-            )}
+              <div key={item.key} className="border rounded-lg p-4 space-y-3">
+                <div className="flex flex-wrap justify-between gap-2"><Badge className={requestBadge(item.request.status)}>{item.request.status_label}</Badge><span className="text-xs text-slate-500">{formatDate(item.request.created_at)}</span></div>
+                <div className="space-y-1">
+                  <p className="font-semibold">+{item.request.amount_tokens.toLocaleString("id-ID")} token</p>
+                  <p className="text-xs text-slate-500">Nominal Top Up: Rp {item.request.base_amount.toLocaleString("id-ID")}</p>
+                  {item.request.unique_code != null && <p className="text-xs text-slate-500">Kode Unik: {String(item.request.unique_code).padStart(3, "0")}</p>}
+                  <p className="text-sm font-bold text-slate-800">Total Transfer: Rp {item.request.transfer_amount.toLocaleString("id-ID")}</p>
+                  <p className="text-xs text-slate-500 break-all">Referensi: {item.request.payment_reference}</p>
+                  <p className="text-xs text-slate-500">Metode: {item.request.destination?.provider_name ?? item.request.payment_method}</p>
+                </div>
+                {item.request.rejection_reason && <p className="rounded bg-red-50 border border-red-100 p-2 text-xs text-red-700"><strong>Alasan:</strong> {item.request.rejection_reason}</p>}
+                {item.request.status === "approved" && <p className="text-xs text-green-700">Saldo dikreditkan pada {formatDate(item.request.reviewed_at)}.</p>}
+                <div className="flex flex-wrap gap-2">
+                  {item.request.status === "draft" && <Button type="button" size="sm" onClick={() => resumeDraft(item.request)}>Lanjutkan Pembayaran</Button>}
+                  {item.request.proof_available && <Button type="button" variant="outline" size="sm" onClick={() => void showProof(item.request)} disabled={proofLoadingId === item.request.id}><Eye className="w-4 h-4 mr-1" aria-hidden="true" />{proofLoadingId === item.request.id ? "Memuat…" : "Lihat Bukti"}</Button>}
+                </div>
+              </div>
+            ))}
           </div>
         </Card>
       </div>
 
-
-      {/* Zoom Receipt Modal */}
-      <AppModal
-        open={!!selectedReceipt}
-        title="Bukti Transfer"
-        onClose={() => setSelectedReceipt(null)}
-        footer={
-          <div className="flex justify-end">
-            <Button onClick={() => setSelectedReceipt(null)}>Tutup</Button>
+      <AppModal open={flowOpen && Boolean(draft)} title="Instruksi Pembayaran" description={draft ? `Referensi ${draft.payment_reference}` : undefined} onClose={() => setFlowOpen(false)} closeDisabled={Boolean(mutation)} closeOnBackdrop={!mutation} maxWidthClassName="max-w-xl" footer={<div className="flex flex-col-reverse sm:flex-row justify-end gap-2"><Button type="button" variant="outline" onClick={() => setFlowOpen(false)} disabled={Boolean(mutation)}>Simpan & Tutup</Button><Button type="button" onClick={() => void submitPayment()} disabled={!proof || Boolean(mutation)}>{mutation === "upload" ? "Mengunggah bukti…" : mutation === "submit" ? "Mengirim untuk verifikasi…" : "Kirim untuk Verifikasi"}</Button></div>}>
+        {draft && <div className="space-y-4">
+          <div className="rounded-lg border bg-slate-50 p-4 space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+              <div><p className="text-slate-500">Nominal Top Up</p><p className="font-semibold">Rp {draft.base_amount.toLocaleString("id-ID")}</p></div>
+              {draft.unique_code != null && <div><p className="text-slate-500">Kode Unik</p><p className="font-semibold font-mono">{String(draft.unique_code).padStart(3, "0")}</p></div>}
+            </div>
+            <div className="rounded-lg border border-primary/20 bg-white p-3"><p className="text-sm font-medium text-slate-600">Total Transfer</p><p className="text-3xl font-extrabold text-primary">Rp {draft.transfer_amount.toLocaleString("id-ID")}</p></div>
+            <p className="text-sm mt-2">{draft.destination?.provider_name}</p>{draft.destination?.account_reference && <p className="font-mono break-all">{draft.destination.account_reference}</p>}{draft.destination?.account_holder && <p className="text-sm text-slate-600">a.n. {draft.destination.account_holder}</p>}{draft.destination?.instructions && <p className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{draft.destination.instructions}</p>}
+            {draft.destination?.method === "bank_transfer" && <p className="text-sm font-medium">Transfer tepat sebesar <strong>Rp {draft.transfer_amount.toLocaleString("id-ID")}</strong>.</p>}
+            {draft.destination?.method === "qris_static" && <p className="text-sm font-medium">Masukkan nominal pembayaran tepat sebesar <strong>Rp {draft.transfer_amount.toLocaleString("id-ID")}</strong>.</p>}
+            {draft.unique_code != null && <p className="text-xs text-slate-600">3 digit terakhir adalah kode unik pembayaran untuk membantu verifikasi. Kode unik tidak menambah saldo.</p>}
           </div>
-        }
-      >
-        {selectedReceipt && (
-          <div className="flex items-center justify-center p-2 bg-slate-900/5 rounded-lg overflow-hidden border">
-            <img
-              src={selectedReceipt}
-              alt="Bukti Transfer Zoom"
-              className="max-w-full max-h-[70vh] object-contain rounded"
-            />
+          {draft.destination?.has_qris && <div className="text-center">{qrisUrl ? <img src={qrisUrl} alt={`QRIS ${draft.destination.provider_name}`} className="max-w-[280px] w-full mx-auto rounded-lg border" /> : qrisError ? <div className="text-sm text-red-700"><p>{qrisError}</p><Button type="button" variant="link" onClick={() => { setQrisError(null); setQrisRetry((value) => value + 1); }}>Coba Lagi</Button></div> : <p className="text-sm text-slate-500">Memuat QRIS…</p>}</div>}
+          <div>
+            <label htmlFor="payment-proof" className="block text-sm font-semibold mb-1.5">Upload Bukti Pembayaran <span aria-hidden="true">*</span></label>
+            <input ref={proofInputRef} id="payment-proof" type="file" className="sr-only" required accept="image/jpeg,image/png,image/webp,application/pdf" disabled={Boolean(mutation)} onChange={(event) => selectProof(event.target.files?.[0])} aria-invalid={Boolean(flowError)} aria-describedby="payment-proof-help payment-flow-error" />
+            <div className={`rounded-xl border-2 border-dashed p-4 ${proof ? "border-green-300 bg-green-50/60" : "border-slate-300 bg-slate-50"}`}>
+              {proof ? <div className="space-y-3">
+                <div className="flex items-start gap-2"><CheckCircle2 className="w-5 h-5 text-green-700 shrink-0 mt-0.5" aria-hidden="true" /><div className="min-w-0"><p className="text-sm font-semibold text-green-800">Bukti pembayaran dipilih</p><p className="text-sm text-slate-700 break-all">{proof.name}</p></div></div>
+                <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={() => proofInputRef.current?.click()} disabled={Boolean(mutation)}><Upload className="w-4 h-4 mr-1" aria-hidden="true" />Ganti File</Button><Button type="button" variant="ghost" size="sm" onClick={removeProof} disabled={Boolean(mutation)}><Trash2 className="w-4 h-4 mr-1" aria-hidden="true" />Hapus</Button></div>
+              </div> : <div className="flex flex-col items-center text-center gap-2"><Upload className="w-7 h-7 text-slate-500" aria-hidden="true" /><p className="text-sm text-slate-600">Pilih bukti pembayaran dari perangkat Anda.</p><Button type="button" variant="outline" onClick={() => proofInputRef.current?.click()} disabled={Boolean(mutation)}>Pilih File</Button></div>}
+            </div>
+            <p id="payment-proof-help" className="text-xs text-slate-500 mt-1.5">JPG, PNG, WEBP, atau PDF • Maks. 5 MB</p>
+            {mutation === "upload" && <p role="status" aria-live="polite" className="text-sm text-primary mt-2">Mengunggah bukti…</p>}
           </div>
-        )}
+          {flowError && <p id="payment-flow-error" role="alert" className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">{flowError}</p>}
+          <p className="text-xs text-slate-500">Saldo tidak bertambah saat bukti dikirim. Superadmin akan memverifikasi pembayaran terlebih dahulu.</p>
+        </div>}
       </AppModal>
 
-      {/* Alert Notice Modal */}
-      <AppModal
-        open={notice.open}
-        title={notice.title}
-        onClose={closeNotice}
-        footer={
-          <div className="flex justify-end">
-            <Button onClick={closeNotice}>Oke</Button>
-          </div>
-        }
-      >
-        <p
-          className={`text-sm leading-6 ${notice.type === "success"
-              ? "text-green-700"
-              : notice.type === "error"
-                ? "text-red-700"
-                : "text-slate-600"
-            }`}
-        >
-          {notice.message}
-        </p>
+      <AppModal open={Boolean(proofViewer)} title="Bukti Pembayaran" onClose={() => setProofViewer(null)} maxWidthClassName="max-w-3xl" footer={<div className="flex justify-end"><Button type="button" onClick={() => setProofViewer(null)}>Tutup</Button></div>}>
+        {proofViewer && (proofViewer.mime === "application/pdf" ? <iframe src={proofViewer.url} title="Bukti pembayaran PDF" className="w-full h-[65vh] rounded border" /> : <img src={proofViewer.url} alt="Bukti pembayaran" className="max-w-full max-h-[65vh] mx-auto object-contain rounded" />)}
       </AppModal>
+
+      <AppModal open={Boolean(notice)} title={notice?.title} onClose={() => setNotice(null)} footer={<div className="flex justify-end"><Button type="button" onClick={() => setNotice(null)}>Tutup</Button></div>}><p className="text-sm text-slate-700">{notice?.message}</p></AppModal>
     </div>
   );
 }

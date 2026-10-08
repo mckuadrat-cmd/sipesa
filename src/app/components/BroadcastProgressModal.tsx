@@ -107,9 +107,14 @@ interface BroadcastProgressModalProps {
   open: boolean;
   broadcastId: string | null;
   onClose: () => void;
-  onCancelled?: () => void;
   onComplete?: (broadcastId: string) => void;
 }
+
+const RECIPIENT_PAGE_SIZE = 100;
+const FALLBACK_REFRESH_MS = 5_000;
+const SUBSCRIBED_REFRESH_TICKS = 12;
+const RECOVERY_TRIGGER_TICKS = 6;
+const TERMINAL_CAMPAIGN_STATUSES = new Set(["completed", "cancelled", "failed"]);
 
 function normalizeRecipientStatus(status?: string | null) {
   const s = String(status || "").toLowerCase();
@@ -130,7 +135,7 @@ function renderStatusBadge(status?: string | null) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">
         <Eye className="w-3 h-3" />
-        Read
+        Dibaca
       </span>
     );
   }
@@ -139,7 +144,7 @@ function renderStatusBadge(status?: string | null) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700">
         <CheckCircle2 className="w-3 h-3" />
-        Delivered
+        Diterima
       </span>
     );
   }
@@ -148,7 +153,7 @@ function renderStatusBadge(status?: string | null) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
         <Send className="w-3 h-3" />
-        Sent
+        Terkirim
       </span>
     );
   }
@@ -157,7 +162,7 @@ function renderStatusBadge(status?: string | null) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-700">
         <Loader2 className="w-3 h-3 animate-spin" />
-        Processing
+        Mengirim
       </span>
     );
   }
@@ -166,7 +171,7 @@ function renderStatusBadge(status?: string | null) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-1 text-xs font-medium text-red-700">
         <XCircle className="w-3 h-3" />
-        Failed
+        Gagal
       </span>
     );
   }
@@ -175,7 +180,7 @@ function renderStatusBadge(status?: string | null) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-xs font-medium text-slate-700">
         <XCircle className="w-3 h-3" />
-        Cancelled
+        Dibatalkan
       </span>
     );
   }
@@ -183,7 +188,7 @@ function renderStatusBadge(status?: string | null) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
       <Clock3 className="w-3 h-3" />
-      Pending
+      Mengirim
     </span>
   );
 }
@@ -192,14 +197,13 @@ export function BroadcastProgressModal({
   open,
   broadcastId,
   onClose,
-  onCancelled,
   onComplete,
 }: BroadcastProgressModalProps) {
   const [stats, setStats] = useState<any | null>(null);
   const [rows, setRows] = useState<RecipientRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [isCancelling, setIsCancelling] = useState(false);
   const hasTriggeredComplete = useRef(false);
   
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
@@ -211,38 +215,33 @@ export function BroadcastProgressModal({
 
     const [statsRes, rowsRes] = await Promise.all([
       api.getBroadcastStats(broadcastId),
-      api.getBroadcastRecipients(broadcastId),
+      api.getBroadcastRecipients(broadcastId, { page: 1, pageSize: RECIPIENT_PAGE_SIZE }),
     ]);
 
     if ("error" in statsRes) {
-      setError(statsRes.error);
+      console.error("Failed to refresh authoritative broadcast stats:", statsRes.error);
+      setError("Status broadcast belum dapat diperbarui. Coba lagi atau tutup modal dan periksa Riwayat.");
     } else {
       setStats(statsRes.data);
       setError("");
     }
 
     if (!("error" in rowsRes)) {
-      setRows((current) => mergeRecipientRows(current, rowsRes.data || []));
+      setRows((current) => mergeRecipientRows(current, rowsRes.data?.items || []));
+    } else {
+      console.error("Failed to refresh bounded broadcast recipients page:", rowsRes.error);
     }
   };
 
-  const handleCancelBroadcast = async () => {
-    if (!broadcastId || isCancelling) return;
-
-    setIsCancelling(true);
+  const retryRefresh = async () => {
+    setRefreshing(true);
     try {
-      const result = await api.cancelBroadcast(broadcastId);
-
-      if ("error" in result) {
-        setError(result.error);
-        return;
-      }
-
-      onCancelled?.();
-    } catch {
-      setError("Gagal membatalkan broadcast.");
+      await fetchBroadcastData();
+    } catch (err) {
+      console.error("Failed to retry broadcast progress refresh:", err);
+      setError("Status broadcast belum dapat diperbarui. Coba lagi atau tutup modal dan periksa Riwayat.");
     } finally {
-      setIsCancelling(false);
+      setRefreshing(false);
     }
   };
 
@@ -292,10 +291,10 @@ export function BroadcastProgressModal({
               setStats(res.data);
 
               const campaignStatus = String(res.data?.status || "").toLowerCase();
-              if (["completed", "cancelled", "failed"].includes(campaignStatus)) {
-                api.getBroadcastRecipients(broadcastId).then((rowsRes) => {
+              if (TERMINAL_CAMPAIGN_STATUSES.has(campaignStatus)) {
+                api.getBroadcastRecipients(broadcastId, { page: 1, pageSize: RECIPIENT_PAGE_SIZE }).then((rowsRes) => {
                   if (active && !("error" in rowsRes)) {
-                    setRows((current) => mergeRecipientRows(current, rowsRes.data || []));
+                    setRows((current) => mergeRecipientRows(current, rowsRes.data?.items || []));
                   }
                 });
               }
@@ -337,18 +336,18 @@ export function BroadcastProgressModal({
 
       tickCount++;
       const isSubscribed = channelStatusRef.current === "SUBSCRIBED";
-      const pollInterval = isSubscribed ? 60 : 5;
+      const refreshTicks = isSubscribed ? SUBSCRIBED_REFRESH_TICKS : 1;
 
-      if (tickCount % pollInterval === 0) {
+      if (tickCount % refreshTicks === 0) {
         fetchData();
       }
 
       // Recovery trigger only. A database lease on the sender number prevents
       // this request (or another open tab) from creating a parallel sender.
-      if (tickCount % 30 === 0) {
+      if (tickCount % RECOVERY_TRIGGER_TICKS === 0) {
         api.processBroadcasts(200).catch(() => {});
       }
-    }, 1000);
+    }, FALLBACK_REFRESH_MS);
 
     const handleVisibilityOrPageShow = () => {
       if (document.visibilityState === "visible" && active) {
@@ -396,14 +395,18 @@ export function BroadcastProgressModal({
     };
   }, [rows]);
 
-  const processedCount =
-    summary.sent +
-    summary.delivered +
-    summary.read +
-    summary.failed +
-    summary.cancelled;
-
-  const progressPct = summary.total > 0 ? Math.round((processedCount / summary.total) * 100) : 0;
+  const aggregateTotal = Number(stats?.totalRecipients ?? 0);
+  const aggregateSent = Number(stats?.totalSent ?? 0);
+  const aggregateFailed = Number(stats?.totalFailed ?? 0);
+  const processedCount = stats
+    ? aggregateSent + aggregateFailed
+    : summary.sent + summary.delivered + summary.read + summary.failed + summary.cancelled;
+  const progressTotal = stats ? aggregateTotal : summary.total;
+  const progressPct = stats
+    ? Math.max(0, Math.min(100, Number(stats?.progress ?? 0)))
+    : progressTotal > 0
+      ? Math.round((processedCount / progressTotal) * 100)
+      : 0;
 
   const progressBarColorClass = useMemo(() => {
     if (progressPct < 33) return "bg-red-500";
@@ -412,13 +415,9 @@ export function BroadcastProgressModal({
   }, [progressPct]);
 
   const campaignStatus = String(stats?.status || "").toLowerCase();
-  const expectedTotal = Number(stats?.totalRecipients ?? 0);
-  const allRowsLoaded = expectedTotal > 0 && summary.total >= expectedTotal;
-  const noActiveRecipients = summary.pending === 0 && summary.processing === 0;
-  const isComplete =
-    campaignStatus === "completed" && allRowsLoaded && noActiveRecipients;
-  const isDone =
-    isComplete || campaignStatus === "cancelled" || campaignStatus === "failed";
+  const isComplete = campaignStatus === "completed";
+  const isDone = TERMINAL_CAMPAIGN_STATUSES.has(campaignStatus);
+  const canClose = isDone || Boolean(error);
 
   useEffect(() => {
     if (isComplete && open && broadcastId && !hasTriggeredComplete.current) {
@@ -446,23 +445,15 @@ export function BroadcastProgressModal({
     <AppModal
       open={open}
       title="Proses Broadcast"
-      description={`Total: ${summary.total} • Sent: ${summary.sent + summary.delivered + summary.read} • Delivered: ${summary.delivered} • Read: ${summary.read} • Failed: ${summary.failed}`}
+      description={`Total: ${stats ? aggregateTotal : summary.total} • Terkirim: ${stats ? aggregateSent : summary.sent + summary.delivered + summary.read} • Diterima: ${stats ? Number(stats?.delivered ?? 0) + Number(stats?.read ?? 0) : summary.delivered} • Dibaca: ${stats ? Number(stats?.read ?? 0) : summary.read} • Gagal: ${stats ? aggregateFailed : summary.failed}`}
       onClose={onClose}
-      closeOnBackdrop={isDone}
-      closeDisabled={!isDone}
+      closeOnBackdrop={canClose}
+      closeDisabled={!canClose}
       closeOnContentClick={false}
       maxWidthClassName="max-w-3xl"
       footer={
-        <div className="flex justify-between items-center">
-          <Button
-            variant="outline"
-            onClick={handleCancelBroadcast}
-            disabled={isDone || isCancelling || !broadcastId}
-          >
-            {isCancelling ? "Cancelling..." : "Cancel Broadcast"}
-          </Button>
-
-          <Button variant="outline" onClick={onClose} disabled={!isDone}>
+        <div className="flex justify-end items-center">
+          <Button variant="outline" onClick={onClose} disabled={!canClose}>
             Tutup
           </Button>
         </div>
@@ -487,14 +478,19 @@ export function BroadcastProgressModal({
           </div>
           <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 whitespace-nowrap">
             {!isDone && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />}
-            <span>{processedCount} / {summary.total} ({progressPct}%)</span>
+            <span>{processedCount} / {progressTotal} ({progressPct}%)</span>
           </div>
         </div>
 
         {error && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 mt-[2px]" />
-            <span>{error}</span>
+            <div className="flex-1 space-y-2">
+              <p>{error}</p>
+              <Button type="button" variant="outline" size="sm" onClick={() => void retryRefresh()} disabled={refreshing}>
+                {refreshing ? "Mencoba lagi…" : "Coba Lagi"}
+              </Button>
+            </div>
           </div>
         )}
 
@@ -502,7 +498,7 @@ export function BroadcastProgressModal({
           <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700 flex items-start gap-2">
             <CheckCircle2 className="w-4 h-4 mt-[1px]" />
             <span>
-              Semua pesan sudah diteruskan ke Meta. Status Delivered dan Read akan terus diperbarui dari webhook Meta.
+              Semua pesan sudah diteruskan ke Meta. Status Diterima dan Dibaca akan terus diperbarui dari webhook Meta.
             </span>
           </div>
         )}

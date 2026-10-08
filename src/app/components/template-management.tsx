@@ -27,6 +27,8 @@ import {
   Search,
 } from "lucide-react";
 import { api, TemplateItem, BroadcastHistoryItem } from "../lib/api";
+import { useVisibilityRefresh } from "../hooks/use-visibility-refresh";
+import { useDialogFocus } from "../hooks/use-dialog-focus";
 
 type TemplateCategory = "marketing" | "utility" | "authentication";
 type HeaderType = "none" | "text" | "image" | "video" | "document" | "location";
@@ -319,10 +321,10 @@ function getStatusColor(status: string) {
 
 function getStatusLabel(status: string) {
   const s = String(status || "").toLowerCase();
-  if (s === "approved") return "Approved";
-  if (s === "pending") return "Pending";
-  if (s === "rejected") return "Rejected";
-  if (s === "draft") return "Draft";
+  if (s === "approved") return "Disetujui";
+  if (s === "pending") return "Menunggu";
+  if (s === "rejected") return "Ditolak";
+  if (s === "draft") return "Draf";
   return status;
 }
 
@@ -553,6 +555,7 @@ export function TemplateManagement() {
   const [showModal, setShowModal] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<LocalTemplate | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [pushingId, setPushingId] = useState<string | null>(null);
@@ -563,6 +566,8 @@ export function TemplateManagement() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [templateIdToDelete, setTemplateIdToDelete] = useState<string | null>(null);
+  const [deletingTemplate, setDeletingTemplate] = useState(false);
+  const [templateToSubmit, setTemplateToSubmit] = useState<LocalTemplate | null>(null);
 
   const [formData, setFormData] = useState({
     name: "",
@@ -587,71 +592,23 @@ export function TemplateManagement() {
 
   const sampleInputRef = useRef<HTMLInputElement | null>(null);
 
-  useEffect(() => {
-    loadTemplates();
-
-    const interval = setInterval(() => {
-      // Background poll without loading state flashing
-      api.getBroadcastTemplates().then(async (result) => {
-        if ("error" in result) return;
-        
-        const historyResult = await api.getBroadcastHistory();
-        const counts: Record<string, number> = {};
-        if (historyResult && !("error" in historyResult)) {
-          (historyResult.data ?? []).forEach((b) => {
-            if (b.templateId) {
-              counts[b.templateId] = (counts[b.templateId] || 0) + (b.totalSent || 0);
-            }
-          });
-        }
-        setSentCounts(counts);
-
-        const mapped: LocalTemplate[] = (result.data ?? []).map((tpl) => {
-          const header = extractHeaderInfo(tpl.components);
-          const handle = extractMediaSampleHandle(tpl.components);
-
-          return {
-            ...tpl,
-            headerType: header.type,
-            headerText: header.text || "",
-            footerText: extractFooterText(tpl.components),
-            buttons: extractButtons(tpl.components),
-            mediaSampleName: extractMediaSampleName(tpl.components, header.type),
-            mediaSampleHandle: handle,
-            previewExamples: extractPreviewExamples(tpl.components),
-          };
-        });
-
-        setTemplates(mapped);
-        setSelectedTemplate((prev) => {
-          const nextSorted = [...mapped].sort(compareTemplates);
-          if (prev) {
-            return nextSorted.find((x) => x.id === prev.id) ?? nextSorted[0] ?? null;
-          }
-          return nextSorted[0] ?? null;
-        });
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  const loadTemplates = async () => {
-    setLoading(true);
+  const loadTemplates = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const [result, historyResult] = await Promise.all([
         api.getBroadcastTemplates(),
-        api.getBroadcastHistory(),
+        api.getBroadcastHistory({ page: 1, pageSize: 50 }),
       ]);
 
       if ("error" in result) {
-        toast.error("Gagal memuat template: " + result.error);
+        console.error("Gagal memuat template:", result.error);
+        setLoadError(true);
         return;
       }
 
       const counts: Record<string, number> = {};
       if (historyResult && !("error" in historyResult)) {
-        (historyResult.data ?? []).forEach((b) => {
+        (historyResult.data?.items ?? []).forEach((b) => {
           if (b.templateId) {
             counts[b.templateId] = (counts[b.templateId] || 0) + (b.totalSent || 0);
           }
@@ -676,6 +633,7 @@ export function TemplateManagement() {
       });
 
       setTemplates(mapped);
+      setLoadError(false);
       setCurrentPage(1);
       setSelectedTemplate((prev) => {
         const nextSorted = [...mapped].sort(compareTemplates);
@@ -686,10 +644,21 @@ export function TemplateManagement() {
       });
     } catch (error) {
       console.error("Error loading templates:", error);
+      setLoadError(true);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
+
+  const refreshTemplates = useVisibilityRefresh(
+    () => loadTemplates(false),
+    { intervalMs: 30_000 },
+  );
+
+  useEffect(() => {
+    setLoading(true);
+    void refreshTemplates().finally(() => setLoading(false));
+  }, [refreshTemplates]);
 
   const filteredTemplates = useMemo(() => {
     return templates.filter((tpl) => {
@@ -702,7 +671,6 @@ export function TemplateManagement() {
 
   const sortedTemplates = useMemo(() => {
     const sorted = [...filteredTemplates].sort(compareTemplates);
-    console.log("TEMPLATE_MANAGEMENT sorted templates:", sorted.map(t => ({ name: t.name, updatedAt: t.updatedAt, createdAt: t.createdAt, metaTemplateId: t.metaTemplateId })));
     return sorted;
   }, [filteredTemplates]);
 
@@ -818,6 +786,7 @@ export function TemplateManagement() {
     setShowModal(false);
     setEditingTemplate(null);
   };
+  const editorDialogRef = useDialogFocus<HTMLDivElement>(showModal, closeModal, saving);
 
   const validateAll = () => {
     const nextNameError = validateTemplateName(formData.name);
@@ -846,6 +815,7 @@ export function TemplateManagement() {
   };
 
   const handleSave = async () => {
+    if (saving) return;
     if (!validateAll()) return;
 
     setSaving(true);
@@ -880,7 +850,7 @@ export function TemplateManagement() {
       toast.success(editingTemplate ? "Template berhasil diupdate!" : "Template berhasil dibuat!");
       setShowModal(false);
       setEditingTemplate(null);
-      await loadTemplates();
+      await refreshTemplates();
     } catch (error) {
       console.error("Error saving template:", error);
       toast.error("Gagal menyimpan template");
@@ -895,8 +865,9 @@ export function TemplateManagement() {
   };
 
   const handleConfirmDelete = async () => {
-    if (!templateIdToDelete) return;
+    if (!templateIdToDelete || deletingTemplate) return;
 
+    setDeletingTemplate(true);
     try {
       const result = await api.deleteBroadcastTemplate(templateIdToDelete);
       if ("error" in result) {
@@ -907,10 +878,12 @@ export function TemplateManagement() {
       toast.success("Template berhasil dihapus!");
       setDeleteModalOpen(false);
       setTemplateIdToDelete(null);
-      await loadTemplates();
+      await refreshTemplates();
     } catch (error) {
       console.error("Error deleting template:", error);
       toast.error("Gagal menghapus template");
+    } finally {
+      setDeletingTemplate(false);
     }
   };
 
@@ -925,7 +898,7 @@ export function TemplateManagement() {
       }
 
       toast.success(`Berhasil sync ${result.data?.total ?? 0} template dari Meta`);
-      await loadTemplates();
+      await refreshTemplates();
     } catch (error) {
       console.error("Error sync templates:", error);
       toast.error("Terjadi kesalahan saat sync template");
@@ -935,6 +908,7 @@ export function TemplateManagement() {
   };
 
   const handlePushToMeta = async (templateId: string) => {
+    if (pushingId) return;
     setPushingId(templateId);
     try {
       const result = await api.pushTemplateToMeta(templateId);
@@ -945,7 +919,8 @@ export function TemplateManagement() {
       }
 
       toast.success("Template berhasil disubmit ke Meta");
-      await loadTemplates();
+      setTemplateToSubmit(null);
+      await refreshTemplates();
     } catch (error) {
       console.error("Error pushing template:", error);
       toast.error("Terjadi kesalahan saat submit template ke Meta");
@@ -1011,6 +986,13 @@ export function TemplateManagement() {
   }
 
   const selectedVars = extractVariables(selectedTemplateBody);
+  const hasActiveTemplateFilter = searchQuery.trim().length > 0 || categoryFilter !== "all" || statusFilter !== "all";
+  const templateToDelete = templates.find((template) => template.id === templateIdToDelete) ?? null;
+  const resetTemplateFilters = () => {
+    setSearchQuery("");
+    setCategoryFilter("all");
+    setStatusFilter("all");
+  };
 
   return (
     <div className="w-full p-6 md:p-8 bg-white xl:h-full flex flex-col xl:overflow-hidden">
@@ -1029,7 +1011,7 @@ export function TemplateManagement() {
             disabled={syncing}
           >
             <RefreshCw className={`w-4 h-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
-            {syncing ? "Syncing..." : "Sync dari Meta"}
+            {syncing ? "Menyinkronkan..." : "Sinkronkan dari Meta"}
           </Button>
 
           <Button onClick={openCreateModal} className="bg-primary hover:bg-primary/90">
@@ -1046,6 +1028,8 @@ export function TemplateManagement() {
               <div className="flex flex-col md:flex-row flex-1 md:items-center gap-3 w-full max-w-xl">
                 <div className="relative w-full md:flex-1">
                   <Input
+                    id="template-search"
+                    aria-label="Cari template pesan"
                     type="text"
                     placeholder="Cari nama template..."
                     value={searchQuery}
@@ -1057,6 +1041,7 @@ export function TemplateManagement() {
 
                 <div className="flex gap-2 w-full md:w-auto">
                   <select
+                    aria-label="Filter kategori template"
                     value={categoryFilter}
                     onChange={(e) => setCategoryFilter(e.target.value)}
                     className="flex-1 md:flex-initial px-3 py-2 border rounded-lg bg-white text-sm text-slate-700 min-w-0 md:min-w-[130px]"
@@ -1068,15 +1053,16 @@ export function TemplateManagement() {
                   </select>
 
                   <select
+                    aria-label="Filter status template"
                     value={statusFilter}
                     onChange={(e) => setStatusFilter(e.target.value)}
                     className="flex-1 md:flex-initial px-3 py-2 border rounded-lg bg-white text-sm text-slate-700 min-w-0 md:min-w-[130px]"
                   >
                     <option value="all">Semua Status</option>
-                    <option value="approved">Approved</option>
-                    <option value="pending">Pending</option>
-                    <option value="rejected">Rejected</option>
-                    <option value="draft">Draft</option>
+                    <option value="approved">Disetujui</option>
+                    <option value="pending">Menunggu</option>
+                    <option value="rejected">Ditolak</option>
+                    <option value="draft">Draf</option>
                   </select>
                 </div>
               </div>
@@ -1088,6 +1074,7 @@ export function TemplateManagement() {
                     size="sm"
                     onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
                     disabled={currentPage === 1}
+                    aria-label="Halaman template sebelumnya"
                   >
                     <ChevronLeft className="w-4 h-4" />
                   </Button>
@@ -1099,6 +1086,7 @@ export function TemplateManagement() {
                     size="sm"
                     onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
                     disabled={currentPage === totalPages}
+                    aria-label="Halaman template berikutnya"
                   >
                     <ChevronRight className="w-4 h-4" />
                   </Button>
@@ -1107,10 +1095,17 @@ export function TemplateManagement() {
             </div>
           </div>
 
-          {templates.length === 0 ? (
+          {loadError && templates.length === 0 ? (
+            <div className="p-12 text-center bg-white border-t" role="alert">
+              <MessageSquare className="w-16 h-16 mx-auto mb-4 text-red-300 opacity-70" aria-hidden="true" />
+              <h3 className="mb-2 font-semibold text-slate-800">Template belum dapat dimuat.</h3>
+              <p className="text-sm text-slate-500 mb-4">Periksa koneksi lalu coba lagi.</p>
+              <Button variant="outline" onClick={() => void loadTemplates(true)}>Coba Lagi</Button>
+            </div>
+          ) : templates.length === 0 ? (
             <div className="p-12 text-center bg-white border-t">
               <MessageSquare className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-20" />
-              <h3 className="mb-2">Belum Ada Template</h3>
+              <h3 className="mb-2">Belum ada template WhatsApp.</h3>
               <p className="text-muted-foreground mb-4">
                 Buat template pertama Anda atau sync dari Meta
               </p>
@@ -1119,8 +1114,21 @@ export function TemplateManagement() {
                 Buat Template
               </Button>
             </div>
+          ) : sortedTemplates.length === 0 ? (
+            <div className="p-12 text-center bg-white border-t">
+              <Search className="w-12 h-12 mx-auto mb-4 text-slate-300" aria-hidden="true" />
+              <h3 className="mb-2 font-semibold text-slate-800">Tidak ada template yang cocok.</h3>
+              <p className="text-sm text-slate-500 mb-4">Ubah pencarian atau filter untuk melihat template lain.</p>
+              {hasActiveTemplateFilter && <Button variant="outline" onClick={resetTemplateFilters}>Reset pencarian dan filter</Button>}
+            </div>
           ) : (
             <div className="flex-1 overflow-y-auto overflow-x-auto bg-white border-t min-h-0">
+              {loadError && (
+                <div className="sticky left-0 flex items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-5 py-2 text-xs text-amber-800" role="status">
+                  <span>Data terakhir ditampilkan. Gagal memperbarui template.</span>
+                  <button type="button" className="font-semibold underline" onClick={() => void loadTemplates(false)}>Coba Lagi</button>
+                </div>
+              )}
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50/50 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
@@ -1128,8 +1136,8 @@ export function TemplateManagement() {
                     <th className="px-5 py-3.5 hidden sm:table-cell">Kategori</th>
                     <th className="px-5 py-3.5 hidden sm:table-cell">Bahasa</th>
                     <th className="px-5 py-3.5">Status</th>
-                    <th className="px-5 py-3.5 text-center hidden md:table-cell">Pesan Terkirim</th>
-                    <th className="px-5 py-3.5 text-right">Action</th>
+                    <th className="px-5 py-3.5 text-center hidden md:table-cell" title="Jumlah terkirim dari maksimal 50 broadcast terbaru">Terkirim (50 broadcast terbaru)</th>
+                    <th className="px-5 py-3.5 text-right">Aksi</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1173,18 +1181,20 @@ export function TemplateManagement() {
                               <Button
                                 variant="outline"
                                 size="sm"
-                                onClick={() => handlePushToMeta(template.id)}
+                                onClick={() => setTemplateToSubmit(template)}
+                                aria-label={`Kirim template ${template.name} untuk ditinjau Meta`}
                                 className="h-8 px-2.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 border-emerald-100 hover:border-emerald-200"
                                 disabled={pushingId !== null}
                               >
                                 <CloudUpload className={`w-3.5 h-3.5 sm:mr-1.5 ${pushingId === template.id ? "animate-spin" : ""}`} />
-                                <span className="hidden sm:inline">{pushingId === template.id ? "Submitting..." : "Submit"}</span>
+                                <span className="hidden sm:inline">Kirim ke Meta</span>
                               </Button>
                             )}
                             <Button
                               variant="outline"
                               size="sm"
                               onClick={() => openEditModal(template)}
+                              aria-label={`Edit template ${template.name}`}
                               className="h-8 px-2.5"
                             >
                               <Edit className="w-3.5 h-3.5 sm:mr-1.5" />
@@ -1194,6 +1204,7 @@ export function TemplateManagement() {
                               variant="outline"
                               size="sm"
                               onClick={() => handleDelete(template.id)}
+                              aria-label={`Hapus template ${template.name}`}
                               className="h-8 px-2.5 text-red-600 hover:text-red-700 hover:bg-red-50 border-red-100 hover:border-red-200"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -1232,12 +1243,12 @@ export function TemplateManagement() {
                 {selectedTemplate.status === "draft" && (
                   <div className="mt-4 pt-4 border-t flex justify-end">
                     <Button
-                      onClick={() => handlePushToMeta(selectedTemplate.id)}
+                      onClick={() => setTemplateToSubmit(selectedTemplate)}
                       className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl"
                       disabled={pushingId !== null}
                     >
                       <CloudUpload className={`w-4 h-4 mr-2 ${pushingId === selectedTemplate.id ? "animate-spin" : ""}`} />
-                      {pushingId === selectedTemplate.id ? "Menyerahkan..." : "Submit ke Meta"}
+                      Kirim untuk Ditinjau Meta
                     </Button>
                   </div>
                 )}
@@ -1249,11 +1260,11 @@ export function TemplateManagement() {
 
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-80 p-6">
-          <div className="w-full max-w-5xl bg-white rounded-lg shadow-lg flex flex-col max-h-[90vh] overflow-hidden">
+          <div ref={editorDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="template-editor-title" className="w-full max-w-5xl bg-white rounded-lg shadow-lg flex flex-col max-h-[90vh] overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
-              <h3>{editingTemplate ? "Edit Template" : "Buat Template Baru"}</h3>
-              <Button variant="ghost" size="sm" onClick={closeModal} disabled={saving}>
-                <X className="w-4 h-4" />
+              <h3 id="template-editor-title">{editingTemplate ? "Edit Template" : "Buat Template Baru"}</h3>
+              <Button variant="ghost" size="sm" aria-label="Tutup editor template" onClick={closeModal} disabled={saving}>
+                <X className="w-4 h-4" aria-hidden="true" />
               </Button>
             </div>
 
@@ -1261,23 +1272,29 @@ export function TemplateManagement() {
               <div className="space-y-6">
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <Label>Nama Template *</Label>
+                    <Label htmlFor="template-name">Nama Template *</Label>
                     <span className={`text-xs ${formData.name.length > 500 ? "text-red-600" : "text-muted-foreground"}`}>
                       {formData.name.length}/512
                     </span>
                   </div>
                   <Input
+                    id="template-name"
+                    required
+                    aria-invalid={Boolean(nameError)}
+                    aria-describedby={nameError ? "template-name-error" : undefined}
                     placeholder="contoh: reminder_pembayaran"
                     value={formData.name}
                     onChange={(e) => handleNameChange(e.target.value)}
                   />
-                  {nameError && <p className="text-xs text-red-600 mt-1">{nameError}</p>}
+                  {nameError && <p id="template-name-error" className="text-xs text-red-600 mt-1">{nameError}</p>}
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
-                    <Label>Kategori *</Label>
+                    <Label htmlFor="template-category">Kategori *</Label>
                     <select
+                      id="template-category"
+                      required
                       className="w-full p-3 border rounded-lg mt-2 bg-white"
                       value={formData.category}
                       onChange={(e) =>
@@ -1294,8 +1311,10 @@ export function TemplateManagement() {
                   </div>
 
                   <div>
-                    <Label>Bahasa *</Label>
+                    <Label htmlFor="template-language">Bahasa *</Label>
                     <select
+                      id="template-language"
+                      required
                       className="w-full p-3 border rounded-lg mt-2 bg-white"
                       value={formData.language}
                       onChange={(e) =>
@@ -1312,8 +1331,9 @@ export function TemplateManagement() {
                   </div>
 
                   <div>
-                    <Label>Media Sample / Header Type</Label>
+                    <Label htmlFor="template-header-type">Jenis Header / Contoh Media</Label>
                     <select
+                      id="template-header-type"
                       className="w-full p-3 border rounded-lg mt-2 bg-white"
                       value={formData.headerType}
                       onChange={(e) =>
@@ -1340,12 +1360,15 @@ export function TemplateManagement() {
                 {formData.headerType === "text" && (
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <Label>Header Text</Label>
+                      <Label htmlFor="template-header-text">Teks Header</Label>
                       <span className={`text-xs ${formData.headerText.length > 55 ? "text-red-600" : "text-muted-foreground"}`}>
                         {formData.headerText.length}/60
                       </span>
                     </div>
                     <Input
+                      id="template-header-text"
+                      aria-invalid={Boolean(headerError)}
+                      aria-describedby={headerError ? "template-header-error" : undefined}
                       placeholder="Header singkat"
                       value={formData.headerText}
                       onChange={(e) => {
@@ -1353,13 +1376,13 @@ export function TemplateManagement() {
                         setHeaderError(validateHeaderText(e.target.value));
                       }}
                     />
-                    {headerError && <p className="text-xs text-red-600 mt-1">{headerError}</p>}
+                    {headerError && <p id="template-header-error" className="text-xs text-red-600 mt-1">{headerError}</p>}
                   </div>
                 )}
 
                 {["image", "video", "document"].includes(formData.headerType) && (
                   <div>
-                    <Label>Media Sample</Label>
+                    <Label htmlFor="template-media-sample">Contoh Media</Label>
                     <div className="mt-2 border-2 border-dashed rounded-xl p-4 bg-slate-50">
                       <input
                         ref={sampleInputRef}
@@ -1412,7 +1435,7 @@ export function TemplateManagement() {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-3">
-                      <Label>Konten Pesan *</Label>
+                      <Label htmlFor="template-body">Konten Pesan *</Label>
                       <Button type="button" variant="outline" size="sm" onClick={handleAddVariable}>
                         + Variabel
                       </Button>
@@ -1423,15 +1446,19 @@ export function TemplateManagement() {
                   </div>
 
                   <Textarea
+                    id="template-body"
+                    required
+                    aria-invalid={Boolean(bodyError)}
+                    aria-describedby={bodyError ? "template-body-error" : "template-body-help"}
                     rows={7}
                     placeholder="Contoh: Halo {{1}}, terima kasih telah bergabung dengan {{2}}."
                     value={formData.body}
                     onChange={(e) => handleBodyChange(e.target.value)}
                   />
                   {bodyError ? (
-                    <p className="text-xs text-red-600 mt-1">{bodyError}</p>
+                    <p id="template-body-error" className="text-xs text-red-600 mt-1">{bodyError}</p>
                   ) : (
-                    <p className="text-xs text-muted-foreground mt-1">
+                    <p id="template-body-help" className="text-xs text-muted-foreground mt-1">
                       Gunakan format variabel seperti {`{{1}}`}, {`{{2}}`}, dst.
                     </p>
                   )}
@@ -1468,12 +1495,15 @@ export function TemplateManagement() {
 
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <Label>Footer</Label>
+                    <Label htmlFor="template-footer">Footer</Label>
                     <span className={`text-xs ${formData.footerText.length > 55 ? "text-red-600" : "text-muted-foreground"}`}>
                       {formData.footerText.length}/60
                     </span>
                   </div>
                   <Input
+                    id="template-footer"
+                    aria-invalid={Boolean(footerError)}
+                    aria-describedby={footerError ? "template-footer-error" : undefined}
                     placeholder="Footer opsional"
                     value={formData.footerText}
                     onChange={(e) => {
@@ -1481,13 +1511,14 @@ export function TemplateManagement() {
                       setFooterError(validateFooterText(e.target.value));
                     }}
                   />
-                  {footerError && <p className="text-xs text-red-600 mt-1">{footerError}</p>}
+                  {footerError && <p id="template-footer-error" className="text-xs text-red-600 mt-1">{footerError}</p>}
                 </div>
 
                 <div>
-                  <Label>Buttons</Label>
+                  <Label htmlFor="template-button-type">Tombol</Label>
                   <div className="mt-2 grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4">
                     <select
+                      id="template-button-type"
                       className="w-full p-3 border rounded-lg bg-white"
                       value={formData.buttonType}
                       onChange={(e) =>
@@ -1595,14 +1626,18 @@ export function TemplateManagement() {
       <AppModal
         open={deleteModalOpen}
         title="Konfirmasi Hapus Template"
+        closeDisabled={deletingTemplate}
         onClose={() => {
-          setDeleteModalOpen(false);
-          setTemplateIdToDelete(null);
+          if (!deletingTemplate) {
+            setDeleteModalOpen(false);
+            setTemplateIdToDelete(null);
+          }
         }}
         footer={
           <div className="flex justify-end gap-2">
             <Button
               variant="outline"
+              disabled={deletingTemplate}
               onClick={() => {
                 setDeleteModalOpen(false);
                 setTemplateIdToDelete(null);
@@ -1613,14 +1648,36 @@ export function TemplateManagement() {
             <Button
               className="bg-red-500 hover:bg-red-600 text-white"
               onClick={handleConfirmDelete}
+              disabled={deletingTemplate}
             >
-              Hapus
+              {deletingTemplate ? "Menghapus..." : "Hapus Template"}
             </Button>
           </div>
         }
       >
         <p className="text-sm text-slate-600">
-          Apakah Anda yakin ingin menghapus template ini? Tindakan ini tidak dapat dibatalkan.
+          Hapus template <strong>{templateToDelete?.name || "ini"}</strong> dari SIPESA? Jika terhubung, sistem juga akan mencoba menghapusnya dari Meta, tetapi hasil penghapusan di Meta tidak dijamin. Tindakan lokal ini tidak dapat dibatalkan.
+        </p>
+      </AppModal>
+
+      <AppModal
+        open={!!templateToSubmit}
+        title="Kirim Template untuk Ditinjau"
+        closeDisabled={pushingId !== null}
+        onClose={() => {
+          if (!pushingId) setTemplateToSubmit(null);
+        }}
+        footer={
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" disabled={pushingId !== null} onClick={() => setTemplateToSubmit(null)}>Batal</Button>
+            <Button disabled={pushingId !== null} onClick={() => templateToSubmit && void handlePushToMeta(templateToSubmit.id)}>
+              {pushingId ? "Mengirim..." : "Ya, Kirim untuk Ditinjau"}
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-slate-600 break-words">
+          Kirim template <strong className="text-slate-800">{templateToSubmit?.name}</strong> untuk ditinjau Meta? Pengiriman ini tidak menjamin template akan disetujui.
         </p>
       </AppModal>
     </div>

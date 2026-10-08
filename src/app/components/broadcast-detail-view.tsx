@@ -6,6 +6,9 @@ import { ArrowLeft, CheckCircle, Clock, XCircle, Search, Download, Eye, CheckCir
 import { api } from "../lib/api";
 import { AppModal } from "./AppModal";
 import { supabase } from "../lib/supabaseClient";
+import { toast } from "sonner";
+import { formatStoredScheduledAt } from "../lib/scheduled-at";
+import type { BroadcastDetailContext } from "./broadcast-history";
 
 interface RecipientStatus {
   id: string;
@@ -22,12 +25,22 @@ interface BroadcastDetail {
   numberName: string;
   message: string;
   totalRecipients: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
   createdAt: string;
+  scheduledAt?: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  status: string;
   recipients: RecipientStatus[];
+  recipientPage: { total: number; page: number; pageSize: number; totalPages: number };
 }
 
 interface BroadcastDetailViewProps {
   broadcastId: string;
+  historyContext: BroadcastDetailContext | null;
   onBack: () => void;
 }
 
@@ -87,39 +100,102 @@ const InfoTooltip = ({ text }: { text: string }) => {
   );
 };
 
-export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailViewProps) {
+function getProcessStatus(status: string, startedAt?: string | null) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "queued" || normalized === "scheduled" || (normalized === "sending" && !startedAt)) return "Menunggu";
+  if (normalized === "sending") return "Sedang Dikirim";
+  if (normalized === "completed") return "Selesai";
+  if (normalized === "cancelled") return "Dibatalkan";
+  if (normalized === "failed") return "Gagal";
+  if (normalized === "paused") return "Dijeda";
+  return "Tidak diketahui";
+}
+
+function isCancellableBroadcast(broadcast: BroadcastDetail) {
+  const status = String(broadcast.status || "").toLowerCase();
+  const pendingSchedule = status === "queued" && !!broadcast.scheduledAt && !broadcast.startedAt;
+  const activeSending = status === "sending" && !!broadcast.startedAt;
+  return pendingSchedule || activeSending;
+}
+
+function getCancelUnavailableReason(broadcast: BroadcastDetail) {
+  const status = String(broadcast.status || "").toLowerCase();
+  if (["completed", "cancelled", "failed"].includes(status)) return "Broadcast sudah selesai dan tidak dapat dibatalkan.";
+  if (status === "sending" && !broadcast.startedAt) return "Broadcast masih menunggu proses pengiriman dimulai.";
+  if (status === "queued" && !broadcast.scheduledAt) return "Broadcast Direct yang belum aktif tidak dapat dibatalkan dari detail ini.";
+  return "Broadcast tidak memenuhi syarat pembatalan saat ini.";
+}
+
+export function BroadcastDetailView({ broadcastId, historyContext, onBack }: BroadcastDetailViewProps) {
   const [broadcast, setBroadcast] = useState<BroadcastDetail | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [tableLoading, setTableLoading] = useState(false);
   const [error, setError] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
+  const hasLoadedRef = useRef(false);
+  const requestVersionRef = useRef(0);
+
+  useEffect(() => {
+    requestVersionRef.current += 1;
+    const timeout = window.setTimeout(() => {
+      setCurrentPage(1);
+      setDebouncedSearch(searchQuery.trim());
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [searchQuery]);
 
   useEffect(() => {
     let active = true;
 
-    const loadDetail = async (showLoading = true) => {
+    const loadDetail = async () => {
       if (!active) return;
-      if (showLoading) setLoading(true);
+      const requestVersion = ++requestVersionRef.current;
+      if (!hasLoadedRef.current) setLoading(true);
+      else setTableLoading(true);
       try {
-        const result = await api.getBroadcastDetail(broadcastId);
+        const result = await api.getBroadcastDetail(broadcastId, {
+          page: currentPage,
+          pageSize: 50,
+          search: debouncedSearch || undefined,
+          status: filterStatus === "all" ? undefined : filterStatus,
+        });
+        if (!active || requestVersion !== requestVersionRef.current) return;
         if (active) {
           if ("error" in result) {
-            setError(result.error);
+            console.error("Broadcast detail request failed:", result.error);
+            setError("Detail broadcast belum dapat dimuat. Silakan coba lagi.");
           } else {
-            setBroadcast(result.data);
+            setBroadcast({
+              ...result.data,
+              status: result.data.status ?? historyContext?.status ?? "",
+              scheduledAt: result.data.scheduledAt ?? historyContext?.scheduledAt,
+              startedAt: result.data.startedAt ?? historyContext?.startedAt ?? null,
+              createdAt: historyContext?.createdAt ?? result.data.createdAt ?? "-",
+            });
             setError("");
+            hasLoadedRef.current = true;
           }
         }
       } catch (err) {
+        if (!active || requestVersion !== requestVersionRef.current) return;
         console.error(err);
-        if (active && showLoading) setError("Gagal memuat detail broadcast");
+        if (active) setError("Gagal memuat detail broadcast");
       } finally {
-        if (active && showLoading) setLoading(false);
+        if (active && requestVersion === requestVersionRef.current) {
+          setLoading(false);
+          setTableLoading(false);
+        }
       }
     };
 
-    loadDetail(true);
+    loadDetail();
 
     const channelStatusRef = { current: "INITIAL" };
     const channelName = `bc-detail-recipients-${broadcastId}-${Date.now()}`;
@@ -135,7 +211,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
         },
         () => {
           if (!active) return;
-          loadDetail(false);
+          loadDetail();
         }
       )
       .on(
@@ -176,7 +252,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       if (!active) return;
       channelStatusRef.current = status;
       if (status === "SUBSCRIBED") {
-        loadDetail(false);
+        loadDetail();
       }
     });
 
@@ -190,7 +266,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       const pollInterval = isSubscribed ? 20 : 5;
 
       if (tickCount % pollInterval === 0) {
-        loadDetail(false);
+        loadDetail();
       }
     }, 1000);
 
@@ -199,53 +275,25 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       clearInterval(interval);
       supabase.removeChannel(channel);
     };
-  }, [broadcastId]);
-
-  const loadBroadcastDetail = async (showLoading = true) => {
-    // Stub kept for compatibility
-  };
+  }, [broadcastId, currentPage, debouncedSearch, filterStatus, historyContext, refreshNonce]);
 
   const stats = useMemo(() => {
     if (!broadcast) return { total: 0, accepted: 0, sent: 0, delivered: 0, read: 0, failed: 0 };
 
-    const r = broadcast.recipients;
-
-    const rawSentCount = r.filter((x) => x.status === "accepted" || x.status === "processing" || x.status === "sent").length;
-    const deliveredCount = r.filter((x) => x.status === "delivered").length;
-    const readCount = r.filter((x) => x.status === "read").length;
-    const failedCount = r.filter((x) => x.status === "failed").length;
-
-    const totalSentAccumulation = rawSentCount + deliveredCount + readCount;
-
     return {
-      total: r.length,
-      sent: totalSentAccumulation,
-      delivered: deliveredCount,
-      read: readCount,
-      failed: failedCount,
+      total: broadcast.totalRecipients,
+      sent: broadcast.sent,
+      delivered: broadcast.delivered,
+      read: broadcast.read,
+      failed: broadcast.failed,
     };
   }, [broadcast]);
 
-  const filteredRecipients = useMemo(() => {
-    if (!broadcast) return [];
-
-    return broadcast.recipients.filter((r) => {
-      const search =
-        (r.contactName || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (r.contactPhone || "").includes(searchQuery);
-
-      let filter = false;
-      if (filterStatus === "all") {
-        filter = true;
-      } else if (filterStatus === "sent") {
-        filter = r.status === "accepted" || r.status === "processing" || r.status === "sent" || r.status === "delivered" || r.status === "read";
-      } else {
-        filter = r.status === filterStatus;
-      }
-
-      return search && filter;
-    });
-  }, [broadcast, searchQuery, filterStatus]);
+  const filteredRecipients = broadcast?.recipients ?? [];
+  const selectStatusFilter = (status: string) => {
+    setCurrentPage(1);
+    setFilterStatus(status);
+  };
 
   function renderStatusBadge(status?: string | null) {
     const s = String(status || "").toLowerCase().trim();
@@ -254,7 +302,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       return (
         <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
           <Eye className="w-3 h-3" />
-          Read
+          Dibaca
         </span>
       );
     }
@@ -263,7 +311,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       return (
         <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
           <CheckCircle2 className="w-3 h-3" />
-          Delivered
+          Diterima
         </span>
       );
     }
@@ -272,7 +320,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       return (
         <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
           <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-600" />
-          Processing
+          Mengirim
         </span>
       );
     }
@@ -281,7 +329,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       return (
         <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
           <Send className="w-3 h-3" />
-          Sent
+          Terkirim
         </span>
       );
     }
@@ -290,7 +338,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       return (
         <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
           <XCircle className="w-3 h-3" />
-          Failed
+          Gagal
         </span>
       );
     }
@@ -299,7 +347,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       return (
         <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-700">
           <XCircle className="w-3 h-3" />
-          Cancelled
+          Dibatalkan
         </span>
       );
     }
@@ -307,17 +355,67 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
         <Clock3 className="w-3 h-3" />
-        Pending
+        Mengirim
       </span>
     );
   }
 
-  const exportCsv = () => {
+  const executeCancellation = async () => {
+    if (!broadcast || cancelling || !isCancellableBroadcast(broadcast)) return;
+    const activeSending = String(broadcast.status).toLowerCase() === "sending" && !!broadcast.startedAt;
+    setCancelling(true);
+    try {
+      const result = activeSending
+        ? await api.cancelBroadcast(broadcast.id)
+        : await api.cancelScheduledBroadcast(broadcast.id);
+      if ("error" in result) {
+        console.error("Broadcast cancellation failed:", result.error);
+        toast.error("Broadcast belum dapat dibatalkan. Silakan coba lagi.");
+        return;
+      }
+      setBroadcast((previous) => previous ? { ...previous, status: "cancelled" } : previous);
+      setCancelConfirmOpen(false);
+      toast.success(activeSending ? "Sisa pengiriman broadcast berhasil dihentikan" : "Jadwal broadcast berhasil dibatalkan");
+      setRefreshNonce((value) => value + 1);
+    } catch (cancellationError) {
+      console.error("Broadcast cancellation failed:", cancellationError);
+      toast.error("Broadcast belum dapat dibatalkan. Silakan coba lagi.");
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const exportCsv = async () => {
     if (!broadcast) return;
+
+    const exported: RecipientStatus[] = [];
+    let page = 1;
+    while (true) {
+      const result = await api.getBroadcastRecipients(broadcastId, {
+        page,
+        pageSize: 100,
+        search: debouncedSearch || undefined,
+        status: filterStatus === "all" ? undefined : filterStatus,
+      });
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      exported.push(...result.data.items.map((recipient: any) => ({
+        id: recipient.id,
+        contactName: recipient.recipient_name ?? "Tanpa Nama",
+        contactPhone: recipient.phone_e164 ?? "-",
+        status: recipient.status || "pending",
+        timestamp: recipient.sent_at ?? recipient.updated_at ?? recipient.created_at ?? "-",
+        errorMessage: recipient.error ?? undefined,
+      })));
+      if (page >= result.data.totalPages) break;
+      page += 1;
+    }
 
     const header = ["No", "Nama Kontak", "Nomor WhatsApp", "Status", "Keterangan"];
 
-    const rows = filteredRecipients.map((r, index) => [
+    const rows = exported.map((r, index) => [
       index + 1,
       r.contactName,
       r.contactPhone,
@@ -345,12 +443,16 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       open={true}
       title={
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 w-full pr-2">
-          <span>Detail Broadcast</span>
+          <button type="button" onClick={onBack} className="inline-flex items-center gap-2 self-start text-left hover:text-primary" aria-label="Kembali ke Riwayat Broadcast">
+            <ArrowLeft className="h-4 w-4" />
+            <span>Detail Broadcast</span>
+          </button>
           {broadcast && (
             <div className="flex items-center gap-2">
               <div className="relative w-full sm:w-64">
                 <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
                 <Input
+                  aria-label="Cari penerima broadcast"
                   placeholder="Cari nama atau nomor..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -373,7 +475,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
       onClose={onBack}
       maxWidthClassName="max-w-4xl"
     >
-      {loading ? (
+      {loading && !hasLoadedRef.current ? (
         <div className="flex justify-center items-center py-20">
           <div className="animate-spin rounded-full w-10 h-10 border-b-2 border-slate-700" />
         </div>
@@ -391,21 +493,29 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
           {/* Info Broadcast */}
           <Card className="p-6">
             <div className="flex flex-col gap-4">
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm bg-slate-50 p-4 rounded-xl border border-slate-100">
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-500 font-medium">Pengirim:</span>
-                  <span className="font-semibold text-slate-800">{broadcast.numberName}</span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-sm bg-slate-50 p-4 rounded-xl border border-slate-100">
+                <div><div className="text-xs text-slate-500">Tipe</div><div className="mt-1 font-semibold text-slate-800">{broadcast.scheduledAt ? "Scheduled" : "Direct"}</div></div>
+                <div><div className="text-xs text-slate-500">Status Proses</div><div className="mt-1 font-semibold text-slate-800">{getProcessStatus(broadcast.status, broadcast.startedAt)}</div></div>
+                <div><div className="text-xs text-slate-500">Pengirim</div><div className="mt-1 font-semibold text-slate-800 break-words">{broadcast.numberName}</div></div>
+                <div><div className="text-xs text-slate-500">Dibuat</div><div className="mt-1 font-medium text-slate-700">{formatDate(broadcast.createdAt)}</div></div>
+                {broadcast.scheduledAt && (
+                  <div className="sm:col-span-2"><div className="text-xs text-slate-500">Jadwal Pengiriman</div><div className="mt-1 font-semibold text-slate-800">{formatStoredScheduledAt(broadcast.scheduledAt) ?? broadcast.scheduledAt}</div></div>
+                )}
+                <div><div className="text-xs text-slate-500">Total Penerima</div><div className="mt-1 font-bold text-slate-800">{broadcast.totalRecipients.toLocaleString("id-ID")}</div></div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-slate-100 p-4">
+                <div>
+                  <div className="text-xs font-semibold text-slate-700">Pembatalan</div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {isCancellableBroadcast(broadcast) ? "Broadcast ini masih dapat dibatalkan sesuai status prosesnya." : getCancelUnavailableReason(broadcast)}
+                  </p>
                 </div>
-                <div className="hidden sm:block text-slate-300">|</div>
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-500 font-medium">Tanggal:</span>
-                  <span className="text-slate-700 font-medium">{formatDate(broadcast.createdAt)}</span>
-                </div>
-                <div className="hidden sm:block text-slate-300">|</div>
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-500 font-medium">Total Penerima:</span>
-                  <span className="px-2.5 py-0.5 bg-slate-100 text-slate-700 rounded-full font-bold">{broadcast.totalRecipients}</span>
-                </div>
+                {isCancellableBroadcast(broadcast) && (
+                  <Button type="button" variant="outline" onClick={() => setCancelConfirmOpen(true)} className="border-amber-200 text-amber-700 hover:bg-amber-50 shrink-0">
+                    {String(broadcast.status).toLowerCase() === "sending" ? "Hentikan Broadcast" : "Batalkan Jadwal"}
+                  </Button>
+                )}
               </div>
 
               {broadcast.message && (
@@ -420,43 +530,68 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
           {/* Statistik */}
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5">
             <Card
+              role="button"
+              tabIndex={0}
+              aria-pressed={filterStatus === "all"}
+              aria-label="Tampilkan semua penerima"
               className={`p-2.5 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "all" ? "border-slate-800 bg-slate-50/50 shadow-sm ring-1 ring-slate-800/10" : "border-slate-100 hover:border-slate-300 hover:bg-slate-50/50"
                 }`}
-              onClick={() => setFilterStatus("all")}
+              onClick={() => selectStatusFilter("all")}
+              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectStatusFilter("all"); } }}
             >
               <div className="text-[11px] text-slate-500 font-semibold mb-0.5 uppercase tracking-wider">Total</div>
               <div className="text-lg font-bold text-slate-800">{stats.total}</div>
             </Card>
             <Card
+              role="button"
+              tabIndex={0}
+              aria-pressed={filterStatus === "sent"}
+              aria-label="Filter penerima berstatus terkirim"
               className={`p-2.5 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "sent" ? "border-amber-700 bg-amber-50/40 shadow-sm ring-1 ring-amber-700/10" : "border-slate-100 hover:border-amber-200 hover:bg-amber-50/20"
                 }`}
-              onClick={() => setFilterStatus("sent")}
+              onClick={() => selectStatusFilter("sent")}
+              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectStatusFilter("sent"); } }}
             >
-              <div className="text-[11px] text-amber-600 font-semibold mb-0.5 uppercase tracking-wider">Sent</div>
+              <div className="text-[11px] text-amber-600 font-semibold mb-0.5 uppercase tracking-wider">Terkirim</div>
               <div className="text-lg font-bold text-amber-700">{stats.sent}</div>
             </Card>
             <Card
+              role="button"
+              tabIndex={0}
+              aria-pressed={filterStatus === "delivered"}
+              aria-label="Filter penerima berstatus diterima"
               className={`p-2.5 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "delivered" ? "border-green-700 bg-green-50/40 shadow-sm ring-1 ring-green-700/10" : "border-slate-100 hover:border-green-200 hover:bg-green-50/20"
                 }`}
-              onClick={() => setFilterStatus("delivered")}
+              onClick={() => selectStatusFilter("delivered")}
+              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectStatusFilter("delivered"); } }}
             >
-              <div className="text-[11px] text-green-600 font-semibold mb-0.5 uppercase tracking-wider">Deliv</div>
+              <div className="text-[11px] text-green-600 font-semibold mb-0.5 uppercase tracking-wider">Diterima</div>
               <div className="text-lg font-bold text-green-700">{stats.delivered}</div>
             </Card>
             <Card
+              role="button"
+              tabIndex={0}
+              aria-pressed={filterStatus === "read"}
+              aria-label="Filter penerima berstatus dibaca"
               className={`p-2.5 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "read" ? "border-blue-700 bg-blue-50/40 shadow-sm ring-1 ring-blue-700/10" : "border-slate-100 hover:border-blue-200 hover:bg-blue-50/20"
                 }`}
-              onClick={() => setFilterStatus("read")}
+              onClick={() => selectStatusFilter("read")}
+              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectStatusFilter("read"); } }}
             >
-              <div className="text-[11px] text-blue-600 font-semibold mb-0.5 uppercase tracking-wider">Read</div>
+              <div className="text-[11px] text-blue-600 font-semibold mb-0.5 uppercase tracking-wider">Dibaca</div>
               <div className="text-lg font-bold text-blue-700">{stats.read}</div>
             </Card>
             <Card
+              role="button"
+              tabIndex={0}
+              aria-pressed={filterStatus === "failed"}
+              aria-label="Filter penerima berstatus gagal"
               className={`p-2.5 text-center cursor-pointer transition-all duration-200 border ${filterStatus === "failed" ? "border-red-700 bg-red-50/40 shadow-sm ring-1 ring-red-700/10" : "border-slate-100 hover:border-red-200 hover:bg-red-50/20"
                 }`}
-              onClick={() => setFilterStatus("failed")}
+              onClick={() => selectStatusFilter("failed")}
+              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectStatusFilter("failed"); } }}
             >
-              <div className="text-[11px] text-red-600 font-semibold mb-0.5 uppercase tracking-wider">Failed</div>
+              <div className="text-[11px] text-red-600 font-semibold mb-0.5 uppercase tracking-wider">Gagal</div>
               <div className="text-lg font-bold text-red-700">{stats.failed}</div>
             </Card>
           </div>
@@ -495,7 +630,7 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
                           : ""
                           }`}
                       >
-                        <td className="px-6 py-4 text-center font-medium text-slate-500">{idx + 1}</td>
+                        <td className="px-6 py-4 text-center font-medium text-slate-500">{(currentPage - 1) * 50 + idx + 1}</td>
                         <td className="px-6 py-4 font-medium text-slate-900 max-w-[200px] truncate" title={r.contactName}>{r.contactName}</td>
                         <td className="px-6 py-4 font-mono text-slate-600">{r.contactPhone}</td>
                         <td className="px-6 py-4">{renderStatusBadge(r.status)}</td>
@@ -506,19 +641,57 @@ export function BroadcastDetailView({ broadcastId, onBack }: BroadcastDetailView
                     );
                   })}
 
-                  {filteredRecipients.length === 0 && (
+                  {filteredRecipients.length === 0 && !tableLoading && (
                     <tr>
                       <td colSpan={5} className="p-8 text-center text-slate-400 text-sm font-medium">
-                        Tidak ada data penerima ditemukan
+                        {debouncedSearch || filterStatus !== "all" ? "Tidak ada penerima yang cocok dengan pencarian atau filter." : "Belum ada data penerima untuk broadcast ini."}
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
+            {tableLoading && (
+              <div className="flex items-center gap-2 border-t border-slate-100 px-4 py-2.5 text-xs text-slate-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Memperbarui penerima...
+              </div>
+            )}
+            <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-xs text-slate-500">
+              <span>
+                {broadcast.recipientPage.total
+                  ? `${(currentPage - 1) * 50 + 1}–${Math.min(currentPage * 50, broadcast.recipientPage.total)} dari ${broadcast.recipientPage.total}`
+                  : "0 data"}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" aria-label="Halaman penerima sebelumnya" disabled={currentPage <= 1 || tableLoading} onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}>Sebelumnya</Button>
+                <span>{currentPage}/{broadcast.recipientPage.totalPages}</span>
+                <Button variant="outline" size="sm" aria-label="Halaman penerima berikutnya" disabled={currentPage >= broadcast.recipientPage.totalPages || tableLoading} onClick={() => setCurrentPage((page) => Math.min(broadcast.recipientPage.totalPages, page + 1))}>Berikutnya</Button>
+              </div>
+            </div>
           </Card>
         </div>
       )}
+
+      <AppModal
+        open={cancelConfirmOpen}
+        title={String(broadcast?.status).toLowerCase() === "sending" ? "Hentikan Broadcast?" : "Batalkan Jadwal?"}
+        description={String(broadcast?.status).toLowerCase() === "sending"
+          ? "Penerima yang sedang diproses dapat diselesaikan pada batas aman. Penerima yang belum diproses akan dibatalkan."
+          : "Broadcast yang dijadwalkan tidak akan dikirim setelah dibatalkan."}
+        onClose={() => !cancelling && setCancelConfirmOpen(false)}
+        closeDisabled={cancelling}
+        footer={(
+          <div className="flex flex-col-reverse sm:flex-row justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setCancelConfirmOpen(false)} disabled={cancelling}>Kembali</Button>
+            <Button type="button" onClick={executeCancellation} disabled={cancelling} className="bg-amber-600 hover:bg-amber-700">
+              {cancelling ? "Membatalkan..." : "Ya, Batalkan"}
+            </Button>
+          </div>
+        )}
+      >
+        <p className="text-sm text-slate-600">Tindakan ini menggunakan alur pembatalan broadcast yang sama dengan Riwayat Broadcast.</p>
+      </AppModal>
     </AppModal>
   );
 }

@@ -14,6 +14,7 @@ import {
   MessageCircle,
   CheckCircle2
 } from "lucide-react";
+import { ADVERTISED_PLAN_TOKEN_PRICE_IDR, formatIdrAmount } from "../lib/pricingCatalog";
 
 interface LandingPageViewProps {
   onNavigateToLogin: () => void;
@@ -24,7 +25,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
   // Calculator state
   const [messageCount, setMessageCount] = useState<number>(5000);
   const [selectedPlan, setSelectedPlan] = useState<"core" | "full">("full");
-  const tokenPrice = selectedPlan === "full" ? 1250 : 250;
+  const tokenPrice = ADVERTISED_PLAN_TOKEN_PRICE_IDR[selectedPlan];
   const monthlyCompetitorAvg = 450000; // Rp 450.000 / month subscription
 
   // FAQ state
@@ -48,11 +49,11 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
     },
     {
       q: "Bagaimana cara kerja skema 'Tanpa Biaya Bulanan'?",
-      a: "Di SIPESA, Anda tidak dibebani biaya sewa dashboard bulanan/tahunan. Kami menawarkan dua paket fleksibel: Paket CORE (Rp 250 / token) untuk biaya platform jika Anda melakukan setup Meta WABA mandiri, dan Paket FULL (Rp 1.250 / token) untuk layanan terkelola penuh (all-in managed). Saldo token Anda tidak memiliki masa kedaluwarsa dan hanya terpotong saat mengirim pesan."
+      a: `Di SIPESA, Anda tidak dibebani biaya sewa dashboard bulanan/tahunan. Kami menawarkan dua paket fleksibel: Paket CORE (Rp ${formatIdrAmount(ADVERTISED_PLAN_TOKEN_PRICE_IDR.core)} / token) untuk biaya platform jika Anda melakukan setup Meta WABA mandiri, dan Paket FULL (Rp ${formatIdrAmount(ADVERTISED_PLAN_TOKEN_PRICE_IDR.full)} / token) untuk layanan terkelola penuh (all-in managed). Saldo token Anda tidak memiliki masa kedaluwarsa dan hanya terpotong saat mengirim pesan.`
     },
     {
       q: "Apakah aman dari risiko blokir WhatsApp?",
-      a: "Ya, 100% aman. SIPESA terhubung langsung secara resmi dengan WhatsApp Business API (WABA) milik Meta. Berbeda dengan WhatsApp Gateway tidak resmi (yang menggunakan web scraping dan rentan blokir), nomor Anda dijamin aman karena mematuhi seluruh kebijakan resmi WhatsApp."
+      a: "SIPESA menggunakan WhatsApp Business API (WABA) resmi dari Meta. Kepatuhan pada kebijakan Meta membantu mengurangi risiko pembatasan, tetapi status akun dan pengiriman tetap ditentukan oleh Meta serta kualitas tujuan pesan."
     },
     {
       q: "Bagaimana cara menghubungkan nomor WhatsApp saya ke SIPESA?",
@@ -117,7 +118,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               </h1>
 
               <p className="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl">
-                Bebas biaya bulanan selamanya. Kelola inbox kolaboratif, template Meta, dan kirim ribuan pesan broadcast resmi secara terjadwal dengan dashboard multi-tenant yang super hemat.
+                Kelola inbox kolaboratif, template Meta, dan broadcast terjadwal hingga 5.000 penerima per campaign tanpa biaya langganan bulanan.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-4 pt-4">
@@ -134,7 +135,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                   onClick={onNavigateToRegister}
                   className="inline-flex items-center justify-center gap-2 px-8 py-4 bg-[#3C405B] hover:bg-[#3C405B]/90 text-white text-base font-bold rounded-2xl transition-all duration-200 cursor-pointer"
                 >
-                  Coba Akun Demo
+                  Daftar Sekarang
                   <ArrowRight className="w-5 h-5" />
                 </button>
               </div>
@@ -142,16 +143,16 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               {/* Badges / Social Proof */}
               <div className="grid grid-cols-3 gap-4 pt-8 border-t border-slate-200/80">
                 <div>
-                  <div className="text-2xl font-extrabold text-[#3C405B]">100%</div>
-                  <div className="text-xs text-slate-500 font-medium">Anti Blokir (WABA Resmi)</div>
+                  <div className="text-2xl font-extrabold text-[#3C405B]">WABA</div>
+                  <div className="text-xs text-slate-500 font-medium">Integrasi Resmi Meta</div>
                 </div>
                 <div>
                   <div className="text-2xl font-extrabold text-[#3C405B]">Rp 0</div>
                   <div className="text-xs text-slate-500 font-medium">Biaya Langganan Bulanan</div>
                 </div>
                 <div>
-                  <div className="text-2xl font-extrabold text-[#3C405B]">Unlimited</div>
-                  <div className="text-xs text-slate-500 font-medium">Tim & Kontak Terdaftar</div>
+                  <div className="text-2xl font-extrabold text-[#3C405B]">5.000</div>
+                  <div className="text-xs text-slate-500 font-medium">Penerima per Broadcast</div>
                 </div>
               </div>
             </div>
@@ -181,7 +182,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               Kenapa Memilih SIPESA?
             </h2>
             <p className="text-slate-600">
-              Platform modern yang merevolusi cara Anda terhubung dengan pelanggan melalui solusi kirim pesan massal hemat biaya dan aman.
+              Platform modern untuk mengelola komunikasi WhatsApp Business secara resmi, terukur, dan hemat biaya.
             </p>
           </div>
 
@@ -205,7 +206,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               </div>
               <h3 className="text-lg font-bold text-[#3C405B]">API Resmi Meta (WABA)</h3>
               <p className="text-sm text-slate-600 leading-relaxed">
-                Menghindari risiko pemblokiran nomor. Terkoneksi resmi dengan sistem Meta sehingga pesan dijamin terkirim secara stabil.
+                Menggunakan integrasi resmi Meta dan menyediakan pemantauan status pengiriman. Hasil pengiriman tetap bergantung pada Meta dan kondisi nomor penerima.
               </p>
             </div>
 
@@ -227,7 +228,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               </div>
               <h3 className="text-lg font-bold text-[#3C405B]">Simpel & Cepat Diintegrasikan</h3>
               <p className="text-sm text-slate-600 leading-relaxed">
-                Tanpa setup ribet. Anda bisa mengaktifkan nomor, sinkronisasi template pesan, dan langsung meluncurkan broadcast dalam sekejap.
+                Hubungkan nomor, sinkronkan template pesan, lalu siapkan broadcast dari satu dashboard dengan alur yang jelas.
               </p>
             </div>
 
@@ -244,7 +245,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
               Satu Dashboard, Semua Fitur CRM Terlengkap
             </h2>
             <p className="text-slate-600">
-              Didesain khusus untuk efisiensi operasional tim dalam merespons, mengelola, dan menjangkau ribuan kontak WhatsApp dengan mudah.
+              Didesain untuk membantu tim merespons, mengelola, dan menjangkau kontak WhatsApp secara terukur.
             </p>
           </div>
 
@@ -261,7 +262,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                 </p>
                 <ul className="space-y-3 font-medium text-slate-700 text-sm">
                   <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500" /> Multi-Agen tanpa batas</li>
-                  <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500" /> Filter status percakapan (Read / Unread)</li>
+                  <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500" /> Filter status percakapan (Dibaca / Belum Dibaca)</li>
                   <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500" /> Profil informasi kontak real-time</li>
                 </ul>
               </div>
@@ -296,7 +297,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                   {/* Mockup visual representing Broadcast */}
                   <div className="w-full h-full p-4 flex flex-col bg-slate-950 text-slate-300 font-mono text-[11px] overflow-hidden">
                     <div className="border-b border-slate-800 pb-2 mb-2 flex items-center justify-between">
-                      <span>📢 Broadcast Campaign Engine</span>
+                      <span>📢 Pengelolaan Broadcast</span>
                       <span className="text-amber-400">Status: Running (85%)</span>
                     </div>
                     <div className="flex-1 space-y-2 justify-center flex flex-col">
@@ -327,10 +328,10 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                 </div>
                 <h3 className="text-2xl font-bold text-[#3C405B]">Mesin Broadcast Massal Terjadwal</h3>
                 <p className="text-slate-600 leading-relaxed">
-                  Kirim pengumuman atau promosi secara terjadwal ke ribuan kontak sekaligus. Cukup upload file CSV kontak Anda, pilih template Meta, sesuaikan parameter nama secara dinamis, dan sistem kami akan memproses pengiriman dalam sekejap.
+                  Kirim pengumuman atau promosi secara terjadwal hingga 5.000 penerima per campaign. Impor CSV, pilih template Meta, sesuaikan parameter, lalu pantau proses pengiriman bertahap.
                 </p>
                 <ul className="space-y-3 font-medium text-slate-700 text-sm">
-                  <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500" /> Impor kontak CSV instan</li>
+                  <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500" /> Impor dan validasi kontak CSV</li>
                   <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500" /> Deteksi variabel dinamis otomatis</li>
                   <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500" /> Grafik monitor progres pengiriman</li>
                 </ul>
@@ -406,7 +407,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                   Paket CORE
                 </span>
                 <div>
-                  <h3 className="text-3xl font-extrabold text-[#3C405B]">Rp 250</h3>
+                  <h3 className="text-3xl font-extrabold text-[#3C405B]">Rp {formatIdrAmount(ADVERTISED_PLAN_TOKEN_PRICE_IDR.core)}</h3>
                   <p className="text-xs text-slate-500 font-semibold mt-1">/ pesan terkirim (token)</p>
                 </div>
 
@@ -461,7 +462,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                   </span>
                 </div>
                 <div>
-                  <h3 className="text-3xl font-extrabold">Rp 1.250</h3>
+                  <h3 className="text-3xl font-extrabold">Rp {formatIdrAmount(ADVERTISED_PLAN_TOKEN_PRICE_IDR.full)}</h3>
                   <p className="text-xs text-white/70 font-semibold mt-1">/ pesan terkirim (token)</p>
                 </div>
 
@@ -524,7 +525,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                         : "text-slate-500 hover:text-slate-800"
                     }`}
                   >
-                    Paket CORE (Rp 250)
+                    Paket CORE (Rp {formatIdrAmount(ADVERTISED_PLAN_TOKEN_PRICE_IDR.core)})
                   </button>
                   <button
                     onClick={() => setSelectedPlan("full")}
@@ -534,7 +535,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
                         : "text-slate-500 hover:text-slate-800"
                     }`}
                   >
-                    Paket FULL (Rp 1.250)
+                    Paket FULL (Rp {formatIdrAmount(ADVERTISED_PLAN_TOKEN_PRICE_IDR.full)})
                   </button>
                 </div>
 
@@ -651,7 +652,7 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
             Mulai Kirim Pesan Tanpa Beban Biaya Bulanan!
           </h2>
           <p className="text-white/85 text-base sm:text-lg max-w-2xl mx-auto leading-relaxed">
-            Daftarkan instansi atau sekolah Anda secara gratis hari ini. Nikmati integrasi WhatsApp API Meta resmi yang stabil, aman, dan super hemat.
+              Daftarkan instansi atau sekolah Anda hari ini dan kelola komunikasi melalui integrasi WhatsApp Business API Meta resmi.
           </p>
 
           <div className="flex flex-col sm:flex-row gap-4 justify-center pt-4">
@@ -702,9 +703,9 @@ export function LandingPageView({ onNavigateToLogin, onNavigateToRegister }: Lan
           <div className="space-y-4 text-left">
             <h4 className="text-sm font-bold text-white uppercase tracking-wider">Kebijakan & Regulasi</h4>
             <ul className="space-y-2 text-xs">
-              <li><a href="#/login" onClick={(e) => { e.preventDefault(); onNavigateToLogin(); }} className="hover:text-white transition-colors">Ketentuan Layanan</a></li>
-              <li><a href="#/login" onClick={(e) => { e.preventDefault(); onNavigateToLogin(); }} className="hover:text-white transition-colors">Kebijakan Privasi</a></li>
-              <li><a href="#/login" onClick={(e) => { e.preventDefault(); onNavigateToLogin(); }} className="hover:text-white transition-colors">Meta WABA Guidelines</a></li>
+              <li><span className="text-slate-400 cursor-not-allowed" aria-disabled="true">Ketentuan Layanan — Segera tersedia</span></li>
+              <li><span className="text-slate-400 cursor-not-allowed" aria-disabled="true">Kebijakan Privasi — Segera tersedia</span></li>
+              <li><span className="text-slate-400 cursor-not-allowed" aria-disabled="true">Panduan Meta WABA — Segera tersedia</span></li>
             </ul>
           </div>
 

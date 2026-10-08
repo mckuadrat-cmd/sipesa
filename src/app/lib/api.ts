@@ -1,5 +1,6 @@
 import {
   apiFetch,
+  apiFetchBlob,
   setAuthToken,
   getAuthToken,
   clearAuthToken,
@@ -12,6 +13,65 @@ const API_PREFIX = "";
 export type AppResult<T> =
   | { success: true; data: T }
   | { success: false; error: string };
+
+export type PageResult<T> = {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export type ListPageOptions = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  status?: string;
+  label?: string;
+  numberId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+};
+
+export type PaymentDestination = {
+  id: string;
+  method: "bank_transfer" | "qris_static";
+  provider_name: string;
+  account_reference: string | null;
+  account_holder: string | null;
+  instructions: string | null;
+  has_qris: boolean;
+};
+
+export type ManualPaymentRequest = {
+  id: string;
+  org_id?: string;
+  org_name?: string | null;
+  amount_tokens: number;
+  amount_idr: number;
+  base_amount: number;
+  unique_code: number | null;
+  transfer_amount: number;
+  token_price_idr: number;
+  payment_method: "bank_transfer" | "qris_static" | string;
+  payment_reference: string;
+  destination: PaymentDestination | null;
+  proof_available: boolean;
+  proof_mime_type: string | null;
+  proof_size_bytes: number | null;
+  proof_file_name: string | null;
+  note: string | null;
+  status: "draft" | "submitted" | "approved" | "rejected";
+  status_label: string;
+  rejection_reason: string | null;
+  submitted_at: string | null;
+  reviewed_at: string | null;
+  billing_ledger_id: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by_email?: string | null;
+  legacy_gateway?: boolean;
+};
 
 export type NumberItem = {
   id: string;
@@ -35,12 +95,52 @@ export type ContactItem = {
   unread: boolean;
 };
 
+export type ContactImportPreflightInput = {
+  rowId: string | number;
+  phone: string;
+};
+
+export type ContactImportPreflightRow = {
+  rowId: string | number;
+  normalizedPhone: string;
+  valid: boolean;
+  invalidReason: string | null;
+  duplicateWithinImport: boolean;
+  existingOrganizationDuplicate: boolean;
+  existingContactId: string | null;
+};
+
+export type ContactImportPreflightResult = {
+  results: ContactImportPreflightRow[];
+  summary: {
+    total: number;
+    validNew: number;
+    invalid: number;
+    duplicateWithinImport: number;
+    existingOrganizationDuplicate: number;
+  };
+};
+
 export type MessageItem = {
   id: string;
   content: string;
   sender: "user" | "contact";
   timestamp: string;
   status?: string;
+  messageType?: string;
+  payload?: any;
+};
+
+export type MessageCursor = {
+  createdAt: string;
+  id: string;
+};
+
+export type MessagePage = {
+  messages: MessageItem[];
+  hasMore: boolean;
+  olderCursor: MessageCursor | null;
+  latestCursor: MessageCursor | null;
 };
 
 export type TemplateItem = {
@@ -75,6 +175,7 @@ export type BroadcastHistoryItem = {
   totalSent: number;
   totalFailed: number;
   createdAt: string;
+  scheduledAt?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
   mode?: string;
@@ -84,9 +185,26 @@ export type BroadcastHistoryItem = {
   message?: string;
 };
 
+export type DashboardBroadcastItem = Pick<
+  BroadcastHistoryItem,
+  "id" | "title" | "status" | "totalRecipients" | "createdAt" | "scheduledAt"
+>;
+
+export type DashboardBroadcastSummary = {
+  totalRecipients: number;
+  recent: DashboardBroadcastItem[];
+};
+
 export type SendMessageResult =
-  | { success: true; data: MessageItem; tokensRemaining: number }
-  | { success: false; error: string };
+  | {
+      success: true;
+      data: MessageItem & {
+        outcome?: "accepted" | "accepted_reconciliation_required" | "processing";
+        reconciliationRequired?: boolean;
+      };
+      tokensRemaining: number;
+    }
+  | { success: false; error: string; code?: string; retryable?: boolean };
 
 function ok<T>(data: T): AppResult<T> {
   return { success: true, data };
@@ -94,6 +212,17 @@ function ok<T>(data: T): AppResult<T> {
 
 function fail<T = never>(error: string): AppResult<T> {
   return { success: false, error };
+}
+
+function listQuery(options: ListPageOptions = {}) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      params.set(key, String(value));
+    }
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
 }
 
 function extractTemplateContent(components: any): string {
@@ -134,6 +263,7 @@ export const api = {
 
     if (res.data?.token) {
       setAuthToken(res.data.token);
+      await supabase.realtime.setAuth(res.data.token);
     }
 
     return ok(res.data);
@@ -168,6 +298,17 @@ export const api = {
     }
   },
 
+  async requestPasswordReset(email: string): Promise<AppResult<{ requested: true }>> {
+    try {
+      const redirectTo = `${window.location.origin}${window.location.pathname}?recovery=1`;
+      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+      if (error) return fail(error.message);
+      return ok({ requested: true as const });
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : "Permintaan pemulihan belum dapat diproses.");
+    }
+  },
+
   async checkSession(): Promise<AppResult<any>> {
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -180,6 +321,7 @@ export const api = {
 
     const token = getAuthToken();
     if (!token) return fail("NO_TOKEN");
+    await supabase.realtime.setAuth(token);
 
     const res = await apiFetch<any>(`${API_PREFIX}/auth/session`, { method: "GET" });
     if (isApiFail(res)) {
@@ -222,9 +364,45 @@ export const api = {
   },
 
   async getUsage7d() {
-    const res = await apiFetch<any>(`${API_PREFIX}/dashboard/usage-7d`, { method: "GET" });
+    const now = new Date();
+    const endDate = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0"),
+    ].join("-");
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const params = new URLSearchParams({ endDate, timeZone });
+    const res = await apiFetch<any>(`${API_PREFIX}/dashboard/usage-7d?${params.toString()}`, { method: "GET" });
     if (isApiFail(res)) return fail(res.error);
     return ok(res.data);
+  },
+
+  async getDashboardBroadcastSummary(rangeStart?: string | null): Promise<AppResult<DashboardBroadcastSummary>> {
+    const params = new URLSearchParams();
+    if (rangeStart) params.set("rangeStart", rangeStart);
+    const query = params.toString();
+    const res = await apiFetch<any>(
+      `${API_PREFIX}/dashboard/broadcast-summary${query ? `?${query}` : ""}`,
+      { method: "GET" },
+    );
+    if (isApiFail(res)) return fail(res.error);
+    return ok({
+      totalRecipients: Number(res.data?.totalRecipients ?? 0),
+      recent: Array.isArray(res.data?.recent) ? res.data.recent : [],
+    });
+  },
+
+  async getDashboardBroadcastCalendar(
+    from: string,
+    to: string,
+  ): Promise<AppResult<DashboardBroadcastItem[]>> {
+    const params = new URLSearchParams({ from, to });
+    const res = await apiFetch<any>(
+      `${API_PREFIX}/dashboard/broadcast-calendar?${params.toString()}`,
+      { method: "GET" },
+    );
+    if (isApiFail(res)) return fail(res.error);
+    return ok(Array.isArray(res.data) ? res.data : []);
   },
 
   async getNumbers(): Promise<AppResult<NumberItem[]>> {
@@ -244,15 +422,6 @@ export const api = {
     const res = await apiFetch<any>(`${API_PREFIX}/numbers`, {
       method: "POST",
       body: JSON.stringify(payload),
-    });
-
-    if (isApiFail(res)) return fail(res.error);
-    return ok(res.data);
-  },
-
-  async testNumber(numberId: string): Promise<AppResult<any>> {
-    const res = await apiFetch<any>(`${API_PREFIX}/numbers/${numberId}/test`, {
-      method: "POST",
     });
 
     if (isApiFail(res)) return fail(res.error);
@@ -359,21 +528,40 @@ export const api = {
     return ok(res.data ?? []);
   },
 
-  getMediaUrl(mediaId: string, numberId: string): string {
-    const token = getAuthToken() || "";
-    const apiKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
-    const baseUrl = (import.meta.env.VITE_API_BASE_URL || "https://gwokwhznesggqoqrzaet.supabase.co/functions/v1/server").replace(/\/$/, "");
-    return `${baseUrl}/media/${mediaId}?numberId=${numberId}&token=${encodeURIComponent(token)}&apikey=${encodeURIComponent(apiKey)}`;
+  async getMediaObjectUrl(mediaId: string, numberId: string): Promise<AppResult<string>> {
+    const res = await apiFetchBlob(
+      `${API_PREFIX}/media/${encodeURIComponent(mediaId)}?numberId=${encodeURIComponent(numberId)}`,
+    );
+    if (isApiFail(res)) return fail(res.error);
+    return ok(URL.createObjectURL(res.data));
   },
 
-  async getMessages(numberId: string, contactId: string): Promise<AppResult<MessageItem[]>> {
+  async getMessages(
+    numberId: string,
+    contactId: string,
+    options: {
+      before?: MessageCursor;
+      after?: MessageCursor;
+      limit?: number;
+    } = {},
+  ): Promise<AppResult<MessagePage>> {
+    const params = new URLSearchParams();
+    params.set("limit", String(options.limit ?? 50));
+    if (options.before) {
+      params.set("beforeCreatedAt", options.before.createdAt);
+      params.set("beforeId", options.before.id);
+    }
+    if (options.after) {
+      params.set("afterCreatedAt", options.after.createdAt);
+      params.set("afterId", options.after.id);
+    }
     const res = await apiFetch<any>(
-      `${API_PREFIX}/numbers/${numberId}/contacts/${contactId}/messages`,
+      `${API_PREFIX}/numbers/${numberId}/contacts/${contactId}/messages?${params.toString()}`,
       { method: "GET" },
     );
 
     if (isApiFail(res)) return fail(res.error);
-    const parsed = (res.data ?? []).map((msg: any) => {
+    const parsed = (res.data?.messages ?? []).map((msg: any) => {
       let payload = msg.payload;
       if (typeof payload === "string") {
         try {
@@ -382,7 +570,39 @@ export const api = {
       }
       return { ...msg, payload };
     });
-    return ok(parsed);
+    return ok({
+      messages: parsed,
+      hasMore: res.data?.hasMore === true,
+      olderCursor: res.data?.olderCursor ?? null,
+      latestCursor: res.data?.latestCursor ?? null,
+    });
+  },
+
+  async markConversationRead(
+    numberId: string,
+    contactId: string,
+  ): Promise<AppResult<{ message: string; updatedCount: number }>> {
+    const res = await apiFetch<any>(
+      `${API_PREFIX}/numbers/${numberId}/contacts/${contactId}/read`,
+      { method: "POST" },
+    );
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async getMessageStatuses(
+    numberId: string,
+    contactId: string,
+    messageIds: string[],
+  ): Promise<AppResult<Array<{ id: string; status: string }>>> {
+    if (messageIds.length === 0) return ok([]);
+    const params = new URLSearchParams({ ids: messageIds.slice(-50).join(",") });
+    const res = await apiFetch<any>(
+      `${API_PREFIX}/numbers/${numberId}/contacts/${contactId}/message-statuses?${params.toString()}`,
+      { method: "GET" },
+    );
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data ?? []);
   },
 
   async readAllMessages(numberId: string, contactIds?: string[]): Promise<AppResult<{ message: string }>> {
@@ -420,10 +640,15 @@ export const api = {
       bodyVariables?: string[];
       header?: any;
     },
+    idempotencyKey?: string,
   ): Promise<SendMessageResult> {
-    const bodyPayload = typeof contentOrPayload === "string" 
+    const contentPayload = typeof contentOrPayload === "string"
       ? { content: contentOrPayload } 
       : contentOrPayload;
+    const bodyPayload = {
+      ...contentPayload,
+      idempotencyKey: idempotencyKey || crypto.randomUUID(),
+    };
 
     const res = await apiFetch<any>(
       `${API_PREFIX}/numbers/${numberId}/contacts/${contactId}/messages`,
@@ -434,7 +659,12 @@ export const api = {
     );
 
     if (isApiFail(res)) {
-      return { success: false, error: res.error };
+      return {
+        success: false,
+        error: res.error,
+        code: res.code,
+        retryable: res.retryable,
+      };
     }
 
     return {
@@ -448,14 +678,13 @@ export const api = {
     };
   },
 
-  async getBroadcastRecipients(broadcastId: string): Promise<AppResult<any[]>> {
-    const t = new Date().getTime();
-    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/recipients?t=${t}`, {
+  async getBroadcastRecipients(broadcastId: string, options: ListPageOptions = {}): Promise<AppResult<PageResult<any>>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/recipients${listQuery(options)}`, {
       method: "GET",
     });
 
     if (isApiFail(res)) return fail(res.error);
-    return ok(res.data ?? []);
+    return ok(res.data);
   },
 
   async getBroadcastStats(broadcastId: string): Promise<AppResult<any>> {
@@ -477,6 +706,15 @@ export const api = {
     return ok(res.data);
   },
 
+  async cancelScheduledBroadcast(broadcastId: string): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/cancel-schedule`, {
+      method: "POST",
+    });
+
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
   async getBilling(): Promise<AppResult<any>> {
     const res = await apiFetch<any>(`${API_PREFIX}/billing`, { method: "GET" });
     if (isApiFail(res)) return fail(res.error);
@@ -490,12 +728,8 @@ export const api = {
   },
 
   async topUp(tokens: number): Promise<AppResult<any>> {
-    const res = await apiFetch<any>(`${API_PREFIX}/billing/topup`, {
-      method: "POST",
-      body: JSON.stringify({ tokens }),
-    });
-    if (isApiFail(res)) return fail(res.error);
-    return ok(res.data);
+    void tokens;
+    return fail("Top-up saldo langsung tidak tersedia. Buat permintaan pembayaran terlebih dahulu.");
   },
 
   async createMidtransPayment(amount: number, tokens: number): Promise<AppResult<any>> {
@@ -514,19 +748,56 @@ export const api = {
     return ok(res.data);
   },
 
-  async getManualRequests(): Promise<AppResult<any[]>> {
-    const res = await apiFetch<any>(`${API_PREFIX}/billing/manual-requests`, { method: "GET" });
+  async getPaymentDestinations(): Promise<AppResult<PaymentDestination[]>> {
+    const res = await apiFetch<PaymentDestination[]>(`${API_PREFIX}/billing/payment-destinations`, { method: "GET" });
     if (isApiFail(res)) return fail(res.error);
     return ok(res.data ?? []);
   },
 
-  async createManualRequest(tokens: number, receiptData: string): Promise<AppResult<any>> {
-    const res = await apiFetch<any>(`${API_PREFIX}/billing/manual-requests`, {
+  async getPaymentDestinationQrisObjectUrl(destinationId: string): Promise<AppResult<string>> {
+    const res = await apiFetchBlob(`${API_PREFIX}/billing/payment-destinations/${destinationId}/qris`);
+    if (isApiFail(res)) return fail(res.error);
+    return ok(URL.createObjectURL(res.data));
+  },
+
+  async getManualRequests(): Promise<AppResult<ManualPaymentRequest[]>> {
+    const res = await apiFetch<ManualPaymentRequest[]>(`${API_PREFIX}/billing/manual-requests`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data ?? []);
+  },
+
+  async createManualRequest(tokens: number, destinationId: string, note?: string): Promise<AppResult<ManualPaymentRequest>> {
+    const res = await apiFetch<ManualPaymentRequest>(`${API_PREFIX}/billing/manual-requests`, {
       method: "POST",
-      body: JSON.stringify({ tokens, receipt_data: receiptData }),
+      body: JSON.stringify({ tokens, destinationId, note }),
     });
     if (isApiFail(res)) return fail(res.error);
     return ok(res.data);
+  },
+
+  async uploadManualPaymentProof(id: string, proof: File): Promise<AppResult<ManualPaymentRequest>> {
+    const body = new FormData();
+    body.append("proof", proof);
+    const res = await apiFetch<ManualPaymentRequest>(`${API_PREFIX}/billing/manual-requests/${id}/proof`, {
+      method: "POST",
+      body,
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async submitManualPayment(id: string): Promise<AppResult<ManualPaymentRequest>> {
+    const res = await apiFetch<ManualPaymentRequest>(`${API_PREFIX}/billing/manual-requests/${id}/submit`, {
+      method: "POST",
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async getManualPaymentProofObjectUrl(id: string): Promise<AppResult<string>> {
+    const res = await apiFetchBlob(`${API_PREFIX}/billing/manual-requests/${id}/proof`);
+    if (isApiFail(res)) return fail(res.error);
+    return ok(URL.createObjectURL(res.data));
   },
 
   async getSuperadminPaymentSettings(): Promise<AppResult<any>> {
@@ -544,8 +815,8 @@ export const api = {
     return ok(res.data);
   },
 
-  async getSuperadminManualRequests(): Promise<AppResult<any[]>> {
-    const res = await apiFetch<any>(`${API_PREFIX}/superadmin/manual-requests`, { method: "GET" });
+  async getSuperadminManualRequests(status = "submitted"): Promise<AppResult<any[]>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/superadmin/manual-requests?status=${encodeURIComponent(status)}`, { method: "GET" });
     if (isApiFail(res)) return fail(res.error);
     return ok(res.data ?? []);
   },
@@ -596,25 +867,25 @@ export const api = {
     return ok(res.data);
   },
 
-  async getBroadcastHistory(): Promise<AppResult<BroadcastHistoryItem[]>> {
-    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts`, { method: "GET" });
+  async getBroadcastHistory(options: ListPageOptions = {}): Promise<AppResult<PageResult<BroadcastHistoryItem> & { senderOptions?: Array<{ id: string; name: string }> }>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts${listQuery(options)}`, { method: "GET" });
     if (isApiFail(res)) return fail(res.error);
-    return ok(res.data ?? []);
+    return ok(res.data);
   },
 
-  async getBroadcastDetail(broadcastId: string): Promise<AppResult<any>> {
+  async getBroadcastDetail(broadcastId: string, options: ListPageOptions = {}): Promise<AppResult<any>> {
     const t = new Date().getTime();
     const statsRes = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/stats?t=${t}`, { method: "GET" });
     if (isApiFail(statsRes)) return fail(statsRes.error);
 
     const recipientsRes = await apiFetch<any>(
-      `${API_PREFIX}/broadcasts/${broadcastId}/recipients?t=${t}`,
+      `${API_PREFIX}/broadcasts/${broadcastId}/recipients${listQuery(options)}`,
       { method: "GET" },
     );
     if (isApiFail(recipientsRes)) return fail(recipientsRes.error);
 
     const broadcast = statsRes.data;
-    const recipients = (recipientsRes.data ?? []).map((r: any) => ({
+    const recipients = (recipientsRes.data?.items ?? []).map((r: any) => ({
       id: r.id,
       contactName: r.recipient_name ?? "Tanpa Nama",
       contactPhone: r.phone_e164 ?? "-",
@@ -633,8 +904,21 @@ export const api = {
       numberName,
       message: broadcast.textBody ?? "",
       totalRecipients: broadcast.totalRecipients ?? recipients.length,
+      sent: broadcast.totalSent ?? broadcast.sent ?? 0,
+      delivered: broadcast.delivered ?? 0,
+      read: broadcast.read ?? 0,
+      failed: broadcast.failed ?? broadcast.totalFailed ?? 0,
       createdAt: broadcast.startedAt || broadcast.finishedAt || "-",
+      status: broadcast.status ?? "queued",
+      startedAt: broadcast.startedAt ?? null,
+      finishedAt: broadcast.finishedAt ?? null,
       recipients,
+      recipientPage: {
+        total: recipientsRes.data?.total ?? 0,
+        page: recipientsRes.data?.page ?? 1,
+        pageSize: recipientsRes.data?.pageSize ?? 50,
+        totalPages: recipientsRes.data?.totalPages ?? 1,
+      },
     });
   },
 
@@ -983,13 +1267,24 @@ export const api = {
     }
   },
 
-  async getOrgContacts(): Promise<AppResult<any[]>> {
-    const res = await apiFetch<any>(`${API_PREFIX}/contacts`, { method: "GET" });
+  async getOrgContacts(options: ListPageOptions = {}): Promise<AppResult<PageResult<any>>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/contacts${listQuery(options)}`, { method: "GET" });
     if (isApiFail(res)) return fail(res.error);
-    return ok(res.data ?? []);
+    return ok(res.data);
   },
 
-  async createContact(payload: { name: string; phone: string }): Promise<AppResult<any>> {
+  async preflightContactImport(
+    contacts: ContactImportPreflightInput[],
+  ): Promise<AppResult<ContactImportPreflightResult>> {
+    const res = await apiFetch<ContactImportPreflightResult>(`${API_PREFIX}/contacts/import/preflight`, {
+      method: "POST",
+      body: JSON.stringify({ contacts }),
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async createContact(payload: { name: string; phone: string; label?: string }): Promise<AppResult<any>> {
     const res = await apiFetch<any>(`${API_PREFIX}/contacts`, {
       method: "POST",
       body: JSON.stringify(payload),
@@ -998,7 +1293,7 @@ export const api = {
     return ok(res.data);
   },
 
-  async updateContact(id: string, payload: { name: string; phone: string }): Promise<AppResult<any>> {
+  async updateContact(id: string, payload: { name: string; phone: string; label?: string }): Promise<AppResult<any>> {
     const res = await apiFetch<any>(`${API_PREFIX}/contacts/${id}`, {
       method: "PUT",
       body: JSON.stringify(payload),

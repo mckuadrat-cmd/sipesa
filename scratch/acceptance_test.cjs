@@ -180,7 +180,7 @@ async function runBroadcastWorker(broadcastId, authHeader, baseUrl) {
     if (b.status === 'queued') b.status = 'sending';
 
     let processedThisRun = 0;
-    const MAX_PROCESS_PER_RUN = 40;
+    const MAX_PROCESS_PER_RUN = 50;
 
     while (processedThisRun < MAX_PROCESS_PER_RUN) {
       // Find the next pending recipient
@@ -367,8 +367,14 @@ async function testSuite() {
   console.log('  -> Spawning background worker for 500 recipients...');
   await runBroadcastWorker('b4', 'Bearer sbp_token', 'https://self-origin.co');
 
-  // Let event loop resolve all setTimeout retriggers
-  await new Promise(resolve => setTimeout(resolve, 200));
+  // Let the bounded chain finish without racing a fixed-duration sleep.
+  const chainDeadline = Date.now() + 5_000;
+  while (
+    Date.now() < chainDeadline &&
+    wa_broadcast_recipients.some(r => r.broadcast_id === 'b4' && r.status === 'pending')
+  ) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
 
   // Verify all 500 are processed
   const pendingCount = wa_broadcast_recipients.filter(r => r.status === 'pending').length;
@@ -386,7 +392,7 @@ async function testSuite() {
 
   assert.strictEqual(stats.uniqueMetaIds.size, 500);
   assert.strictEqual(b4.status, 'completed');
-  assert.ok(stats.workerRestarts >= 12, 'FAILED: worker did not retrigger');
+  assert.ok(stats.workerRestarts >= 9, 'FAILED: worker did not retrigger');
   console.log('  PASS: 500 recipients test passed.');
 
   // Test 5: Historical Healing Sync & Dynamic highest status mapping (maxStatus)

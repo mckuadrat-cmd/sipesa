@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Card } from "./ui/card";
 import {
   MessageSquare,
@@ -14,8 +14,10 @@ import {
   ArrowRight,
   Clock,
   CheckCircle,
+  AlertCircle,
+  RefreshCcw,
 } from "lucide-react";
-import { api } from "../lib/api";
+import { api, DashboardBroadcastItem } from "../lib/api";
 
 interface DashboardStats {
   totalMessages?: number;
@@ -38,21 +40,48 @@ interface UsageItem {
   amountIdr?: number;
 }
 
-interface BroadcastHistoryItem {
-  id: string;
-  title: string;
-  status: string;
-  totalRecipients: number;
-  createdAt: string;
-  scheduledAt?: string | null;
-}
-
 interface DashboardViewProps {
   stats?: DashboardStats;
   activities?: ActivityItem[];
   usage7d?: UsageItem[];
+  tokenPrice?: number;
   user?: any;
   onViewChange?: (view: string) => void;
+  statsState?: DashboardSectionState;
+  usageState?: DashboardSectionState;
+  onRetryStats?: () => void;
+  onRetryUsage?: () => void;
+}
+
+interface DashboardSectionState {
+  loading: boolean;
+  hasData: boolean;
+  error: boolean;
+}
+
+const SUCCESS_STATE: DashboardSectionState = { loading: false, hasData: true, error: false };
+
+function SectionStateMessage({
+  stale,
+  onRetry,
+}: {
+  stale: boolean;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border p-3 text-xs ${stale ? "border-amber-200 bg-amber-50 text-amber-800" : "border-red-200 bg-red-50 text-red-700"}`} role="status">
+      <span className="flex items-center gap-2">
+        <AlertCircle className="h-4 w-4 shrink-0" />
+        {stale ? "Data terakhir ditampilkan. Gagal memperbarui." : "Data belum dapat dimuat."}
+      </span>
+      {onRetry && (
+        <button type="button" onClick={onRetry} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-current/20 bg-white px-3 py-1.5 font-semibold hover:bg-white/70">
+          <RefreshCcw className="h-3.5 w-3.5" />
+          Coba Lagi
+        </button>
+      )}
+    </div>
+  );
 }
 
 function safeNum(value: unknown): number {
@@ -60,12 +89,26 @@ function safeNum(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function formatUsageDateLabel(dateKey: string): string {
+  const [year, month, day] = String(dateKey).split("-").map(Number);
+  if (!year || !month || !day) return dateKey;
+  return new Date(year, month - 1, day).toLocaleDateString("id-ID", {
+    day: "2-digit",
+    month: "2-digit",
+  });
+}
+
 export function DashboardView({
   stats,
   activities = [],
   usage7d = [],
+  tokenPrice = 0,
   user,
   onViewChange,
+  statsState = SUCCESS_STATE,
+  usageState = SUCCESS_STATE,
+  onRetryStats,
+  onRetryUsage,
 }: DashboardViewProps) {
   const addressKey = user?.org_id ? `sipesa_address_${user.org_id}` : "sipesa_address";
   const totalMessages = safeNum(stats?.totalMessages);
@@ -73,12 +116,16 @@ export function DashboardView({
   const tokensRemaining = safeNum(stats?.tokensRemaining);
   const tokensUsed = safeNum(stats?.tokensUsed);
   const activeNumbers = safeNum(stats?.activeNumbers);
+  const canonicalTokenPrice = safeNum(tokenPrice);
+  const usageCost = usage7d.reduce((sum, row) => sum + safeNum(row.amountIdr), 0);
+  const usage7dTotal = usage7d.reduce((sum, row) => sum + safeNum(row.tokens), 0);
+  const usage7dAverage = usage7dTotal / 7;
 
   const totalTokenBase = tokensUsed + tokensRemaining;
   const usagePercent = totalTokenBase > 0 ? (tokensRemaining / totalTokenBase) * 100 : 0;
 
   // Dynamic token status
-  let tokenStatusTitle = "Token Ready";
+  let tokenStatusTitle = "Token Tersedia";
   let tokenStatusDesc = "Sistem Kuota Aman";
   let progressColor = "#22c55e"; // Green
 
@@ -94,60 +141,72 @@ export function DashboardView({
 
   // Calendar State
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [broadcastHistory, setBroadcastHistory] = useState<BroadcastHistoryItem[]>([]);
+  const [calendarBroadcasts, setCalendarBroadcasts] = useState<DashboardBroadcastItem[]>([]);
+  const [recentBroadcasts, setRecentBroadcasts] = useState<DashboardBroadcastItem[]>([]);
+  const [rangeTotalRecipients, setRangeTotalRecipients] = useState(0);
+  const [summaryState, setSummaryState] = useState<DashboardSectionState>({ loading: true, hasData: false, error: false });
+  const [calendarState, setCalendarState] = useState<DashboardSectionState>({ loading: true, hasData: false, error: false });
+  const summaryRequestRef = useRef(0);
+  const calendarRequestRef = useRef(0);
 
   // Date Filter State
   const [daysFilter, setDaysFilter] = useState("30");
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
 
-  // Filtered total messages sent in the day range
-  const filteredTotalMessages = useMemo(() => {
-    if (daysFilter === "all") {
-      return totalMessages;
-    }
-    const daysLimit = Number(daysFilter);
-    const limitDate = new Date();
-    limitDate.setDate(limitDate.getDate() - daysLimit);
+  const filteredTotalMessages = daysFilter === "all" ? totalMessages : rangeTotalRecipients;
 
-    const sum = broadcastHistory
-      .filter((item) => new Date(item.createdAt).getTime() >= limitDate.getTime())
-      .reduce((acc, item) => acc + safeNum(item.totalRecipients), 0);
-
-    return sum;
-  }, [broadcastHistory, daysFilter, totalMessages]);
-
-  // Fetch Broadcast History for Calendar indicators and Schedule List
-  useEffect(() => {
-    const fetchHistory = async () => {
+  // Fetch only the authoritative aggregate and three recent rows for the
+  // selected rolling range. No broadcast history page is used as a summary.
+  const fetchSummary = useCallback(async () => {
+      const requestVersion = ++summaryRequestRef.current;
+      setSummaryState((previous) => ({ ...previous, loading: true, error: false }));
       try {
-        const result = await api.getBroadcastHistory();
-        if (result.success && Array.isArray(result.data)) {
-          setBroadcastHistory(result.data);
+        let rangeStart: string | null = null;
+        if (daysFilter !== "all") {
+          const start = new Date();
+          start.setDate(start.getDate() - Number(daysFilter));
+          rangeStart = start.toISOString();
         }
+        const result = await api.getDashboardBroadcastSummary(rangeStart);
+        if (requestVersion !== summaryRequestRef.current) return;
+        if (!result.success) throw new Error(result.error);
+        setRangeTotalRecipients(result.data.totalRecipients);
+        setRecentBroadcasts(result.data.recent);
+        setSummaryState({ loading: false, hasData: true, error: false });
       } catch (err) {
-        console.error("Error fetching broadcast history for dashboard:", err);
+        if (requestVersion !== summaryRequestRef.current) return;
+        console.error("Error fetching broadcast summary for dashboard:", err);
+        setSummaryState((previous) => ({ ...previous, loading: false, error: true }));
       }
-    };
-    fetchHistory();
-  }, []);
+  }, [daysFilter]);
+
+  useEffect(() => {
+    void fetchSummary();
+  }, [fetchSummary]);
 
   // 1. Stat cards with modern pastel backgrounds
   const statCards = [
     {
-      title: "Total Pesan",
+      title: "Total Penerima",
       value: filteredTotalMessages >= 1000 ? `${(filteredTotalMessages / 1000).toFixed(1)}k` : filteredTotalMessages.toString(),
-      subtext: daysFilter === "all" ? "Semua pesan terkirim" : `Pesan terkirim (${daysFilter} hari terakhir)`,
+      subtext: daysFilter === "all" ? "Semua target campaign" : `Target campaign (${daysFilter} hari terakhir)`,
       icon: MessageSquare,
       bgColor: "bg-sky-50/70 border-sky-100/50",
       iconColor: "text-sky-500 bg-sky-100/80",
+      state: daysFilter === "all" ? statsState : summaryState,
+      retry: daysFilter === "all" ? onRetryStats : fetchSummary,
     },
     {
       title: "Token Tersisa",
       value: tokensRemaining.toLocaleString("id-ID"),
-      subtext: `Value: Rp ${(tokensRemaining * 1500).toLocaleString("id-ID")}`,
+      subtext: canonicalTokenPrice > 0
+        ? `Value: Rp ${(tokensRemaining * canonicalTokenPrice).toLocaleString("id-ID")}`
+        : "Harga token belum tersedia",
       icon: Coins,
       bgColor: "bg-purple-50/70 border-purple-100/50",
       iconColor: "text-purple-500 bg-purple-100/80",
+      state: statsState,
+      retry: onRetryStats,
     },
     {
       title: "Kontak Aktif",
@@ -156,6 +215,8 @@ export function DashboardView({
       icon: Users,
       bgColor: "bg-emerald-50/70 border-emerald-100/50",
       iconColor: "text-emerald-500 bg-emerald-100/80",
+      state: statsState,
+      retry: onRetryStats,
     },
     {
       title: "Nomor Aktif",
@@ -164,6 +225,8 @@ export function DashboardView({
       icon: TrendingUp,
       bgColor: "bg-amber-50/70 border-amber-100/50",
       iconColor: "text-amber-500 bg-amber-100/80",
+      state: statsState,
+      retry: onRetryStats,
     },
   ];
 
@@ -254,6 +317,31 @@ export function DashboardView({
 
   const allCalendarDays = [...prevMonthDays, ...currentMonthDays, ...nextMonthDays];
 
+  // The calendar always requests its visible 42-day grid and nothing outside
+  // that bounded local-browser date range.
+  const fetchCalendar = useCallback(async () => {
+    const requestVersion = ++calendarRequestRef.current;
+    setCalendarState((previous) => ({ ...previous, loading: true, error: false }));
+    const gridStart = new Date(year, month, 1 - firstDayIndex);
+    const gridEnd = new Date(gridStart);
+    gridEnd.setDate(gridEnd.getDate() + 42);
+    try {
+      const result = await api.getDashboardBroadcastCalendar(gridStart.toISOString(), gridEnd.toISOString());
+      if (requestVersion !== calendarRequestRef.current) return;
+      if (!result.success) throw new Error(result.error);
+      setCalendarBroadcasts(result.data);
+      setCalendarState({ loading: false, hasData: true, error: false });
+    } catch (error) {
+      if (requestVersion !== calendarRequestRef.current) return;
+      console.error("Error fetching broadcast calendar for dashboard:", error);
+      setCalendarState((previous) => ({ ...previous, loading: false, error: true }));
+    }
+  }, [firstDayIndex, month, year]);
+
+  useEffect(() => {
+    void fetchCalendar();
+  }, [fetchCalendar]);
+
   const changeMonth = (direction: "prev" | "next") => {
     const nextDate = new Date(currentDate);
     nextDate.setMonth(currentDate.getMonth() + (direction === "next" ? 1 : -1));
@@ -266,25 +354,17 @@ export function DashboardView({
 
   // Check if a calendar day has broadcasts
   const dayHasBroadcast = (dateStr: string) => {
-    return broadcastHistory.some((b) => {
-      const bDate = (b.scheduledAt || b.createdAt || "").split("T")[0];
-      return bDate === dateStr;
+    return calendarBroadcasts.some((broadcast) => {
+      const effectiveAt = broadcast.scheduledAt || broadcast.createdAt;
+      const date = new Date(effectiveAt);
+      return Number.isFinite(date.getTime())
+        && formatDateLocal(date.getFullYear(), date.getMonth(), date.getDate()) === dateStr;
     });
   };
 
-  // 4. Upcoming schedules or recent history campaigns (top 3)
-  const sortedSchedules = useMemo(() => {
-    let list = [...broadcastHistory];
-    if (daysFilter !== "all") {
-      const daysLimit = Number(daysFilter);
-      const limitDate = new Date();
-      limitDate.setDate(limitDate.getDate() - daysLimit);
-      list = list.filter((item) => new Date(item.createdAt).getTime() >= limitDate.getTime());
-    }
-    return list
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, 3);
-  }, [broadcastHistory, daysFilter]);
+  // The server already applies the selected range, deterministic ordering,
+  // and a hard limit of three rows.
+  const sortedSchedules = recentBroadcasts;
 
   return (
     <div className="w-full p-6 md:p-8 bg-white min-h-screen">
@@ -299,13 +379,16 @@ export function DashboardView({
 
         {/* Date Filter selector dropdown matching reference image */}
         <div className="relative">
-          <div
+          <button
+            type="button"
             onClick={() => setShowFilterDropdown(!showFilterDropdown)}
+            aria-expanded={showFilterDropdown}
+            aria-haspopup="menu"
             className="flex items-center gap-1.5 border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-500 bg-slate-50/50 hover:bg-slate-100 cursor-pointer transition-colors"
           >
             <span>{daysFilter === "all" ? "All Time" : `${daysFilter} Days`}</span>
             <ChevronRight className={`w-3.5 h-3.5 text-slate-400 transition-transform ${showFilterDropdown ? "-rotate-90" : "rotate-90"}`} />
-          </div>
+          </button>
 
           {showFilterDropdown && (
             <div className="absolute right-0 mt-1.5 w-32 bg-white border border-slate-100 rounded-xl shadow-xl z-50 p-1 flex flex-col space-y-0.5 animate-in fade-in slide-in-from-top-1 duration-150">
@@ -415,7 +498,7 @@ export function DashboardView({
             <img
               src="/dashboard_illustration.png"
               alt="Sipesa Illustration"
-              className="w-full max-w-[280px] h-auto object-contain transition-transform hover:scale-105 duration-300"
+              className="w-full max-w-[280px] h-auto object-contain"
             />
           </Card>
         </div>
@@ -429,7 +512,7 @@ export function DashboardView({
               return (
                 <Card
                   key={card.title}
-                  className={`p-5 border shadow-sm rounded-2xl flex flex-col justify-between transition-all hover:-translate-y-0.5 duration-200 ${card.bgColor}`}
+                  className={`p-5 border shadow-sm rounded-2xl flex flex-col justify-between ${card.bgColor}`}
                 >
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs font-medium text-slate-500">{card.title}</span>
@@ -438,8 +521,30 @@ export function DashboardView({
                     </span>
                   </div>
                   <div>
-                    <h3 className="text-2xl font-bold text-slate-800 leading-none">{card.value}</h3>
-                    <p className="text-xs text-slate-400 mt-1.5 truncate">{card.subtext}</p>
+                    {!card.state.hasData && card.state.loading ? (
+                      <p className="text-xs text-slate-500" role="status">Memuat data...</p>
+                    ) : !card.state.hasData && card.state.error ? (
+                      <div className="space-y-2" role="status">
+                        <p className="text-xs text-red-600">Data belum dapat dimuat.</p>
+                        <button type="button" onClick={card.retry} className="text-xs font-semibold text-primary hover:underline">
+                          Coba Lagi
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <h3 className="text-2xl font-bold text-slate-800 leading-none">{card.value}</h3>
+                        <p className="text-xs text-slate-400 mt-1.5 break-words">{card.subtext}</p>
+                        {card.state.error && (
+                          <div className="mt-2 text-xs text-amber-700" role="status">
+                            <p>Data terakhir ditampilkan. Gagal memperbarui.</p>
+                            <button type="button" onClick={card.retry} className="mt-1 font-semibold hover:underline">Coba Lagi</button>
+                          </div>
+                        )}
+                        {card.state.loading && card.state.hasData && !card.state.error && (
+                          <p className="mt-2 text-xs text-slate-400" role="status">Memperbarui...</p>
+                        )}
+                      </>
+                    )}
                   </div>
                 </Card>
               );
@@ -455,14 +560,21 @@ export function DashboardView({
               </div>
               <div className="text-right">
                 <span className="text-xs font-bold text-primary bg-primary/10 px-2 py-1 rounded-md">
-                  {tokensUsed.toLocaleString("id-ID")} Terpakai
+                  {usage7dTotal.toLocaleString("id-ID")} Terpakai
                 </span>
               </div>
             </div>
 
             {/* Smooth line chart */}
+            {usageState.error && <SectionStateMessage stale={usageState.hasData} onRetry={onRetryUsage} />}
+            {usageState.loading && usageState.hasData && !usageState.error && (
+              <p className="mb-2 text-xs text-slate-400" role="status">Memperbarui data penggunaan...</p>
+            )}
+
             <div className="flex-1 flex items-center justify-center min-h-[160px] relative">
-              {chartPoints.length === 0 ? (
+              {!usageState.hasData && usageState.loading ? (
+                <p className="text-sm text-slate-400" role="status">Memuat data penggunaan...</p>
+              ) : !usageState.hasData && usageState.error ? null : chartPoints.length === 0 ? (
                 <div className="text-center py-10">
                   <p className="text-sm text-slate-400">Belum ada data pemakaian.</p>
                 </div>
@@ -490,9 +602,8 @@ export function DashboardView({
 
                     {/* Dots at vertices */}
                     {chartPoints.map((p, i) => (
-                      <g key={i} className="group cursor-pointer">
+                      <g key={i}>
                         <circle cx={p.x} cy={p.y} r="5" fill="#ffffff" stroke="#25d366" strokeWidth="3" />
-                        <circle cx={p.x} cy={p.y} r="10" fill="#25d366" className="opacity-0 group-hover:opacity-20 transition-opacity" />
                       </g>
                     ))}
                   </svg>
@@ -500,11 +611,9 @@ export function DashboardView({
                   {/* X-Axis labels */}
                   <div className="flex justify-between px-6 mt-2">
                     {chartPoints.map((p, idx) => {
-                      const date = new Date(p.label);
-                      const labelStr = date.toLocaleDateString("id-ID", { day: "2-digit", month: "2-digit" });
                       return (
                         <span key={idx} className="text-xs font-semibold text-slate-400">
-                          {labelStr}
+                          {formatUsageDateLabel(p.label)}
                         </span>
                       );
                     })}
@@ -516,11 +625,11 @@ export function DashboardView({
             <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-50 mt-4">
               <div>
                 <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Total Biaya</p>
-                <p className="text-base font-bold text-slate-700">Rp {(tokensUsed * 1500).toLocaleString("id-ID")}</p>
+                <p className="text-base font-bold text-slate-700">Rp {usageCost.toLocaleString("id-ID")}</p>
               </div>
               <div>
-                <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Rata-rata Harian</p>
-                <p className="text-base font-bold text-slate-700">{Math.round(tokensUsed / 7).toLocaleString("id-ID")} token</p>
+                <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Rata-rata / Hari (7 Hari)</p>
+                <p className="text-base font-bold text-slate-700">{Math.round(usage7dAverage).toLocaleString("id-ID")} token</p>
               </div>
             </div>
           </Card>
@@ -535,13 +644,17 @@ export function DashboardView({
               <span className="text-sm font-bold text-slate-800">{getCalendarMonthLabel()}</span>
               <div className="flex gap-1.5">
                 <button
+                  type="button"
                   onClick={() => changeMonth("prev")}
+                  aria-label="Bulan sebelumnya"
                   className="p-1.5 hover:bg-slate-50 border border-slate-100 rounded-lg text-slate-500 transition-colors"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
                 <button
+                  type="button"
                   onClick={() => changeMonth("next")}
+                  aria-label="Bulan berikutnya"
                   className="p-1.5 hover:bg-slate-50 border border-slate-100 rounded-lg text-slate-500 transition-colors"
                 >
                   <ChevronRight className="w-4 h-4" />
@@ -549,17 +662,28 @@ export function DashboardView({
               </div>
             </div>
 
+            {calendarState.error && (
+              <div className="mb-3">
+                <SectionStateMessage stale={calendarState.hasData} onRetry={fetchCalendar} />
+              </div>
+            )}
+            {calendarState.loading && calendarState.hasData && !calendarState.error && (
+              <p className="mb-3 text-xs text-slate-400" role="status">Memperbarui kalender...</p>
+            )}
+
             {/* Days of Week header */}
-            <div className="grid grid-cols-7 gap-y-2 text-center mb-2">
+            {calendarState.hasData && <div className="grid grid-cols-7 gap-y-2 text-center mb-2">
               {["M", "S", "S", "R", "K", "J", "S"].map((d, i) => (
                 <span key={i} className="text-xs font-bold text-slate-400">
                   {d}
                 </span>
               ))}
-            </div>
+            </div>}
 
             {/* Calendar grid */}
-            <div className="grid grid-cols-7 gap-y-1 text-center">
+            {!calendarState.hasData && calendarState.loading ? (
+              <p className="py-10 text-center text-sm text-slate-400" role="status">Memuat kalender...</p>
+            ) : !calendarState.hasData && calendarState.error ? null : <div className="grid grid-cols-7 gap-y-1 text-center">
               {allCalendarDays.map((cell, idx) => {
                 const hasBroadcast = dayHasBroadcast(cell.dateStr);
                 const isToday = cell.dateStr === todayStr;
@@ -567,13 +691,13 @@ export function DashboardView({
                 return (
                   <div
                     key={idx}
-                    className="flex flex-col items-center justify-center py-1.5 relative cursor-pointer group"
+                    className="flex flex-col items-center justify-center py-1.5 relative"
                   >
                     <span
                       className={`text-xs w-7 h-7 flex items-center justify-center rounded-full font-medium transition-all ${cell.isCurrentMonth ? "text-slate-700" : "text-slate-300"
                         } ${isToday
                           ? "bg-primary text-primary-foreground font-bold shadow-sm"
-                          : "hover:bg-slate-50"
+                          : ""
                         }`}
                     >
                       {cell.day}
@@ -586,13 +710,13 @@ export function DashboardView({
                   </div>
                 );
               })}
-            </div>
+            </div>}
           </Card>
 
           {/* Schedule & History campaigns list */}
           <Card className="p-5 border border-slate-100 shadow-sm rounded-2xl bg-white flex-1 flex flex-col">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-bold text-slate-800">Kampanye Terbaru</h3>
+              <h3 className="text-sm font-bold text-slate-800">Broadcast Terbaru</h3>
               {onViewChange && (
                 <button
                   onClick={() => onViewChange("history")}
@@ -603,8 +727,19 @@ export function DashboardView({
               )}
             </div>
 
+            {summaryState.error && (
+              <div className="mb-3">
+                <SectionStateMessage stale={summaryState.hasData} onRetry={fetchSummary} />
+              </div>
+            )}
+            {summaryState.loading && summaryState.hasData && !summaryState.error && (
+              <p className="mb-3 text-xs text-slate-400" role="status">Memperbarui kampanye...</p>
+            )}
+
             <div className="space-y-3 flex-1 overflow-y-auto max-h-[280px] pr-1">
-              {sortedSchedules.length === 0 ? (
+              {!summaryState.hasData && summaryState.loading ? (
+                <p className="py-10 text-center text-sm text-slate-400" role="status">Memuat kampanye...</p>
+              ) : !summaryState.hasData && summaryState.error ? null : sortedSchedules.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-10 text-center h-full">
                   <Clock className="w-8 h-8 text-slate-300 mb-2" />
                   <p className="text-xs text-slate-400">Belum ada riwayat broadcast</p>
@@ -620,7 +755,7 @@ export function DashboardView({
                   return (
                     <div
                       key={item.id}
-                      className="flex items-center justify-between p-3 border border-slate-50 hover:bg-slate-50/50 rounded-xl transition-colors"
+                      className="flex items-center justify-between p-3 border border-slate-50 rounded-xl"
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         {/* Icon representation */}
@@ -633,16 +768,18 @@ export function DashboardView({
                             {item.title || "Broadcast Pesan"}
                           </p>
                           <p className="text-xs text-slate-400 mt-0.5">
-                            {dateStr} | {timeStr} • {item.totalRecipients} Kontak
+                            {dateStr} | {timeStr} • {item.totalRecipients} penerima
                           </p>
                         </div>
                       </div>
                       {onViewChange && (
                         <button
+                          type="button"
                           onClick={() => {
                             // View detail or history
                             onViewChange("history");
                           }}
+                          aria-label={`Buka riwayat ${item.title || "broadcast"}`}
                           className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
                         >
                           <ArrowRight className="w-4 h-4" />

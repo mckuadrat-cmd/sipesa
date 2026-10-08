@@ -189,14 +189,18 @@ export function HeaderNav({
         <div className="flex items-center gap-3">
           <button
             ref={burgerBtnRef}
+            type="button"
+            aria-label={showMobileMenu ? "Tutup menu navigasi" : "Buka menu navigasi"}
+            aria-expanded={showMobileMenu}
+            aria-controls="mobile-primary-navigation"
             onClick={() => setShowMobileMenu(!showMobileMenu)}
             className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-lg xl:hidden transition-colors"
           >
             {showMobileMenu ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
-          <div className="flex items-center gap-2 cursor-pointer" onClick={() => onViewChange(isSuperadmin ? "superadmin" : "dashboard")}>
+          <button type="button" aria-label="Buka dashboard SIPESA" className="flex items-center gap-2" onClick={() => onViewChange(isSuperadmin ? "superadmin" : "dashboard")}>
             <img src={logoFull} alt="Sipesa" className="h-9 w-auto object-contain" />
-          </div>
+          </button>
         </div>
 
         {/* Center Navigation links */}
@@ -207,6 +211,8 @@ export function HeaderNav({
             return (
               <button
                 key={item.id}
+                type="button"
+                aria-current={isActive ? "page" : undefined}
                 onClick={() => {
                   onViewChange(item.id);
                   setShowProfileDropdown(false);
@@ -261,6 +267,8 @@ export function HeaderNav({
           {/* Inbox Shortcut */}
           {!isSuperadmin && (
             <button
+              type="button"
+              aria-label="Buka Kotak Masuk"
               onClick={() => {
                 onViewChange("inbox");
                 setShowNotifDropdown(false);
@@ -283,6 +291,9 @@ export function HeaderNav({
           {!isSuperadmin && (
             <div className="md:relative" ref={notifRef}>
               <button
+                type="button"
+                aria-label="Buka notifikasi"
+                aria-expanded={showNotifDropdown}
                 onClick={() => {
                   setShowNotifDropdown(!showNotifDropdown);
                   setShowProfileDropdown(false);
@@ -337,6 +348,9 @@ export function HeaderNav({
           {/* User Profile Menu */}
           <div className="md:relative" ref={profileRef}>
             <button
+              type="button"
+              aria-label="Buka menu profil"
+              aria-expanded={showProfileDropdown}
               onClick={() => {
                 setShowProfileDropdown(!showProfileDropdown);
                 setShowNotifDropdown(false);
@@ -436,13 +450,15 @@ export function HeaderNav({
 
       {/* Mobile Dropdown Menu (Floating Card) */}
       {showMobileMenu && (
-        <div ref={mobileMenuRef} className="absolute top-14 left-6 w-72 bg-white border border-slate-100 shadow-2xl rounded-2xl xl:hidden flex flex-col p-3 z-50 space-y-1 max-h-[calc(100vh-5rem)] overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
+        <div id="mobile-primary-navigation" ref={mobileMenuRef} className="absolute top-14 left-4 right-4 sm:left-6 sm:right-auto sm:w-72 bg-white border border-slate-100 shadow-2xl rounded-2xl xl:hidden flex flex-col p-3 z-50 space-y-1 max-h-[calc(100vh-5rem)] overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeView === item.id || (item.id === "history" && activeView === "broadcast-detail");
             return (
               <button
                 key={item.id}
+                type="button"
+                aria-current={isActive ? "page" : undefined}
                 onClick={() => {
                   onViewChange(item.id);
                   setShowMobileMenu(false);

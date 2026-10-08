@@ -38,7 +38,7 @@ export function clearAuthToken() {
 }
 
 export type ApiOk<T> = { success: true; data: T };
-export type ApiFail = { success: false; error: string };
+export type ApiFail = { success: false; error: string; code?: string; retryable?: boolean };
 export type ApiResponse<T = any> = ApiOk<T> | ApiFail;
 
 function normalizeError(data: any, status: number) {
@@ -100,6 +100,8 @@ export async function apiFetch<T = any>(path: string, init?: RequestInit): Promi
     return {
       success: false,
       error: normalizeError(data, res.status),
+      code: typeof data?.code === "string" ? data.code : undefined,
+      retryable: typeof data?.retryable === "boolean" ? data.retryable : undefined,
     };
   }
 
@@ -108,4 +110,32 @@ export async function apiFetch<T = any>(path: string, init?: RequestInit): Promi
   }
 
   return { success: true, data: data as T };
+}
+
+export async function apiFetchBlob(path: string): Promise<ApiResponse<Blob>> {
+  const token = getAuthToken();
+  const headers: Record<string, string> = {
+    ...(ANON_KEY ? { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}` } : {}),
+  };
+  if (token) headers[SESSION_HEADER] = token;
+
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: "GET",
+    headers,
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    let data: any = null;
+    try {
+      data = await res.json();
+    } catch {}
+    if (res.status === 401 || res.status === 403) {
+      clearAuthToken();
+      window.dispatchEvent(new Event("sipesa-unauthorized"));
+    }
+    return { success: false, error: normalizeError(data, res.status) };
+  }
+
+  return { success: true, data: await res.blob() };
 }

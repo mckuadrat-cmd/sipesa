@@ -17,25 +17,73 @@ import {
   Loader2,
   FileSpreadsheet,
 } from "lucide-react";
-import { api } from "../lib/api";
+import { api, type ContactImportPreflightRow } from "../lib/api";
 import { toast } from "sonner";
+import { useVisibilityRefresh } from "../hooks/use-visibility-refresh";
+import { useDialogFocus } from "../hooks/use-dialog-focus";
 
 interface Contact {
   id: string;
   name: string;
   phone: string;
+  label?: string;
   createdAt?: string;
   updatedAt?: string;
 }
 
 const PAGE_SIZE = 10;
+const CONTACT_IMPORT_PREFLIGHT_CHUNK_SIZE = 100;
+const CONTACT_IMPORT_MUTATION_CONCURRENCY = 4;
+
+type ImportedContact = {
+  rowId: number;
+  name: string;
+  phone: string;
+  label?: string;
+};
+
+type ContactImportSummary = {
+  total: number;
+  validNew: number;
+  invalid: number;
+  duplicateWithinImport: number;
+  existingOrganizationDuplicate: number;
+  succeeded: number;
+  failed: number;
+};
+
+function chunkValues<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let offset = 0; offset < values.length; offset += size) {
+    chunks.push(values.slice(offset, offset + size));
+  }
+  return chunks;
+}
+
+async function mapWithBoundedConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  worker: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let offset = 0; offset < values.length; offset += concurrency) {
+    const wave = values.slice(offset, offset + concurrency);
+    results.push(...await Promise.all(wave.map(worker)));
+  }
+  return results;
+}
 
 export function ContactListView({ user }: { user?: any }) {
   const labelsKey = user?.org_id ? `sipesa_contact_labels_${user.org_id}` : "sipesa_contact_labels";
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
+  const [tableLoading, setTableLoading] = useState(false);
+  const [contactLoadError, setContactLoadError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [totalContacts, setTotalContacts] = useState(0);
+  const [serverTotalPages, setServerTotalPages] = useState(1);
 
   // Labels and selection states
   const [contactLabels, setContactLabels] = useState<Record<string, string>>({});
@@ -60,16 +108,25 @@ export function ContactListView({ user }: { user?: any }) {
   // Form states
   const [formData, setFormData] = useState({ name: "", phone: "", label: "" });
   const [formSaving, setFormSaving] = useState(false);
+  const [deletingContactId, setDeletingContactId] = useState<string | null>(null);
   const [deletingBulk, setDeletingBulk] = useState(false);
+  const [bulkLabelSaving, setBulkLabelSaving] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [contactToDelete, setContactToDelete] = useState<{ id: string; name: string } | null>(null);
   const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
 
   // Import CSV states
   const [importFile, setImportFile] = useState<File | null>(null);
-  const [parsedContacts, setParsedContacts] = useState<Array<{ name: string; phone: string; label?: string }>>([]);
+  const [parsedContacts, setParsedContacts] = useState<ImportedContact[]>([]);
   const [importing, setImporting] = useState(false);
+  const [importStage, setImportStage] = useState<"idle" | "preflight" | "mutating" | "complete">("idle");
+  const [importSummary, setImportSummary] = useState<ContactImportSummary | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const hasLoadedRef = useRef(false);
+  const requestVersionRef = useRef(0);
+  const contactFormDialogRef = useDialogFocus<HTMLDivElement>(showFormModal, () => setShowFormModal(false), formSaving);
+  const importDialogRef = useDialogFocus<HTMLDivElement>(showImportModal, () => setShowImportModal(false), importing);
+  const bulkLabelDialogRef = useDialogFocus<HTMLDivElement>(showBulkLabelModal, () => setShowBulkLabelModal(false), bulkLabelSaving);
 
   const loadContactLabels = async () => {
     try {
@@ -97,38 +154,66 @@ export function ContactListView({ user }: { user?: any }) {
     }
   };
 
-  useEffect(() => {
-    loadContacts();
-    loadContactLabels();
-
-    const interval = setInterval(() => {
-      // Background poll without loading indicator
-      api.getOrgContacts().then((result) => {
-        if (result.success && Array.isArray(result.data)) {
-          setContacts(result.data);
-        }
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, []);
-
   const loadContacts = async () => {
-    setLoading(true);
+    const requestVersion = ++requestVersionRef.current;
+    if (!hasLoadedRef.current) setLoading(true);
+    else setTableLoading(true);
     try {
-      const result = await api.getOrgContacts();
-      if (result.success && Array.isArray(result.data)) {
-        setContacts(result.data);
+      const result = await api.getOrgContacts({
+        page: currentPage,
+        pageSize: PAGE_SIZE,
+        search: debouncedSearch || undefined,
+        label: selectedFilterLabel === "all" ? undefined : selectedFilterLabel,
+      });
+      if (requestVersion !== requestVersionRef.current) return;
+      if (result.success) {
+        setContacts(result.data.items);
+        setTotalContacts(result.data.total);
+        setServerTotalPages(result.data.totalPages);
+        if (currentPage > result.data.totalPages) setCurrentPage(result.data.totalPages);
+        setSelectedContactIds([]);
+        setContactLoadError("");
+        hasLoadedRef.current = true;
       } else if ("error" in result) {
-        toast.error("Gagal memuat kontak: " + result.error);
+        console.error("Contacts request failed:", result.error);
+        setContactLoadError("Kontak belum dapat dimuat. Silakan coba lagi.");
       }
     } catch (err) {
+      if (requestVersion !== requestVersionRef.current) return;
       console.error("Error loading contacts:", err);
-      toast.error("Gagal memuat kontak");
+      setContactLoadError("Kontak belum dapat dimuat. Silakan coba lagi.");
     } finally {
-      setLoading(false);
+      if (requestVersion === requestVersionRef.current) {
+        setLoading(false);
+        setTableLoading(false);
+      }
     }
   };
+
+  const refreshContacts = useVisibilityRefresh(
+    () => loadContacts(),
+    { intervalMs: 30_000 },
+  );
+
+  useEffect(() => {
+    void loadContactLabels();
+  }, [labelsKey]);
+
+  useEffect(() => {
+    requestVersionRef.current += 1;
+    const timeout = window.setTimeout(() => {
+      setCurrentPage(1);
+      setDebouncedSearch(searchQuery.trim());
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    // Invalidate an older page/search response immediately, even when the
+    // non-overlapping refresh helper queues this query behind an in-flight one.
+    requestVersionRef.current += 1;
+    void refreshContacts();
+  }, [currentPage, debouncedSearch, selectedFilterLabel, refreshContacts]);
 
   const handleOpenAddModal = () => {
     setEditingContact(null);
@@ -141,13 +226,14 @@ export function ContactListView({ user }: { user?: any }) {
     setFormData({
       name: contact.name,
       phone: contact.phone,
-      label: contactLabels[contact.phone] || "",
+      label: contact.label || contactLabels[contact.phone] || "",
     });
     setShowFormModal(true);
   };
 
   const handleSaveContact = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (formSaving) return;
     const name = formData.name.trim();
     const phone = formData.phone.trim().replace(/\D/g, "");
     const label = formData.label.trim();
@@ -165,9 +251,9 @@ export function ContactListView({ user }: { user?: any }) {
     try {
       let result;
       if (editingContact) {
-        result = await api.updateContact(editingContact.id, { name, phone });
+        result = await api.updateContact(editingContact.id, { name, phone, label });
       } else {
-        result = await api.createContact({ name, phone });
+        result = await api.createContact({ name, phone, label });
       }
 
       if (result.success) {
@@ -187,7 +273,7 @@ export function ContactListView({ user }: { user?: any }) {
         setShowFormModal(false);
         setFormData({ name: "", phone: "", label: "" });
         setEditingContact(null);
-        await loadContacts();
+        await refreshContacts();
       } else {
         const errorMsg = "error" in result ? result.error : "Terjadi kesalahan";
         toast.error("Gagal menyimpan kontak: " + errorMsg);
@@ -206,14 +292,15 @@ export function ContactListView({ user }: { user?: any }) {
   };
 
   const handleConfirmDeleteSingle = async () => {
-    if (!contactToDelete) return;
+    if (!contactToDelete || deletingContactId) return;
+    setDeletingContactId(contactToDelete.id);
     try {
       const result = await api.deleteContact(contactToDelete.id);
       if (result.success) {
         toast.success("Kontak berhasil dihapus");
         setDeleteConfirmOpen(false);
         setContactToDelete(null);
-        await loadContacts();
+        await refreshContacts();
       } else {
         const errorMsg = "error" in result ? result.error : "Terjadi kesalahan";
         toast.error("Gagal menghapus kontak: " + errorMsg);
@@ -221,6 +308,8 @@ export function ContactListView({ user }: { user?: any }) {
     } catch (err) {
       console.error("Error deleting contact:", err);
       toast.error("Terjadi kesalahan saat menghapus kontak");
+    } finally {
+      setDeletingContactId(null);
     }
   };
 
@@ -276,68 +365,83 @@ export function ContactListView({ user }: { user?: any }) {
         return;
       }
 
-      const list: Array<{ name: string; phone: string; label?: string }> = [];
-      const seen = new Set<string>();
+      const list: ImportedContact[] = [];
 
       for (let i = 1; i < lines.length; i++) {
         const row = parseCsvLine(lines[i]);
-        let phoneVal = String(row[phoneIndex] || "").trim().replace(/[^\d+]/g, "");
-        if (!phoneVal) continue;
-
-        if (phoneVal.startsWith("+")) phoneVal = phoneVal.slice(1);
-        if (phoneVal.startsWith("0")) phoneVal = `62${phoneVal.slice(1)}`;
-        if (phoneVal.startsWith("8")) phoneVal = `62${phoneVal}`;
-
-        if (seen.has(phoneVal)) continue;
-        seen.add(phoneVal);
+        const phoneVal = String(row[phoneIndex] || "").trim();
 
         const nameVal = nameIndex !== -1 ? String(row[nameIndex] || "").trim() : phoneVal;
         const labelVal = labelIndex !== -1 ? String(row[labelIndex] || "").trim() : "";
-        list.push({ name: nameVal || phoneVal, phone: phoneVal, label: labelVal });
+        list.push({ rowId: i, name: nameVal || phoneVal || `Baris ${i + 1}`, phone: phoneVal, label: labelVal });
       }
 
       setParsedContacts(list);
+      setImportStage("idle");
+      setImportSummary(null);
     };
     reader.readAsText(file);
   };
 
   const handleBulkImport = async () => {
-    if (parsedContacts.length === 0) return;
+    if (parsedContacts.length === 0 || importing) return;
     setImporting(true);
-
-    let successCount = 0;
-    let failCount = 0;
+    setImportStage("preflight");
+    setImportSummary(null);
 
     try {
-      const newLabels = { ...contactLabels };
+      const preflightRows: ContactImportPreflightRow[] = [];
+      for (const chunk of chunkValues(parsedContacts, CONTACT_IMPORT_PREFLIGHT_CHUNK_SIZE)) {
+        const result = await api.preflightContactImport(chunk.map(({ rowId, phone }) => ({ rowId, phone })));
+        if (!result.success) {
+          const message = "error" in result ? result.error : "Preflight import gagal";
+          throw new Error(message);
+        }
+        preflightRows.push(...result.data.results);
+      }
 
-      const existingContactsMap = new Map<string, string>(); // normPhone -> id
-      contacts.forEach(c => {
-        const norm = String(c.phone).replace(/\D/g, "");
-        existingContactsMap.set(norm, c.id);
+      const sourceByRowId = new Map(parsedContacts.map((contact) => [String(contact.rowId), contact]));
+      const seenNormalizedPhones = new Set<string>();
+      const classified = preflightRows.map((row) => {
+        const source = sourceByRowId.get(String(row.rowId));
+        if (!source) throw new Error("Hasil preflight tidak sesuai dengan file import.");
+        const crossChunkDuplicate = row.valid && !!row.normalizedPhone && seenNormalizedPhones.has(row.normalizedPhone);
+        if (row.valid && row.normalizedPhone && !crossChunkDuplicate) seenNormalizedPhones.add(row.normalizedPhone);
+        return {
+          source,
+          row,
+          duplicateWithinOverallImport: row.duplicateWithinImport || crossChunkDuplicate,
+        };
       });
 
-      for (const item of parsedContacts) {
-        const normPhone = String(item.phone).replace(/\D/g, "");
-        const existingId = existingContactsMap.get(normPhone);
+      const invalid = classified.filter(({ row }) => !row.valid).length;
+      const duplicateWithinImport = classified.filter(({ duplicateWithinOverallImport }) => duplicateWithinOverallImport).length;
+      const existingOrganizationDuplicate = classified.filter(
+        ({ row, duplicateWithinOverallImport }) => row.valid && !duplicateWithinOverallImport && row.existingOrganizationDuplicate,
+      ).length;
+      const mutationPlan = classified.filter(
+        ({ row, duplicateWithinOverallImport }) => row.valid && !duplicateWithinOverallImport,
+      );
+      const validNew = mutationPlan.filter(({ row }) => !row.existingOrganizationDuplicate).length;
 
-        let result;
-        if (existingId) {
-          result = await api.updateContact(existingId, { name: item.name, phone: item.phone });
-        } else {
-          result = await api.createContact({ name: item.name, phone: item.phone });
-        }
-
-        if (result.success) {
-          successCount++;
-          if (item.label) {
-            const savedPhone = result.data?.phone || item.phone;
-            newLabels[savedPhone] = item.label;
+      setImportStage("mutating");
+      const newLabels = { ...contactLabels };
+      const mutationResults = await mapWithBoundedConcurrency(
+        mutationPlan,
+        CONTACT_IMPORT_MUTATION_CONCURRENCY,
+        async ({ source, row }) => {
+          const result = row.existingOrganizationDuplicate && row.existingContactId
+            ? await api.updateContact(row.existingContactId, { name: source.name, phone: source.phone, label: source.label })
+            : await api.createContact({ name: source.name, phone: source.phone, label: source.label });
+          if (result.success && source.label) {
+            const savedPhone = result.data?.phone || row.normalizedPhone || source.phone;
+            newLabels[savedPhone] = source.label;
           }
-        } else {
-          failCount++;
-        }
-      }
+          return result.success;
+        },
+      );
+      const successCount = mutationResults.filter(Boolean).length;
+      const failCount = mutationResults.length - successCount;
 
       localStorage.setItem(labelsKey, JSON.stringify(newLabels));
       setContactLabels(newLabels);
@@ -345,14 +449,24 @@ export function ContactListView({ user }: { user?: any }) {
         console.warn("Gagal sinkronisasi label ke database:", e)
       );
 
-      toast.success(`Berhasil mengimport ${successCount} kontak. Gagal: ${failCount}`);
-      setShowImportModal(false);
-      setImportFile(null);
-      setParsedContacts([]);
-      await loadContacts();
+      const summary = {
+        total: parsedContacts.length,
+        validNew,
+        invalid,
+        duplicateWithinImport,
+        existingOrganizationDuplicate,
+        succeeded: successCount,
+        failed: failCount,
+      };
+      setImportSummary(summary);
+      setImportStage("complete");
+      if (failCount > 0) toast.warning(`Import selesai sebagian: ${successCount} berhasil, ${failCount} gagal.`);
+      else toast.success(`Import selesai: ${successCount} kontak berhasil disimpan.`);
+      await refreshContacts();
     } catch (err) {
       console.error("Error bulk importing contacts:", err);
-      toast.error("Gagal melakukan import kontak secara massal");
+      toast.error("Import belum dapat diproses. Periksa file lalu coba lagi.");
+      setImportStage("idle");
     } finally {
       setImporting(false);
     }
@@ -363,7 +477,7 @@ export function ContactListView({ user }: { user?: any }) {
   };
 
   const handleConfirmBulkDelete = async () => {
-    setBulkDeleteConfirmOpen(false);
+    if (deletingBulk) return;
     setDeletingBulk(true);
     let successCount = 0;
     let failCount = 0;
@@ -390,7 +504,8 @@ export function ContactListView({ user }: { user?: any }) {
       );
       setSelectedContactIds([]);
       toast.success(`Berhasil menghapus ${successCount} kontak.${failCount > 0 ? ` Gagal: ${failCount}` : ""}`);
-      await loadContacts();
+      setBulkDeleteConfirmOpen(false);
+      await refreshContacts();
     } catch (err) {
       console.error("Error bulk deleting contacts:", err);
       toast.error("Gagal menghapus kontak terpilih");
@@ -399,17 +514,35 @@ export function ContactListView({ user }: { user?: any }) {
     }
   };
 
-  const handleExportCsv = () => {
-    if (contacts.length === 0) {
+  const handleExportCsv = async () => {
+    if (totalContacts === 0) {
       toast.error("Tidak ada kontak untuk diexport");
       return;
     }
 
+    const exported: Contact[] = [];
+    let page = 1;
+    while (true) {
+      const result = await api.getOrgContacts({
+        page,
+        pageSize: 100,
+        search: debouncedSearch || undefined,
+        label: selectedFilterLabel === "all" ? undefined : selectedFilterLabel,
+      });
+      if ("error" in result) {
+        toast.error("Gagal mengekspor kontak: " + result.error);
+        return;
+      }
+      exported.push(...result.data.items);
+      if (page >= result.data.totalPages) break;
+      page += 1;
+    }
+
     const headers = ["Nama", "Nomor", "Label"];
-    const rows = contacts.map((c) => [
+    const rows = exported.map((c) => [
       c.name,
       c.phone,
-      contactLabels[c.phone] || "",
+      c.label || contactLabels[c.phone] || "",
     ].map(val => {
       let s = String(val ?? "");
       if (/[",\n]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
@@ -430,32 +563,41 @@ export function ContactListView({ user }: { user?: any }) {
     toast.success("Berhasil mendownload CSV daftar kontak");
   };
 
-  // Instant search filter logic
-  const filteredContacts = useMemo(() => {
-    return contacts.filter((c) => {
-      const q = searchQuery.toLowerCase();
-      const label = (contactLabels[c.phone] || "").toLowerCase();
-      const matchesSearch =
-        c.name.toLowerCase().includes(q) ||
-        c.phone.includes(q) ||
-        label.includes(q);
-      const matchesLabelFilter =
-        selectedFilterLabel === "all" ||
-        label === selectedFilterLabel.toLowerCase();
-      return matchesSearch && matchesLabelFilter;
-    });
-  }, [contacts, searchQuery, contactLabels, selectedFilterLabel]);
+  const totalPages = serverTotalPages;
+  const paginatedContacts = contacts;
 
-  // Pagination logic
-  const totalPages = Math.max(1, Math.ceil(filteredContacts.length / PAGE_SIZE));
-  const paginatedContacts = useMemo(() => {
-    const start = (currentPage - 1) * PAGE_SIZE;
-    return filteredContacts.slice(start, start + PAGE_SIZE);
-  }, [filteredContacts, currentPage]);
+  const handleApplyBulkLabel = async () => {
+    if (bulkLabelSaving) return;
+    setBulkLabelSaving(true);
+    const label = bulkLabelText.trim();
+    const selectedContacts = contacts.filter((contact) => selectedContactIds.includes(contact.id));
+    try {
+      const results = await mapWithBoundedConcurrency(selectedContacts, CONTACT_IMPORT_MUTATION_CONCURRENCY, (contact) => api.updateContact(contact.id, {
+        name: contact.name,
+        phone: contact.phone,
+        label,
+      }));
+      if (results.some((result) => "error" in result)) {
+        toast.error("Sebagian label kontak gagal diperbarui");
+        return;
+      }
 
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchQuery]);
+      const savedLabels = JSON.parse(localStorage.getItem(labelsKey) || "{}");
+      selectedContacts.forEach((contact) => {
+        savedLabels[contact.phone] = label;
+      });
+      localStorage.setItem(labelsKey, JSON.stringify(savedLabels));
+      setContactLabels(savedLabels);
+      void api.updateContactLabels(savedLabels);
+      toast.success(`Berhasil memperbarui label untuk ${selectedContacts.length} kontak pada halaman ini`);
+      setShowBulkLabelModal(false);
+      setBulkLabelText("");
+      setSelectedContactIds([]);
+      await refreshContacts();
+    } finally {
+      setBulkLabelSaving(false);
+    }
+  };
 
   return (
     <div className="w-full p-6 md:p-8 bg-white min-h-screen">
@@ -483,6 +625,8 @@ export function ContactListView({ user }: { user?: any }) {
             onClick={() => {
               setParsedContacts([]);
               setImportFile(null);
+              setImportStage("idle");
+              setImportSummary(null);
               setShowImportModal(true);
             }}
             className="border-slate-200 text-slate-700 hover:bg-slate-50 flex items-center gap-2"
@@ -505,13 +649,14 @@ export function ContactListView({ user }: { user?: any }) {
         <Card className="border border-slate-100 shadow-sm rounded-2xl overflow-hidden bg-white flex flex-col">
           <div className="px-6 py-4 border-b border-slate-50 flex items-center justify-between gap-4 flex-wrap">
             <div>
-              <h3 className="text-base font-bold text-slate-800">Semua Kontak ({filteredContacts.length})</h3>
+              <h3 className="text-base font-bold text-slate-800">Semua Kontak ({totalContacts})</h3>
               <p className="text-xs text-slate-400 mt-0.5">Urutan abjad nama kontak</p>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
               {/* Filter Label Dropdown */}
               <select
+                aria-label="Filter kontak berdasarkan label"
                 value={selectedFilterLabel}
                 onChange={(e) => {
                   setSelectedFilterLabel(e.target.value);
@@ -531,6 +676,7 @@ export function ContactListView({ user }: { user?: any }) {
               <div className="relative w-full sm:max-w-xs flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
                 <Input
+                  aria-label="Cari kontak"
                   placeholder="Cari nama, nomor, atau label..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -574,6 +720,15 @@ export function ContactListView({ user }: { user?: any }) {
             </div>
           )}
 
+          {contactLoadError && hasLoadedRef.current && (
+            <div className="flex flex-col gap-2 border-b border-amber-200 bg-amber-50 px-6 py-3 text-xs text-amber-900 sm:flex-row sm:items-center sm:justify-between" role="status">
+              <span>Data terakhir ditampilkan. Gagal memperbarui kontak.</span>
+              <Button type="button" variant="outline" size="sm" onClick={() => void loadContacts()} disabled={tableLoading} className="self-start sm:self-auto">
+                Coba Lagi
+              </Button>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead className="bg-slate-50/50">
@@ -581,6 +736,7 @@ export function ContactListView({ user }: { user?: any }) {
                   <th className="px-4 py-3.5 text-left text-xs font-bold uppercase tracking-wider text-slate-400 w-10">
                     <input
                       type="checkbox"
+                      aria-label="Pilih semua kontak pada halaman ini"
                       checked={paginatedContacts.length > 0 && paginatedContacts.every(c => selectedContactIds.includes(c.id))}
                       onChange={(e) => {
                         if (e.target.checked) {
@@ -606,7 +762,7 @@ export function ContactListView({ user }: { user?: any }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {loading ? (
+                {loading && !hasLoadedRef.current ? (
                   <tr>
                     <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
                       <div className="flex items-center justify-center gap-2">
@@ -615,15 +771,34 @@ export function ContactListView({ user }: { user?: any }) {
                       </div>
                     </td>
                   </tr>
-                ) : paginatedContacts.length === 0 ? (
+                ) : contactLoadError && !hasLoadedRef.current ? (
+                  <tr>
+                    <td colSpan={6} className="px-6 py-16 text-center">
+                      <div className="flex flex-col items-center justify-center max-w-sm mx-auto text-red-700" role="alert">
+                        <h4 className="text-sm font-semibold">Kontak belum dapat dimuat</h4>
+                        <p className="mt-1 text-xs text-red-600">Silakan periksa koneksi lalu coba lagi.</p>
+                        <Button type="button" variant="outline" size="sm" onClick={() => void loadContacts()} className="mt-3">Coba Lagi</Button>
+                      </div>
+                    </td>
+                  </tr>
+                ) : paginatedContacts.length === 0 && !tableLoading ? (
                   <tr>
                     <td colSpan={6} className="px-6 py-16 text-center text-slate-400">
                       <div className="flex flex-col items-center justify-center max-w-sm mx-auto">
                         <Users className="w-10 h-10 text-slate-200 mb-2" />
-                        <h4 className="text-sm font-semibold text-slate-700">Kontak Tidak Ditemukan</h4>
+                        <h4 className="text-sm font-semibold text-slate-700">
+                          {debouncedSearch || selectedFilterLabel !== "all" ? "Tidak ada kontak yang cocok" : "Belum ada kontak"}
+                        </h4>
                         <p className="text-xs text-slate-400 mt-1">
-                          Belum ada kontak yang terdaftar atau tidak ada kontak yang cocok dengan kata kunci pencarian.
+                          {debouncedSearch || selectedFilterLabel !== "all"
+                            ? "Ubah kata kunci atau filter untuk melihat hasil lain."
+                            : "Tambahkan kontak untuk mulai menyiapkan penerima broadcast."}
                         </p>
+                        {(debouncedSearch || selectedFilterLabel !== "all") && (
+                          <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => { setSearchQuery(""); setDebouncedSearch(""); setSelectedFilterLabel("all"); setCurrentPage(1); }}>
+                            Reset Pencarian dan Filter
+                          </Button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -633,6 +808,7 @@ export function ContactListView({ user }: { user?: any }) {
                       <td className="px-4 py-4 whitespace-nowrap w-10">
                         <input
                           type="checkbox"
+                          aria-label={`Pilih kontak ${contact.name}`}
                           checked={selectedContactIds.includes(contact.id)}
                           onChange={(e) => {
                             if (e.target.checked) {
@@ -658,9 +834,9 @@ export function ContactListView({ user }: { user?: any }) {
                         {contact.phone.startsWith("+") ? contact.phone : `+${contact.phone}`}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        {contactLabels[contact.phone] ? (
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-primary/10 text-primary border border-primary/20 max-w-[160px] truncate animate-in fade-in duration-200" title={contactLabels[contact.phone]}>
-                            {contactLabels[contact.phone]}
+                        {(contact.label || contactLabels[contact.phone]) ? (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-primary/10 text-primary border border-primary/20 max-w-[160px] truncate animate-in fade-in duration-200" title={contact.label || contactLabels[contact.phone]}>
+                            {contact.label || contactLabels[contact.phone]}
                           </span>
                         ) : (
                           <span className="text-slate-300 text-xs italic">Tanpa Label</span>
@@ -681,6 +857,7 @@ export function ContactListView({ user }: { user?: any }) {
                             variant="ghost"
                             size="sm"
                             onClick={() => handleOpenEditModal(contact)}
+                            aria-label={`Edit kontak ${contact.name}`}
                             className="h-8 w-8 p-0 text-slate-500 hover:text-slate-900 rounded-lg"
                           >
                             <Edit className="w-4 h-4" />
@@ -689,6 +866,7 @@ export function ContactListView({ user }: { user?: any }) {
                             variant="ghost"
                             size="sm"
                             onClick={() => handleDeleteContact(contact.id, contact.name)}
+                            aria-label={`Hapus kontak ${contact.name}`}
                             className="h-8 w-8 p-0 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -702,13 +880,20 @@ export function ContactListView({ user }: { user?: any }) {
             </table>
           </div>
 
+          {tableLoading && (
+            <div className="px-6 py-2.5 border-t border-slate-100 text-xs text-slate-500 flex items-center gap-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+              Memperbarui kontak...
+            </div>
+          )}
+
           {/* Pagination bar */}
-          {filteredContacts.length > PAGE_SIZE && (
+          {totalContacts > PAGE_SIZE && (
             <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between">
               <span className="text-xs text-slate-400 font-medium">
                 Menampilkan {(currentPage - 1) * PAGE_SIZE + 1}–
-                {Math.min(currentPage * PAGE_SIZE, filteredContacts.length)} dari{" "}
-                {filteredContacts.length} kontak
+                {Math.min(currentPage * PAGE_SIZE, totalContacts)} dari{" "}
+                {totalContacts} kontak
               </span>
 
               <div className="flex items-center gap-1.5">
@@ -716,7 +901,8 @@ export function ContactListView({ user }: { user?: any }) {
                   variant="outline"
                   size="sm"
                   onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                  disabled={currentPage === 1}
+                  disabled={currentPage === 1 || tableLoading}
+                  aria-label="Halaman kontak sebelumnya"
                   className="rounded-lg h-8 px-3 text-xs"
                 >
                   Sebelumnya
@@ -728,7 +914,8 @@ export function ContactListView({ user }: { user?: any }) {
                   variant="outline"
                   size="sm"
                   onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={currentPage === totalPages}
+                  disabled={currentPage === totalPages || tableLoading}
+                  aria-label="Halaman kontak berikutnya"
                   className="rounded-lg h-8 px-3 text-xs"
                 >
                   Selanjutnya
@@ -742,14 +929,15 @@ export function ContactListView({ user }: { user?: any }) {
       {/* MODAL 1: ADD/EDIT FORM */}
       {showFormModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-auto">
-          <div className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-slate-100 animate-in fade-in zoom-in-95 duration-200">
+          <div ref={contactFormDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="contact-form-title" className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-slate-100 animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-50">
-              <h3 className="text-base font-bold text-slate-800">
+              <h3 id="contact-form-title" className="text-base font-bold text-slate-800">
                 {editingContact ? "Edit Kontak" : "Tambah Kontak Baru"}
               </h3>
               <Button
                 variant="ghost"
                 size="sm"
+                aria-label="Tutup formulir kontak"
                 onClick={() => setShowFormModal(false)}
                 className="h-8 w-8 p-0 text-slate-400 hover:text-slate-600 rounded-lg"
               >
@@ -828,16 +1016,20 @@ export function ContactListView({ user }: { user?: any }) {
       {/* MODAL 2: CSV IMPORT */}
       {showImportModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-auto">
-          <div className="w-full max-w-lg bg-white rounded-2xl shadow-xl border border-slate-100 animate-in fade-in zoom-in-95 duration-200">
+          <div ref={importDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="contact-import-title" className="w-full max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-xl border border-slate-100 animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-50">
-              <h3 className="text-base font-bold text-slate-800">Import Kontak dari CSV</h3>
+              <h3 id="contact-import-title" className="text-base font-bold text-slate-800">Import Kontak dari CSV</h3>
               <Button
                 variant="ghost"
                 size="sm"
+                aria-label="Tutup import kontak"
+                disabled={importing}
                 onClick={() => {
                   setShowImportModal(false);
                   setImportFile(null);
                   setParsedContacts([]);
+                  setImportStage("idle");
+                  setImportSummary(null);
                 }}
                 className="h-8 w-8 p-0 text-slate-400 hover:text-slate-600 rounded-lg"
               >
@@ -858,15 +1050,18 @@ export function ContactListView({ user }: { user?: any }) {
               </div>
 
               {/* Upload Zone */}
-              <div
+              <button
+                type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-slate-200 hover:border-primary/50 transition-colors rounded-xl p-8 bg-slate-50/50 flex flex-col items-center justify-center gap-2 cursor-pointer"
+                disabled={importing}
+                className="w-full border-2 border-dashed border-slate-200 hover:border-primary/50 transition-colors rounded-xl p-8 bg-slate-50/50 flex flex-col items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <input
                   type="file"
                   ref={fileInputRef}
                   onChange={handleFileChange}
                   accept=".csv"
+                  disabled={importing}
                   className="hidden"
                 />
                 <FileSpreadsheet className="w-10 h-10 text-slate-400" />
@@ -876,7 +1071,7 @@ export function ContactListView({ user }: { user?: any }) {
                 <span className="text-xs text-slate-400">
                   Klik untuk menelusuri file dari komputer Anda
                 </span>
-              </div>
+              </button>
 
               {/* Preview Zone */}
               {parsedContacts.length > 0 && (
@@ -900,16 +1095,36 @@ export function ContactListView({ user }: { user?: any }) {
                 </div>
               )}
 
+              {importing && (
+                <div role="status" className="flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  {importStage === "preflight"
+                    ? "Memeriksa nomor dan duplikasi di seluruh organisasi..."
+                    : "Menyimpan kontak secara bertahap..."}
+                </div>
+              )}
+
+              {importSummary && importStage === "complete" && (
+                <div role="status" className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs sm:grid-cols-3">
+                  <span>Total: <strong>{importSummary.total}</strong></span>
+                  <span>Baru: <strong>{importSummary.validNew}</strong></span>
+                  <span>Duplikat file: <strong>{importSummary.duplicateWithinImport}</strong></span>
+                  <span>Kontak existing: <strong>{importSummary.existingOrganizationDuplicate}</strong></span>
+                  <span>Invalid: <strong>{importSummary.invalid}</strong></span>
+                  <span>Berhasil/Gagal: <strong>{importSummary.succeeded}/{importSummary.failed}</strong></span>
+                </div>
+              )}
+
               <div className="flex gap-3 pt-4">
                 <Button
                   onClick={handleBulkImport}
-                  disabled={importing || parsedContacts.length === 0}
+                  disabled={importing || parsedContacts.length === 0 || importStage === "complete"}
                   className="flex-1 bg-primary hover:bg-primary/95 text-primary-foreground font-medium rounded-xl h-11"
                 >
                   {importing ? (
                     <div className="flex items-center justify-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Mengimport ({parsedContacts.length})...</span>
+                      <span>{importStage === "preflight" ? "Memeriksa..." : "Mengimport..."}</span>
                     </div>
                   ) : (
                     <span>Mulai Import</span>
@@ -920,7 +1135,10 @@ export function ContactListView({ user }: { user?: any }) {
                     setShowImportModal(false);
                     setImportFile(null);
                     setParsedContacts([]);
+                    setImportStage("idle");
+                    setImportSummary(null);
                   }}
+                  disabled={importing}
                   className="flex-1 border-slate-200 text-slate-700 hover:bg-slate-50 font-medium rounded-xl h-11"
                 >
                   Batal
@@ -934,12 +1152,13 @@ export function ContactListView({ user }: { user?: any }) {
       {/* MODAL 3: BULK LABEL EDIT */}
       {showBulkLabelModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-auto">
-          <div className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-slate-100 animate-in fade-in zoom-in-95 duration-200">
+          <div ref={bulkLabelDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="bulk-label-title" className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-slate-100 animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-50">
-              <h3 className="text-base font-bold text-slate-800">Ganti Label Massal</h3>
+              <h3 id="bulk-label-title" className="text-base font-bold text-slate-800">Ganti Label Massal</h3>
               <Button
                 variant="ghost"
                 size="sm"
+                aria-label="Tutup pengaturan label massal"
                 onClick={() => setShowBulkLabelModal(false)}
                 className="h-8 w-8 p-0 text-slate-400 hover:text-slate-600 rounded-lg"
               >
@@ -965,29 +1184,16 @@ export function ContactListView({ user }: { user?: any }) {
 
               <div className="flex gap-3 pt-2">
                 <Button
-                  onClick={() => {
-                    const savedLabels = JSON.parse(localStorage.getItem(labelsKey) || "{}");
-                    const selectedContacts = contacts.filter(c => selectedContactIds.includes(c.id));
-                    selectedContacts.forEach(c => {
-                      savedLabels[c.phone] = bulkLabelText.trim();
-                    });
-                    localStorage.setItem(labelsKey, JSON.stringify(savedLabels));
-                    setContactLabels(savedLabels);
-                    api.updateContactLabels(savedLabels).catch((e) =>
-                      console.warn("Gagal sinkronisasi label ke database:", e)
-                    );
-                    toast.success(`Berhasil memperbarui label untuk ${selectedContactIds.length} kontak`);
-                    setShowBulkLabelModal(false);
-                    setBulkLabelText("");
-                    setSelectedContactIds([]);
-                  }}
+                  onClick={handleApplyBulkLabel}
+                  disabled={bulkLabelSaving}
                   className="flex-1 bg-primary hover:bg-primary/95 text-primary-foreground font-medium rounded-xl h-11"
                 >
-                  Simpan Label
+                  {bulkLabelSaving ? "Menyimpan..." : "Simpan Label"}
                 </Button>
                 <Button
                   variant="outline"
                   onClick={() => setShowBulkLabelModal(false)}
+                  disabled={bulkLabelSaving}
                   className="flex-1 border-slate-200 text-slate-700 hover:bg-slate-50 font-medium rounded-xl h-11"
                 >
                   Batal
@@ -1002,7 +1208,9 @@ export function ContactListView({ user }: { user?: any }) {
       <AppModal
         open={deleteConfirmOpen}
         title="Hapus Kontak"
+        closeDisabled={deletingContactId !== null}
         onClose={() => {
+          if (deletingContactId) return;
           setDeleteConfirmOpen(false);
           setContactToDelete(null);
         }}
@@ -1010,6 +1218,7 @@ export function ContactListView({ user }: { user?: any }) {
           <div className="flex justify-end gap-2">
             <Button
               variant="outline"
+              disabled={deletingContactId !== null}
               onClick={() => {
                 setDeleteConfirmOpen(false);
                 setContactToDelete(null);
@@ -1020,8 +1229,9 @@ export function ContactListView({ user }: { user?: any }) {
             <Button
               className="bg-red-500 hover:bg-red-600 text-white"
               onClick={handleConfirmDeleteSingle}
+              disabled={deletingContactId !== null}
             >
-              Hapus
+              {deletingContactId ? "Menghapus..." : "Hapus"}
             </Button>
           </div>
         }
@@ -1035,11 +1245,15 @@ export function ContactListView({ user }: { user?: any }) {
       <AppModal
         open={bulkDeleteConfirmOpen}
         title="Hapus Kontak Terpilih"
-        onClose={() => setBulkDeleteConfirmOpen(false)}
+        closeDisabled={deletingBulk}
+        onClose={() => {
+          if (!deletingBulk) setBulkDeleteConfirmOpen(false);
+        }}
         footer={
           <div className="flex justify-end gap-2">
             <Button
               variant="outline"
+              disabled={deletingBulk}
               onClick={() => setBulkDeleteConfirmOpen(false)}
             >
               Batal
@@ -1047,8 +1261,9 @@ export function ContactListView({ user }: { user?: any }) {
             <Button
               className="bg-red-500 hover:bg-red-600 text-white"
               onClick={handleConfirmBulkDelete}
+              disabled={deletingBulk}
             >
-              Hapus
+              {deletingBulk ? "Menghapus..." : "Hapus"}
             </Button>
           </div>
         }

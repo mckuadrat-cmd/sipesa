@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
+import { useDialogFocus } from "../hooks/use-dialog-focus";
 
 interface SettingsViewProps {
   onUpdateUser?: () => Promise<void>;
@@ -23,11 +24,15 @@ interface SettingsViewProps {
 
 export function SettingsView({ onUpdateUser }: SettingsViewProps) {
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [messagingSaving, setMessagingSaving] = useState(false);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [avatarMutating, setAvatarMutating] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [avatar, setAvatar] = useState<string | null>(null);
   const [address, setAddress] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const passwordDialogRef = useDialogFocus<HTMLDivElement>(showPasswordModal, () => setShowPasswordModal(false), passwordSaving);
 
   const [profile, setProfile] = useState({
     id: "",
@@ -226,6 +231,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
   };
 
   const handleSaveProfile = async () => {
+    if (profileSaving) return;
     if (!profile.fullName.trim()) {
       toast.warning("Nama lengkap wajib diisi");
       return;
@@ -243,9 +249,9 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       return;
     }
 
-    setSaving(true);
+    setProfileSaving(true);
     try {
-      const [profileRes, orgRes] = await Promise.all([
+      const [profileOutcome, orgOutcome] = await Promise.allSettled([
         api.updateProfile({
           fullName: profile.fullName,
           username: profile.username,
@@ -259,33 +265,41 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
         })
       ]);
 
-      if ("error" in profileRes) {
-        toast.error("Gagal menyimpan profil: " + profileRes.error);
-        return;
+      const profileSucceeded = profileOutcome.status === "fulfilled" && !("error" in profileOutcome.value);
+      const orgSucceeded = orgOutcome.status === "fulfilled" && !("error" in orgOutcome.value);
+
+      if (orgSucceeded) {
+        const addressKey = org.id ? `sipesa_address_${org.id}` : "sipesa_address";
+        localStorage.setItem(addressKey, address);
+      }
+      if (profileSucceeded && onUpdateUser) {
+        try {
+          await onUpdateUser();
+        } catch (refreshError) {
+          console.warn("Profil tersimpan tetapi refresh user gagal:", refreshError);
+        }
       }
 
-      if ("error" in orgRes) {
-        toast.error("Gagal menyimpan data instansi: " + orgRes.error);
-        return;
-      }
-
-      const addressKey = org.id ? `sipesa_address_${org.id}` : "sipesa_address";
-      localStorage.setItem(addressKey, address);
-      toast.success("Profil dan data instansi berhasil disimpan");
-
-      if (onUpdateUser) {
-        await onUpdateUser();
+      if (profileSucceeded && orgSucceeded) {
+        toast.success("Profil dan data instansi berhasil disimpan");
+      } else if (profileSucceeded) {
+        toast.warning("Profil berhasil disimpan, tetapi data instansi belum berhasil diperbarui.");
+      } else if (orgSucceeded) {
+        toast.warning("Data instansi berhasil disimpan, tetapi profil belum berhasil diperbarui.");
+      } else {
+        toast.error("Profil dan data instansi belum berhasil disimpan. Silakan coba lagi.");
       }
     } catch (error) {
       console.error(error);
       toast.error("Terjadi kesalahan saat menyimpan data");
     } finally {
-      setSaving(false);
+      setProfileSaving(false);
     }
   };
 
   const handleSaveMessaging = async () => {
-    setSaving(true);
+    if (messagingSaving) return;
+    setMessagingSaving(true);
     try {
       const result = await api.updateMessagingSettings({
         numberId: selectedNumberId || undefined,
@@ -316,11 +330,12 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       console.error(error);
       toast.error("Terjadi kesalahan saat menyimpan pengaturan pesan");
     } finally {
-      setSaving(false);
+      setMessagingSaving(false);
     }
   };
 
   const handleChangePassword = async () => {
+    if (passwordSaving) return;
     if (!passwordForm.currentPassword || !passwordForm.newPassword) {
       toast.warning("Password lama dan password baru wajib diisi");
       return;
@@ -336,7 +351,7 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       return;
     }
 
-    setSaving(true);
+    setPasswordSaving(true);
     try {
       const result = await api.changePassword({
         currentPassword: passwordForm.currentPassword,
@@ -359,11 +374,12 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       console.error(error);
       toast.error("Terjadi kesalahan saat mengganti password");
     } finally {
-      setSaving(false);
+      setPasswordSaving(false);
     }
   };
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (avatarMutating) return;
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -379,23 +395,30 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
         toast.error("Gagal memperbarui foto profil: ID pengguna tidak tersedia.");
         return;
       }
-      const avatarKey = `sipesa_avatar_${profile.id}`;
-      localStorage.setItem(avatarKey, base64);
-      setAvatar(base64);
-      window.dispatchEvent(new Event("sipesa-avatar-updated"));
-
+      setAvatarMutating(true);
       try {
-        await api.updateProfile({
+        const result = await api.updateProfile({
           fullName: profile.fullName,
           username: profile.username,
           email: profile.email,
           avatar: base64,
         });
-      } catch (err) {
-        console.warn("Gagal sinkronisasi foto profil ke database:", err);
+        if ("error" in result) {
+          toast.error("Foto terbaca, tetapi profil belum berhasil diperbarui.");
+          return;
+        }
+        const avatarKey = `sipesa_avatar_${profile.id}`;
+        localStorage.setItem(avatarKey, base64);
+        setAvatar(base64);
+        window.dispatchEvent(new Event("sipesa-avatar-updated"));
+        toast.success("Foto profil berhasil diperbarui");
+      } catch (error) {
+        console.warn("Gagal sinkronisasi foto profil ke database:", error);
+        toast.error("Foto profil belum berhasil diperbarui. Silakan coba lagi.");
+      } finally {
+        setAvatarMutating(false);
+        if (fileInputRef.current) fileInputRef.current.value = "";
       }
-
-      toast.success("Foto profil berhasil diperbarui");
     };
     reader.onerror = () => {
       toast.error("Gagal membaca file foto");
@@ -404,24 +427,31 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
   };
 
   const handleAvatarDelete = async () => {
-    if (!profile.id) return;
-    const avatarKey = `sipesa_avatar_${profile.id}`;
-    localStorage.removeItem(avatarKey);
-    setAvatar(null);
-    window.dispatchEvent(new Event("sipesa-avatar-updated"));
+    if (!profile.id || avatarMutating) return;
+    setAvatarMutating(true);
 
     try {
-      await api.updateProfile({
+      const result = await api.updateProfile({
         fullName: profile.fullName,
         username: profile.username,
         email: profile.email,
         avatar: null,
       });
-    } catch (err) {
-      console.warn("Gagal menghapus foto profil di database:", err);
+      if ("error" in result) {
+        toast.error("Foto profil belum berhasil dihapus.");
+        return;
+      }
+      const avatarKey = `sipesa_avatar_${profile.id}`;
+      localStorage.removeItem(avatarKey);
+      setAvatar(null);
+      window.dispatchEvent(new Event("sipesa-avatar-updated"));
+      toast.success("Foto profil berhasil dihapus");
+    } catch (error) {
+      console.warn("Gagal menghapus foto profil di database:", error);
+      toast.error("Foto profil belum berhasil dihapus. Silakan coba lagi.");
+    } finally {
+      setAvatarMutating(false);
     }
-
-    toast.success("Foto profil berhasil dihapus");
   };
 
   if (loading) {
@@ -473,22 +503,26 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
                     ref={fileInputRef}
                     onChange={handleAvatarChange}
                     accept="image/*"
+                    disabled={avatarMutating}
                     className="hidden"
                   />
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => fileInputRef.current?.click()}
+                    disabled={avatarMutating}
                     className="flex items-center gap-1.5"
                   >
                     <Camera className="w-4 h-4" />
-                    Ubah Foto
+                    {avatarMutating ? "Memproses..." : "Ubah Foto"}
                   </Button>
                   {avatar && (
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={handleAvatarDelete}
+                      disabled={avatarMutating}
+                      aria-label="Hapus foto profil"
                       className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-100"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -587,9 +621,9 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
             </div>
 
             <div className="pt-4 border-t border-slate-100 flex justify-end">
-              <Button onClick={handleSaveProfile} disabled={saving} className="bg-primary hover:bg-primary/95 text-white">
+              <Button onClick={handleSaveProfile} disabled={profileSaving} className="bg-primary hover:bg-primary/95 text-white">
                 <Save className="w-4 h-4 mr-2" />
-                {saving ? "Menyimpan..." : "Simpan Profil"}
+                {profileSaving ? "Menyimpan..." : "Simpan Profil"}
               </Button>
             </div>
           </div>
@@ -668,9 +702,9 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
             </div>
 
             <div className="pt-4 border-t border-slate-100 flex justify-end">
-              <Button onClick={handleSaveMessaging} disabled={saving} className="bg-primary hover:bg-primary/95 text-white">
+              <Button onClick={handleSaveMessaging} disabled={messagingSaving} className="bg-primary hover:bg-primary/95 text-white">
                 <Save className="w-4 h-4 mr-2" />
-                Simpan Pengaturan Pengiriman
+                {messagingSaving ? "Menyimpan..." : "Simpan Pengaturan Pengiriman"}
               </Button>
             </div>
           </div>
@@ -680,10 +714,13 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
       {/* Password Change Popup Modal */}
       {showPasswordModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-6 animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-white rounded-2xl shadow-xl flex flex-col overflow-hidden">
+          <div ref={passwordDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="password-dialog-title" className="w-full max-w-md max-h-[calc(100dvh-3rem)] bg-white rounded-2xl shadow-xl flex flex-col overflow-y-auto">
             <div className="flex items-center justify-between px-6 py-4 border-b">
-              <h3 className="font-bold text-slate-800">Ganti Password</h3>
+              <h3 id="password-dialog-title" className="font-bold text-slate-800">Ganti Password</h3>
               <button
+                type="button"
+                aria-label="Tutup dialog ganti password"
+                disabled={passwordSaving}
                 onClick={() => setShowPasswordModal(false)}
                 className="text-slate-400 hover:text-slate-600 transition-colors"
               >
@@ -693,8 +730,9 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
 
             <div className="p-6 space-y-4">
               <div>
-                <Label className="text-slate-700 font-medium">Password Lama</Label>
+                <Label htmlFor="current-password" className="text-slate-700 font-medium">Password Lama</Label>
                 <Input
+                  id="current-password"
                   type="password"
                   className="mt-2"
                   placeholder="Masukkan password lama"
@@ -706,8 +744,9 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
               </div>
 
               <div>
-                <Label className="text-slate-700 font-medium">Password Baru</Label>
+                <Label htmlFor="new-settings-password" className="text-slate-700 font-medium">Password Baru</Label>
                 <Input
+                  id="new-settings-password"
                   type="password"
                   className="mt-2"
                   placeholder="Minimal 8 karakter"
@@ -719,8 +758,9 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
               </div>
 
               <div>
-                <Label className="text-slate-700 font-medium">Konfirmasi Password Baru</Label>
+                <Label htmlFor="confirm-settings-password" className="text-slate-700 font-medium">Konfirmasi Password Baru</Label>
                 <Input
+                  id="confirm-settings-password"
                   type="password"
                   className="mt-2"
                   placeholder="Ketik ulang password baru"
@@ -736,16 +776,16 @@ export function SettingsView({ onUpdateUser }: SettingsViewProps) {
               <Button
                 variant="outline"
                 onClick={() => setShowPasswordModal(false)}
-                disabled={saving}
+                disabled={passwordSaving}
               >
                 Batal
               </Button>
               <Button
                 onClick={handleChangePassword}
-                disabled={saving}
+                disabled={passwordSaving}
                 className="bg-primary hover:bg-primary/95 text-white"
               >
-                Ganti Password
+                {passwordSaving ? "Memperbarui..." : "Ganti Password"}
               </Button>
             </div>
           </div>

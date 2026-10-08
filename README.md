@@ -149,4 +149,4 @@ Pastikan Anda sudah menginstal perangkat lunak berikut di komputer Anda:
 ---
 
 ## 📄 Kebijakan Broadcast & Kepatuhan
-Harap diperhatikan bahwa seluruh penggunaan fitur broadcast WhatsApp pada aplikasi SIPESA wajib mematuhi aturan WABA resmi untuk mencegah pemblokiran nomor oleh Meta. Silakan baca berkas [peraturan.txt](file:///d:/Buildapps/sipesa/peraturan.txt) untuk informasi selengkapnya terkait larangan spamming, hak penerima pesan, dan panduan manajemen database kontak.
+Harap diperhatikan bahwa seluruh penggunaan fitur broadcast WhatsApp pada aplikasi SIPESA wajib mematuhi aturan WABA resmi untuk mencegah pemblokiran nomor oleh Meta, termasuk larangan spamming, penghormatan terhadap hak penerima pesan, dan pengelolaan database kontak yang bertanggung jawab.

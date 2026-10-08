@@ -2,10 +2,47 @@ node_modules/
 dist/
 build/
 catatan/
+supabase/.temp/
+.supabase/
 
 .env
+.env.local
 .env.*
+.env.*.local
 !.env.example
 
 .vercel/
 .DS_Store
+Thumbs.db
+*.log
+coverage/
+*.tsbuildinfo
+
+# Temporary root-level audit/checkpoint artifacts (official migrations live
+# under supabase/migrations/ and are intentionally not ignored).
+/AUDIT_*.md
+/BATCH*_REPORT.md
+/BATCH*_VERIFY.sql
+/BATCH*_PREFLIGHT.sql
+/BATCH*_AUDIT.sql
+/BATCH*_DIAGNOSTIC.sql
+/VERIFICATION_*.md
+/*_POST_MIGRATION_VERIFY.sql
+/*_FINAL_VERIFY.sql
+
+# Local diagnostics/debug helpers. Reusable regression tests in scratch/ are
+# intentionally kept trackable.
+/check-activity.cjs
+/check-db.cjs
+/check2.cjs
+/schema.json
+/test-activity.cjs
+/test-signup3.cjs
+/test-webhook.cjs
+/scratch/check_columns.cjs
+/scratch/check_db.js
+/scratch/fetch_dev_info.js
+/scratch/list_tpls.js
+/scratch/test_tpl.js
+/scratch/test-schema.js
+/utils/supabase/info.tsx

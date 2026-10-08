@@ -24,8 +24,14 @@ import {
   Search,
   Download,
   RefreshCw,
+  Loader2,
 } from "lucide-react";
 import { api, TemplateItem } from "../lib/api";
+import {
+  formatLocalScheduledAt,
+  getLocalCalendarDate,
+  getLocalTimezoneLabel,
+} from "../lib/scheduled-at";
 import { BroadcastProgressModal } from "./BroadcastProgressModal";
 import { AppModal } from "./AppModal";
 import { toast } from "sonner";
@@ -68,6 +74,20 @@ interface BroadcastViewProps {
 
 type HeaderType = "none" | "text" | "image" | "video" | "document" | "location";
 type UploadMethod = "csv" | "sheet" | "manual" | "contacts";
+type ResourceLoadState = "loading" | "loaded" | "error";
+
+const MAX_BROADCAST_RECIPIENTS = 5000;
+const MAX_META_CONTACT_VALIDATION_RECIPIENTS = 500;
+const recipientCountFormatter = new Intl.NumberFormat("id-ID");
+
+function formatRecipientCount(value: number): string {
+  return recipientCountFormatter.format(value);
+}
+
+function recipientLimitExceededMessage(currentCount: number): string {
+  const excess = Math.max(0, currentCount - MAX_BROADCAST_RECIPIENTS);
+  return `Maksimal ${formatRecipientCount(MAX_BROADCAST_RECIPIENTS)} penerima dalam satu broadcast. Saat ini terdapat ${formatRecipientCount(currentCount)} penerima. Kurangi ${formatRecipientCount(excess)} penerima untuk melanjutkan.`;
+}
 
 interface LocalTemplate extends TemplateItem {
   headerType?: HeaderType;
@@ -618,6 +638,8 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   const [scheduleDate, setScheduleDate] = useState("");
   const [scheduleTime, setScheduleTime] = useState("");
   const [loading, setLoading] = useState(false);
+  const [senderLoadState, setSenderLoadState] = useState<ResourceLoadState>("loading");
+  const [templateLoadState, setTemplateLoadState] = useState<ResourceLoadState>("loading");
   const [sending, setSending] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<"idle" | "success" | "error">("idle");
   const [uploadIssues, setUploadIssues] = useState<UploadIssue[]>([]);
@@ -646,14 +668,23 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   const importValidationRequestRef = useRef(0);
 
   const [allOrgContacts, setAllOrgContacts] = useState<any[]>([]);
+  const [orgContactPage, setOrgContactPage] = useState(1);
+  const [orgContactTotalPages, setOrgContactTotalPages] = useState(1);
+  const [orgContactTotal, setOrgContactTotal] = useState(0);
+  const [debouncedContactSearch, setDebouncedContactSearch] = useState("");
+  const [selectedOrgContacts, setSelectedOrgContacts] = useState<Record<string, any>>({});
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
   const [contactLabels, setContactLabels] = useState<Record<string, string>>({});
   const [contactSearchQuery, setContactSearchQuery] = useState("");
 
   const [currentTokens, setCurrentTokens] = useState(0);
+  const [tokenPrice, setTokenPrice] = useState(0);
   const requiredTokens = contacts.length;
   const hasEnoughTokens = currentTokens >= requiredTokens;
+  const isRecipientLimitExceeded = contacts.length > MAX_BROADCAST_RECIPIENTS;
+  const localScheduleMinDate = getLocalCalendarDate();
+  const localTimezoneLabel = getLocalTimezoneLabel();
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [progressModalOpen, setProgressModalOpen] = useState(false);
@@ -710,6 +741,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       hasErrors: formatInvalidCount + waNotFoundCount + duplicateCountVal + dataMissingCount > 0,
     };
   }, [validationDetails]);
+  const pendingImportOverLimit = (pendingImport?.contacts.length ?? 0) > MAX_BROADCAST_RECIPIENTS;
 
   const filteredValidationList = useMemo(() => {
     return validationDetails.filter((item) => {
@@ -755,6 +787,18 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       return;
     }
 
+    // Meta contact verification is an optional enhancement. Keep it bounded so
+    // importing a large campaign never waits for up to 100 sequential network
+    // chunks before the locally validated recipients can be selected.
+    if (contactsToValidate.length > MAX_META_CONTACT_VALIDATION_RECIPIENTS) {
+      setMetaChecked(false);
+      setMetaErrorMsg(
+        `Pemeriksaan WhatsApp massal dibatasi ${formatRecipientCount(MAX_META_CONTACT_VALIDATION_RECIPIENTS)} nomor. Validasi format, data wajib, dan duplikat lokal tetap dilakukan untuk seluruh penerima.`,
+      );
+      setValidationDetails(evaluateContactsValidation(contactsToValidate, selectedTemplate));
+      return;
+    }
+
     const requestId = ++importValidationRequestRef.current;
     setIsValidatingNumbers(true);
     try {
@@ -790,10 +834,10 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
 
         const invalidCount = evaluated.filter((v) => v.status !== "valid").length;
         if (invalidCount === 0) {
-          toast.success(`Semua ${contactsToValidate.length} nomor berhasil divalidasi & terdaftar di WA!`);
+          toast.success(`Semua ${formatRecipientCount(contactsToValidate.length)} nomor berhasil divalidasi & terdaftar di WA!`);
         } else {
           toast.warning(
-            `Validasi selesai: ${evaluated.filter((v) => v.status === "valid").length} valid, ${invalidCount} nomor bermasalah. Klik 'Detail & Filter' untuk melihat.`,
+            `Validasi selesai: ${formatRecipientCount(evaluated.filter((v) => v.status === "valid").length)} valid, ${formatRecipientCount(invalidCount)} nomor bermasalah. Klik 'Detail & Filter' untuk melihat.`,
           );
         }
       }
@@ -874,6 +918,10 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
 
   const commitPendingImport = (selectedContacts: Contact[], message: string) => {
     if (!pendingImport) return;
+    if (selectedContacts.length > MAX_BROADCAST_RECIPIENTS) {
+      toast.error(recipientLimitExceededMessage(selectedContacts.length));
+      return;
+    }
 
     applyContactsResult({
       contacts: selectedContacts,
@@ -893,7 +941,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     if (!pendingImport) return;
     commitPendingImport(
       pendingImport.contacts,
-      `${pendingImport.contacts.length} nomor berhasil diimpor.`,
+      `${formatRecipientCount(pendingImport.contacts.length)} nomor berhasil diimpor.`,
     );
   };
 
@@ -933,7 +981,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     const removedCount = pendingImport.contacts.length - cleanContacts.length;
     commitPendingImport(
       cleanContacts,
-      `${removedCount} nomor bermasalah dihapus. ${cleanContacts.length} nomor berhasil diimpor.`,
+      `${formatRecipientCount(removedCount)} nomor bermasalah dihapus. ${formatRecipientCount(cleanContacts.length)} nomor berhasil diimpor.`,
     );
   };
 
@@ -950,7 +998,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       return;
     }
 
-    commitPendingImport(selectedContacts, `${selectedContacts.length} nomor terpilih berhasil diimpor.`);
+    commitPendingImport(selectedContacts, `${formatRecipientCount(selectedContacts.length)} nomor terpilih berhasil diimpor.`);
   };
 
   const openResultModal = (
@@ -1037,52 +1085,92 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     return body;
   }, [selectedTemplate, contacts]);
 
+  const loadSenders = async () => {
+    setSenderLoadState("loading");
+    try {
+      const result = await api.getNumbers();
+      if (!result.success) {
+        console.error("Failed to load broadcast senders:", "error" in result ? result.error : "Unknown error");
+        setWhatsappNumbers([]);
+        setSelectedNumber("");
+        setSenderLoadState("error");
+        return;
+      }
+
+      setWhatsappNumbers(result.data || []);
+      setSelectedNumber((current) =>
+        current && result.data.some((number: any) => number.id === current)
+          ? current
+          : result.data[0]?.id || "",
+      );
+      setSenderLoadState("loaded");
+    } catch (error) {
+      console.error("Failed to load broadcast senders:", error);
+      setWhatsappNumbers([]);
+      setSelectedNumber("");
+      setSenderLoadState("error");
+    }
+  };
+
+  const loadTemplates = async () => {
+    setTemplateLoadState("loading");
+    try {
+      const result = await api.getBroadcastTemplates();
+      if (!result.success) {
+        console.error("Failed to load broadcast templates:", "error" in result ? result.error : "Unknown error");
+        setTemplates([]);
+        setSelectedTemplateId("");
+        setTemplateLoadState("error");
+        return;
+      }
+
+      const mapped = (result.data || [])
+        .filter((template) => String(template.status || "").toLowerCase() === "approved")
+        .map((template) => {
+          const header = extractHeaderInfo(template.components);
+          return {
+            ...template,
+            headerType: header.type,
+            headerText: header.text || "",
+            footerText: extractFooterText(template.components),
+            buttons: extractButtons(template.components),
+            previewExamples: extractPreviewExamples(template.components),
+          } as LocalTemplate;
+        })
+        .sort(compareTemplates);
+
+      setTemplates(mapped);
+      setSelectedTemplateId((current) =>
+        current && mapped.some((template) => template.id === current)
+          ? current
+          : mapped[0]?.id || "",
+      );
+      setTemplateLoadState("loaded");
+    } catch (error) {
+      console.error("Failed to load broadcast templates:", error);
+      setTemplates([]);
+      setSelectedTemplateId("");
+      setTemplateLoadState("error");
+    }
+  };
+
   const loadInitialData = async () => {
     setLoading(true);
     try {
-      const numbersRes = await api.getNumbers();
-      if (numbersRes.success) {
-        setWhatsappNumbers(numbersRes.data);
-        if (numbersRes.data.length > 0) {
-          setSelectedNumber(numbersRes.data[0].id);
-        }
-      }
+      await Promise.all([loadSenders(), loadTemplates()]);
 
       const billingRes = await api.getBilling();
       if (!("error" in billingRes)) {
         setCurrentTokens(Number(billingRes.data?.currentTokens ?? 0));
+        const canonicalPrice = Number(billingRes.data?.tokenPrice);
+        setTokenPrice(Number.isFinite(canonicalPrice) && canonicalPrice > 0 ? canonicalPrice : 0);
       }
 
-      const templatesRes = await api.getBroadcastTemplates();
-      if (templatesRes.success) {
-        const mapped = (templatesRes.data || [])
-          .filter((t) => {
-            const status = String(t.status || "").toLowerCase();
-            return status === "approved";
-          })
-          .map((tpl) => {
-            const header = extractHeaderInfo(tpl.components);
-            return {
-              ...tpl,
-              headerType: header.type,
-              headerText: header.text || "",
-              footerText: extractFooterText(tpl.components),
-              buttons: extractButtons(tpl.components),
-              previewExamples: extractPreviewExamples(tpl.components),
-            } as LocalTemplate;
-          })
-          .sort(compareTemplates);
-
-        console.log("BROADCAST_VIEW sorted templates:", mapped.map(t => ({ name: t.name, updatedAt: t.updatedAt, createdAt: t.createdAt, metaTemplateId: t.metaTemplateId })));
-        setTemplates(mapped);
-        if (mapped.length > 0) {
-          setSelectedTemplateId(mapped[0].id);
-        }
-      }
-
-      const contactsRes = await api.getOrgContacts();
+      const contactsRes = await api.getOrgContacts({ page: 1, pageSize: 20 });
       if (contactsRes.success) {
-        setAllOrgContacts(contactsRes.data);
+        setAllOrgContacts(contactsRes.data.items);
+        setOrgContactTotal(contactsRes.data.total);
+        setOrgContactTotalPages(contactsRes.data.totalPages);
       }
       try {
         let labelsStr = localStorage.getItem(labelsKey);
@@ -1114,6 +1202,69 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     }
   };
 
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedContactSearch(contactSearchQuery.trim()), 300);
+    return () => window.clearTimeout(timeout);
+  }, [contactSearchQuery]);
+
+  useEffect(() => {
+    if (uploadMethod !== "contacts") return;
+    let active = true;
+    void api.getOrgContacts({ page: orgContactPage, pageSize: 20, search: debouncedContactSearch || undefined }).then((result) => {
+      if (!active || "error" in result) return;
+      setAllOrgContacts(result.data.items);
+      setOrgContactTotal(result.data.total);
+      setOrgContactTotalPages(result.data.totalPages);
+    });
+    return () => { active = false; };
+  }, [uploadMethod, orgContactPage, debouncedContactSearch]);
+
+  useEffect(() => setOrgContactPage(1), [debouncedContactSearch]);
+
+  const selectContactsByLabel = async (labelName: string, checked: boolean) => {
+    if (!checked) {
+      setSelectedLabels((labels) => labels.filter((label) => label !== labelName));
+      setSelectedOrgContacts((selected) => Object.fromEntries(
+        Object.entries(selected).filter(([, contact]: any) => (contact.label || contactLabels[contact.phone]) !== labelName),
+      ));
+      setSelectedContactIds((ids) => ids.filter((id) => {
+        const contact = selectedOrgContacts[id];
+        return !contact || (contact.label || contactLabels[contact.phone]) !== labelName;
+      }));
+      return;
+    }
+
+    const first = await api.getOrgContacts({ page: 1, pageSize: 100, label: labelName });
+    if ("error" in first) {
+      toast.error(first.error);
+      return;
+    }
+    if (first.data.total > MAX_BROADCAST_RECIPIENTS) {
+      toast.error(recipientLimitExceededMessage(first.data.total));
+      return;
+    }
+    const rows = [...first.data.items];
+    for (let page = 2; page <= first.data.totalPages; page += 1) {
+      const next = await api.getOrgContacts({ page, pageSize: 100, label: labelName });
+      if ("error" in next) {
+        toast.error(next.error);
+        return;
+      }
+      rows.push(...next.data.items);
+    }
+    const combinedIds = new Set([...selectedContactIds, ...rows.map((contact) => contact.id)]);
+    if (combinedIds.size > MAX_BROADCAST_RECIPIENTS) {
+      toast.error(recipientLimitExceededMessage(combinedIds.size));
+      return;
+    }
+    setSelectedLabels((labels) => Array.from(new Set([...labels, labelName])));
+    setSelectedContactIds((ids) => Array.from(new Set([...ids, ...rows.map((contact) => contact.id)])));
+    setSelectedOrgContacts((selected) => ({
+      ...selected,
+      ...Object.fromEntries(rows.map((contact) => [contact.id, contact])),
+    }));
+  };
+
   const resetImportedContacts = () => {
     setCsvFile(null);
     setContacts([]);
@@ -1124,10 +1275,15 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   };
 
   const applyContactsResult = (result: { contacts: Contact[]; issues: UploadIssue[]; duplicateCount: number }) => {
+    if (result.contacts.length > MAX_BROADCAST_RECIPIENTS) {
+      toast.error(`${recipientLimitExceededMessage(result.contacts.length)} Data tidak dipotong otomatis.`);
+      return false;
+    }
     setContacts(result.contacts);
     setUploadIssues(result.issues);
     setDuplicateCount(result.duplicateCount);
     setUploadStatus(result.contacts.length > 0 ? "success" : "error");
+    return true;
   };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1213,6 +1369,10 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   };
 
   const addManualRecipient = () => {
+    if (manualRecipients.length >= MAX_BROADCAST_RECIPIENTS) {
+      toast.error(recipientLimitExceededMessage(manualRecipients.length + 1));
+      return;
+    }
     setManualRecipients((prev) => [
       ...prev,
       {
@@ -1287,6 +1447,15 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       });
     });
 
+    if (nextContacts.length > MAX_BROADCAST_RECIPIENTS) {
+      openResultModal(
+        "error",
+        "Terlalu banyak penerima",
+        `${recipientLimitExceededMessage(nextContacts.length)} Data tidak dipotong otomatis.`,
+      );
+      return;
+    }
+
     setCsvFile(null);
     handleImportedContacts(nextContacts, issues, duplicates);
   };
@@ -1337,14 +1506,23 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     window.URL.revokeObjectURL(url);
   };
 
-  const estimatedCost = contacts.length * 1500;
+  const estimatedCost = contacts.length * tokenPrice;
   const scheduleInfoText = scheduleEnabled
-    ? `${scheduleDate} ${scheduleTime}`
+    ? `${scheduleDate} ${scheduleTime} — ${localTimezoneLabel}`
     : "Kirim sekarang";
 
   const handleSendBroadcast = async () => {
     if (!selectedNumber || !selectedTemplate || contacts.length === 0) {
       openResultModal("error", "Data belum lengkap", "Pastikan nomor WA, template, dan kontak sudah dipilih.");
+      return;
+    }
+
+    if (contacts.length > MAX_BROADCAST_RECIPIENTS) {
+      openResultModal(
+        "error",
+        "Terlalu banyak penerima",
+        recipientLimitExceededMessage(contacts.length),
+      );
       return;
     }
 
@@ -1367,13 +1545,13 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         return;
       }
 
-      const scheduledDate = new Date(`${scheduleDate}T${scheduleTime}:00`);
-      if (Number.isNaN(scheduledDate.getTime())) {
+      const scheduledAt = formatLocalScheduledAt(scheduleDate, scheduleTime);
+      if (!scheduledAt) {
         openResultModal("error", "Format jadwal tidak valid", "Periksa kembali tanggal dan waktu pengiriman.");
         return;
       }
 
-      if (scheduledDate.getTime() <= Date.now()) {
+      if (Date.parse(scheduledAt) <= Date.now()) {
         openResultModal("error", "Waktu jadwal tidak valid", "Waktu jadwal harus lebih besar dari waktu sekarang.");
         return;
       }
@@ -1384,15 +1562,28 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
 
   const confirmSendBroadcast = async () => {
     if (!selectedTemplate) return;
+    if (contacts.length > MAX_BROADCAST_RECIPIENTS) {
+      setConfirmOpen(false);
+      openResultModal(
+        "error",
+        "Terlalu banyak penerima",
+        recipientLimitExceededMessage(contacts.length),
+      );
+      return;
+    }
 
     setConfirmOpen(false);
     setSending(true);
 
     try {
-      const scheduledAt =
-        scheduleEnabled && scheduleDate && scheduleTime
-          ? `${scheduleDate}T${scheduleTime}:00`
-          : null;
+      let scheduledAt: string | null = null;
+      if (scheduleEnabled && scheduleDate && scheduleTime) {
+        scheduledAt = formatLocalScheduledAt(scheduleDate, scheduleTime);
+        if (!scheduledAt || Date.parse(scheduledAt) <= Date.now()) {
+          openResultModal("error", "Jadwal tidak valid", "Waktu broadcast harus berada di masa depan.");
+          return;
+        }
+      }
 
       const result = await api.sendBroadcastWithTemplate({
         numberId: selectedNumber,
@@ -1406,62 +1597,6 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         return;
       }
 
-      // Automatically save and label contacts asynchronously
-      (async () => {
-        try {
-          const orgContactsRes = await api.getOrgContacts();
-          const orgContacts = orgContactsRes.success && Array.isArray(orgContactsRes.data) ? orgContactsRes.data : [];
-          const existingContactsMap = new Map<string, { id: string; name: string }>();
-          orgContacts.forEach((c: any) => {
-            if (c.phone) {
-              const norm = String(c.phone).replace(/\D/g, "");
-              existingContactsMap.set(norm, { id: c.id, name: c.name });
-            }
-          });
-
-          let savedLabels: Record<string, string> = {};
-          try {
-            savedLabels = JSON.parse(localStorage.getItem(labelsKey) || "{}");
-          } catch (e) {
-            console.error(e);
-          }
-
-          for (const c of contacts) {
-            const normPhone = String(c.phone).replace(/\D/g, "");
-            const existing = existingContactsMap.get(normPhone);
-            let savedPhone = c.phone;
-
-            if (existing) {
-              if (existing.name !== c.name) {
-                const res = await api.updateContact(existing.id, { name: c.name || existing.name, phone: c.phone });
-                if (res.success && res.data?.phone) {
-                  savedPhone = res.data.phone;
-                }
-              } else {
-                const orig = orgContacts.find((oc: any) => String(oc.phone).replace(/\D/g, "") === normPhone);
-                if (orig?.phone) {
-                  savedPhone = orig.phone;
-                }
-              }
-            } else {
-              const res = await api.createContact({ name: c.name || c.phone, phone: c.phone });
-              if (res.success && res.data?.phone) {
-                savedPhone = res.data.phone;
-              }
-            }
-            const phoneWithPlus = savedPhone.startsWith("+") ? savedPhone : `+${savedPhone}`;
-            savedLabels[phoneWithPlus] = selectedTemplate.name;
-          }
-
-          localStorage.setItem(labelsKey, JSON.stringify(savedLabels));
-          api.updateContactLabels(savedLabels).catch((e) =>
-            console.warn("Gagal sinkronisasi label ke database:", e)
-          );
-        } catch (err) {
-          console.error("Failed to automatically save contacts during broadcast:", err);
-        }
-      })();
-
       const newBroadcastId = result.data?.id || null;
       setActiveBroadcastId(newBroadcastId);
 
@@ -1469,7 +1604,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         openResultModal(
           "success",
           "Broadcast dijadwalkan",
-          `Broadcast berhasil dijadwalkan untuk ${contacts.length} kontak.`,
+          `Broadcast berhasil dijadwalkan untuk ${formatRecipientCount(contacts.length)} kontak.`,
         );
       } else {
         if (newBroadcastId) {
@@ -1494,6 +1629,8 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       const billingRes = await api.getBilling();
       if (!("error" in billingRes)) {
         setCurrentTokens(Number(billingRes.data?.currentTokens ?? 0));
+        const canonicalPrice = Number(billingRes.data?.tokenPrice);
+        setTokenPrice(Number.isFinite(canonicalPrice) && canonicalPrice > 0 ? canonicalPrice : 0);
       }
 
       onBroadcastSent?.();
@@ -1504,10 +1641,6 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       setSending(false);
     }
   };
-
-  if (loading && templates.length === 0 && whatsappNumbers.length === 0) {
-    return <div className="p-8">Memuat...</div>;
-  }
 
   return (
     <div className="w-full p-6 md:p-8 bg-white">
@@ -1531,14 +1664,31 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
               <div className="w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center font-medium">1</div>
               <h3>Pilih Nomor Pengirim</h3>
             </div>
-            <select className="w-full p-3 border rounded-lg" value={selectedNumber} onChange={(e) => setSelectedNumber(e.target.value)}>
-              <option value="">Pilih nomor WhatsApp</option>
-              {whatsappNumbers.map((num) => (
-                <option key={num.id} value={num.id}>
-                  {num.name} - {num.number}
-                </option>
-              ))}
-            </select>
+            {senderLoadState === "loading" ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> Memuat nomor pengirim…
+              </div>
+            ) : senderLoadState === "error" ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 space-y-3">
+                <p>Nomor pengirim gagal dimuat. Periksa koneksi lalu coba lagi.</p>
+                <Button type="button" variant="outline" size="sm" onClick={() => void loadSenders()}>
+                  <RefreshCw className="w-4 h-4 mr-2" /> Coba Lagi
+                </Button>
+              </div>
+            ) : whatsappNumbers.length === 0 ? (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                Belum ada nomor WhatsApp aktif. Tambahkan atau aktifkan nomor sebelum membuat broadcast.
+              </div>
+            ) : (
+              <select className="w-full p-3 border rounded-lg" value={selectedNumber} onChange={(e) => setSelectedNumber(e.target.value)}>
+                <option value="">Pilih nomor WhatsApp</option>
+                {whatsappNumbers.map((num) => (
+                  <option key={num.id} value={num.id}>
+                    {num.name} - {num.number}
+                  </option>
+                ))}
+              </select>
+            )}
           </Card>
 
           <Card className="p-6">
@@ -1547,18 +1697,35 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
               <h3>Pilih Template Pesan</h3>
             </div>
 
-            <select
-              className="w-full p-3 border rounded-lg bg-white"
-              value={selectedTemplateId}
-              onChange={(e) => setSelectedTemplateId(e.target.value)}
-            >
-              <option value="">Pilih template</option>
-              {templates.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.name}
-                </option>
-              ))}
-            </select>
+            {templateLoadState === "loading" ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> Memuat template…
+              </div>
+            ) : templateLoadState === "error" ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 space-y-3">
+                <p>Template broadcast gagal dimuat. Periksa koneksi lalu coba lagi.</p>
+                <Button type="button" variant="outline" size="sm" onClick={() => void loadTemplates()}>
+                  <RefreshCw className="w-4 h-4 mr-2" /> Coba Lagi
+                </Button>
+              </div>
+            ) : templates.length === 0 ? (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                Belum ada template berstatus approved yang dapat dipakai untuk broadcast.
+              </div>
+            ) : (
+              <select
+                className="w-full p-3 border rounded-lg bg-white"
+                value={selectedTemplateId}
+                onChange={(e) => setSelectedTemplateId(e.target.value)}
+              >
+                <option value="">Pilih template</option>
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            )}
           </Card>
 
           <Card className="p-6">
@@ -1590,8 +1757,8 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                       <div className="min-w-0">
                         <div className="font-medium text-sm truncate">{csvFile.name}</div>
                         <div className="text-xs text-slate-500 mt-1">
-                          {contacts.length} kontak valid
-                          {duplicateCount > 0 ? ` • ${duplicateCount} duplikat dilewati` : ""}
+                          {formatRecipientCount(contacts.length)} baris penerima
+                          {duplicateCount > 0 ? ` • ${formatRecipientCount(duplicateCount)} duplikat dilewati` : ""}
                           {uploadIssues.length > 0 ? ` • ${uploadIssues.length} baris bermasalah` : ""}
                         </div>
                       </div>
@@ -1749,7 +1916,12 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                 ))}
 
                 <div className="flex flex-col sm:flex-row gap-3">
-                  <Button variant="outline" onClick={addManualRecipient} className="w-full sm:flex-1">
+                  <Button
+                    variant="outline"
+                    onClick={addManualRecipient}
+                    disabled={manualRecipients.length >= MAX_BROADCAST_RECIPIENTS}
+                    className="w-full sm:flex-1"
+                  >
                     <Plus className="w-4 h-4 mr-2" />
                     Tambah Penerima
                   </Button>
@@ -1757,6 +1929,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                     Gunakan Data Manual
                   </Button>
                 </div>
+                <p className="text-xs text-slate-500">
+                  {formatRecipientCount(manualRecipients.length)} baris input • maksimal {formatRecipientCount(MAX_BROADCAST_RECIPIENTS)} penerima per broadcast
+                </p>
               </div>
             )}
 
@@ -1771,7 +1946,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                     ) : (
                       <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                         {uniqueLabels.map((labelName) => {
-                          const count = allOrgContacts.filter(c => contactLabels[c.phone] === labelName).length;
+                          const count = Object.values(contactLabels).filter((label) => label === labelName).length;
                           const isLabelChecked = selectedLabels.includes(labelName);
 
                           return (
@@ -1779,29 +1954,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                               <input
                                 type="checkbox"
                                 checked={isLabelChecked}
-                                onChange={(e) => {
-                                  let nextLabels = [...selectedLabels];
-                                  let nextContactIds = [...selectedContactIds];
-
-                                  const labelContacts = allOrgContacts.filter(c => contactLabels[c.phone] === labelName);
-
-                                  if (e.target.checked) {
-                                    nextLabels.push(labelName);
-                                    labelContacts.forEach(c => {
-                                      if (!nextContactIds.includes(c.id)) nextContactIds.push(c.id);
-                                    });
-                                  } else {
-                                    nextLabels = nextLabels.filter(l => l !== labelName);
-                                    labelContacts.forEach(c => {
-                                      const hasOtherCheckedLabel = nextLabels.some(l => contactLabels[c.phone] === l);
-                                      if (!hasOtherCheckedLabel) {
-                                        nextContactIds = nextContactIds.filter(id => id !== c.id);
-                                      }
-                                    });
-                                  }
-                                  setSelectedLabels(nextLabels);
-                                  setSelectedContactIds(nextContactIds);
-                                }}
+                                onChange={(e) => void selectContactsByLabel(labelName, e.target.checked)}
                                 className="rounded border-slate-300 text-primary focus:ring-primary w-4 h-4 cursor-pointer"
                               />
                               <span className="flex-1 truncate">{labelName}</span>
@@ -1826,21 +1979,26 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                       <p className="text-xs text-slate-400 italic py-2">Belum ada kontak disimpan</p>
                     ) : (
                       <div className="space-y-2 max-h-40 overflow-y-auto pr-1 flex-1">
-                        {allOrgContacts
-                          .filter(c => {
-                            const q = contactSearchQuery.toLowerCase();
-                            return c.name.toLowerCase().includes(q) || c.phone.includes(q);
-                          })
-                          .map((c) => (
+                        {allOrgContacts.map((c) => (
                             <label key={c.id} className="flex items-center gap-2.5 p-2 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors text-xs font-semibold text-slate-700">
                               <input
                                 type="checkbox"
                                 checked={selectedContactIds.includes(c.id)}
                                 onChange={(e) => {
                                   if (e.target.checked) {
+                                    if (selectedContactIds.length >= MAX_BROADCAST_RECIPIENTS) {
+                                      toast.error(recipientLimitExceededMessage(selectedContactIds.length + 1));
+                                      return;
+                                    }
                                     setSelectedContactIds([...selectedContactIds, c.id]);
+                                    setSelectedOrgContacts((selected) => ({ ...selected, [c.id]: c }));
                                   } else {
                                     setSelectedContactIds(selectedContactIds.filter(id => id !== c.id));
+                                    setSelectedOrgContacts((selected) => {
+                                      const next = { ...selected };
+                                      delete next[c.id];
+                                      return next;
+                                    });
                                     const cLabel = contactLabels[c.phone];
                                     if (cLabel) {
                                       setSelectedLabels(prev => prev.filter(l => l !== cLabel));
@@ -1853,24 +2011,36 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                                 <p className="truncate">{c.name}</p>
                                 <p className="text-xs text-slate-400 font-medium">{c.phone.startsWith("+") ? c.phone : `+${c.phone}`}</p>
                               </div>
-                              {contactLabels[c.phone] && (
-                                <span className="text-xs font-bold text-primary bg-primary/10 border border-primary/20 px-1.5 py-0.5 rounded-full">{contactLabels[c.phone]}</span>
+                              {(c.label || contactLabels[c.phone]) && (
+                                <span className="text-xs font-bold text-primary bg-primary/10 border border-primary/20 px-1.5 py-0.5 rounded-full">{c.label || contactLabels[c.phone]}</span>
                               )}
                             </label>
                           ))}
                       </div>
                     )}
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1">
+                      <span>{formatRecipientCount(orgContactTotal)} kontak</span>
+                      <div className="flex items-center gap-2">
+                        <button type="button" disabled={orgContactPage <= 1} onClick={() => setOrgContactPage((page) => Math.max(1, page - 1))} className="disabled:opacity-30">Sebelumnya</button>
+                        <span>{orgContactPage}/{orgContactTotalPages}</span>
+                        <button type="button" disabled={orgContactPage >= orgContactTotalPages} onClick={() => setOrgContactPage((page) => Math.min(orgContactTotalPages, page + 1))} className="disabled:opacity-30">Berikutnya</button>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-2 border-t border-slate-100">
                   <span className="text-xs font-bold text-slate-600">
-                    {selectedContactIds.length} kontak dipilih
+                    {formatRecipientCount(selectedContactIds.length)} kontak dipilih
                   </span>
                   <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                     <Button
                       onClick={() => {
-                        const selectedContacts = allOrgContacts.filter(c => selectedContactIds.includes(c.id));
+                        if (selectedContactIds.length > MAX_BROADCAST_RECIPIENTS) {
+                          toast.error(recipientLimitExceededMessage(selectedContactIds.length));
+                          return;
+                        }
+                        const selectedContacts = selectedContactIds.map((id) => selectedOrgContacts[id]).filter(Boolean);
                         const mapped = selectedContacts.map((c, idx) => ({
                           name: c.name,
                           phone: c.phone,
@@ -1892,6 +2062,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                       onClick={() => {
                         setSelectedContactIds([]);
                         setSelectedLabels([]);
+                        setSelectedOrgContacts({});
                       }}
                       className="border-slate-200 text-slate-500 hover:bg-slate-50 w-full sm:w-auto"
                     >
@@ -1911,8 +2082,12 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                   </div>
                   <div>
                     <h4 className="font-bold text-slate-900 text-sm">
-                      {contacts.length} nomor siap di broadcast
+                    {formatRecipientCount(contacts.length)} nomor siap di broadcast
                     </h4>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Valid: {formatRecipientCount(validationSummary.validCount)} • Ditolak/bermasalah: {formatRecipientCount(validationSummary.total - validationSummary.validCount)}
+                      {duplicateCount > 0 ? ` • Duplikat terdeteksi: ${formatRecipientCount(duplicateCount)}` : ""}
+                    </p>
                   </div>
                 </div>
 
@@ -1973,7 +2148,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                     type="date"
                     value={scheduleDate}
                     onChange={(e) => setScheduleDate(e.target.value)}
-                    min={new Date().toISOString().split("T")[0]}
+                    min={localScheduleMinDate}
                     className="mt-2"
                   />
                 </div>
@@ -1981,6 +2156,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                   <Label>Waktu</Label>
                   <Input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="mt-2" />
                 </div>
+                <p className="col-span-2 text-xs text-slate-500">
+                  Jadwal menggunakan waktu lokal perangkat: {localTimezoneLabel}. Waktu pilihan tidak dikonversi diam-diam.
+                </p>
               </div>
             )}
           </Card>
@@ -1990,7 +2168,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
               <div>
                 <h3 className="text-white mb-2">Siap Kirim Broadcast</h3>
                 <p className="text-sm opacity-90">
-                  {contacts.length} penerima • butuh {requiredTokens} token • saldo {currentTokens} token
+                  {formatRecipientCount(contacts.length)} penerima • butuh {formatRecipientCount(requiredTokens)} token • saldo {formatRecipientCount(currentTokens)} token
                 </p>
 
                 {!hasEnoughTokens && contacts.length > 0 && (
@@ -2004,9 +2182,13 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                 onClick={handleSendBroadcast}
                 disabled={
                   sending ||
+                  senderLoadState !== "loaded" ||
+                  templateLoadState !== "loaded" ||
                   !selectedNumber ||
                   !selectedTemplate ||
                   contacts.length === 0 ||
+                  isRecipientLimitExceeded ||
+                  tokenPrice <= 0 ||
                   !hasEnoughTokens
                 }
                 className="bg-white text-primary hover:bg-accent transition-colors"
@@ -2067,8 +2249,18 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
             <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={sending}>
               Batal
             </Button>
-            <Button onClick={confirmSendBroadcast} disabled={sending || !hasEnoughTokens}>
-              {sending ? "Memproses..." : "Ya, Kirim Broadcast"}
+            <Button
+              onClick={confirmSendBroadcast}
+              disabled={
+                sending ||
+                senderLoadState !== "loaded" ||
+                templateLoadState !== "loaded" ||
+                isRecipientLimitExceeded ||
+                tokenPrice <= 0 ||
+                !hasEnoughTokens
+              }
+            >
+              {sending ? "Memproses..." : scheduleEnabled ? "Ya, Jadwalkan" : "Ya, Kirim Sekarang"}
             </Button>
           </div>
         }
@@ -2083,7 +2275,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
 
               <div className="flex justify-between gap-4">
                 <span className="text-slate-500">Penerima</span>
-                <span className="font-medium">{contacts.length} kontak</span>
+                <span className="font-medium">{formatRecipientCount(contacts.length)} kontak</span>
               </div>
 
               <div className="flex justify-between gap-4">
@@ -2094,7 +2286,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
               <div className="flex justify-between gap-4">
                 <span className="text-slate-500">Estimasi biaya</span>
                 <span className="font-medium">
-                  Rp {estimatedCost.toLocaleString("id-ID")}
+                  {tokenPrice > 0
+                    ? `Rp ${estimatedCost.toLocaleString("id-ID")}`
+                    : "Harga token belum tersedia"}
                 </span>
               </div>
 
@@ -2107,6 +2301,11 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
             {!hasEnoughTokens && contacts.length > 0 && (
               <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
                 Token tidak cukup. Tambah {requiredTokens - currentTokens} token lagi.
+              </div>
+            )}
+            {tokenPrice <= 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+                Harga token belum tersedia. Muat ulang halaman atau hubungi admin.
               </div>
             )}
           </div>
@@ -2159,7 +2358,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
             <span>Validasi Nomor Penerima</span>
           </div>
         }
-        description={`${validationSummary.total} nomor ditemukan dari data yang akan diimpor.`}
+        description={`${formatRecipientCount(validationSummary.total)} nomor ditemukan dari data yang akan diimpor.`}
         onClose={closePendingImport}
         maxWidthClassName="max-w-xl"
         footer={
@@ -2176,13 +2375,18 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                 Hapus Nomor
               </Button>
             )}
-            <Button type="button" onClick={handleImportAll} disabled={isValidatingNumbers}>
+            <Button type="button" onClick={handleImportAll} disabled={isValidatingNumbers || pendingImportOverLimit}>
               Import Semua
             </Button>
           </div>
         }
       >
         <div className="space-y-4">
+          {pendingImportOverLimit && (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              {recipientLimitExceededMessage(pendingImport?.contacts.length ?? 0)} Data tidak akan dipotong otomatis.
+            </div>
+          )}
           <div className={`rounded-xl border p-4 ${validationSummary.hasErrors ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}>
             <div className="flex items-start gap-3">
               {validationSummary.hasErrors ? (
@@ -2193,14 +2397,14 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
               <div className="flex-1 min-w-0">
                 <p className="font-bold text-slate-900">
                   {validationSummary.hasErrors
-                    ? `${validationSummary.total - validationSummary.validCount} nomor perlu diperiksa`
-                    : `Semua ${validationSummary.total} nomor lolos validasi`}
+                    ? `${formatRecipientCount(validationSummary.total - validationSummary.validCount)} nomor perlu diperiksa`
+                    : `Semua ${formatRecipientCount(validationSummary.total)} nomor lolos validasi`}
                 </p>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <span className="rounded-lg bg-white/70 px-3 py-2 text-emerald-700">Valid: {validationSummary.validCount}</span>
-                  <span className="rounded-lg bg-white/70 px-3 py-2 text-amber-700">Duplikat: {validationSummary.duplicateCount}</span>
-                  <span className="rounded-lg bg-white/70 px-3 py-2 text-red-700">Tidak valid: {validationSummary.formatInvalidCount + validationSummary.dataMissingCount}</span>
-                  <span className="rounded-lg bg-white/70 px-3 py-2 text-orange-700">Bukan WhatsApp: {validationSummary.waNotFoundCount}</span>
+                  <span className="rounded-lg bg-white/70 px-3 py-2 text-emerald-700">Valid: {formatRecipientCount(validationSummary.validCount)}</span>
+                  <span className="rounded-lg bg-white/70 px-3 py-2 text-amber-700">Duplikat: {formatRecipientCount(validationSummary.duplicateCount)}</span>
+                  <span className="rounded-lg bg-white/70 px-3 py-2 text-red-700">Tidak valid: {formatRecipientCount(validationSummary.formatInvalidCount + validationSummary.dataMissingCount)}</span>
+                  <span className="rounded-lg bg-white/70 px-3 py-2 text-orange-700">Bukan WhatsApp: {formatRecipientCount(validationSummary.waNotFoundCount)}</span>
                 </div>
               </div>
             </div>
@@ -2250,8 +2454,18 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         maxWidthClassName="max-w-5xl"
         footer={
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 w-full">
-            <span className="text-sm text-slate-600">{selectedValidationRows.length} nomor dipilih</span>
-            <Button type="button" onClick={handleImportSelected} disabled={isValidatingNumbers || selectedValidationRows.length === 0}>
+            <span className={selectedValidationRows.length > MAX_BROADCAST_RECIPIENTS ? "text-sm text-red-700" : "text-sm text-slate-600"}>
+              {formatRecipientCount(selectedValidationRows.length)} nomor dipilih • maksimal {formatRecipientCount(MAX_BROADCAST_RECIPIENTS)}
+            </span>
+            <Button
+              type="button"
+              onClick={handleImportSelected}
+              disabled={
+                isValidatingNumbers ||
+                selectedValidationRows.length === 0 ||
+                selectedValidationRows.length > MAX_BROADCAST_RECIPIENTS
+              }
+            >
               Import
             </Button>
           </div>
@@ -2283,7 +2497,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                   onClick={() => setValidationFilterTab(value)}
                   className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors ${validationFilterTab === value ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
                 >
-                  {label} ({count})
+                  {label} ({formatRecipientCount(count)})
                 </button>
               ))}
             </div>
@@ -2297,7 +2511,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
               disabled={filteredValidationList.length === 0}
               className="rounded border-slate-300 text-primary focus:ring-primary"
             />
-            Pilih semua hasil filter ({filteredValidationList.length})
+            Pilih semua hasil filter ({formatRecipientCount(filteredValidationList.length)})
           </label>
 
           <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[420px] overflow-x-auto overflow-y-auto">
@@ -2371,18 +2585,12 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         open={progressModalOpen}
         broadcastId={activeBroadcastId}
         onClose={() => setProgressModalOpen(false)}
-        onCancelled={() => {
-          setProgressModalOpen(false);
-          loadInitialData();
-          onBroadcastSent?.();
-          resetImportedContacts();
-        }}
         onComplete={(bcId) => {
           setProgressModalOpen(false);
           openResultModal(
             "success",
             "Broadcast Selesai",
-            "Semua pesan telah selesai diteruskan ke Meta. Status Delivered dan Read akan diperbarui hanya setelah webhook resmi Meta diterima.",
+            "Semua pesan telah selesai diteruskan ke Meta. Status Diterima dan Dibaca akan diperbarui hanya setelah webhook resmi Meta diterima.",
             bcId,
           );
           resetImportedContacts();

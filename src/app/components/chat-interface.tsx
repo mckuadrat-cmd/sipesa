@@ -6,7 +6,11 @@ import { AppModal } from "./AppModal";
 
 import { ArrowLeft, Send, Search, Phone, Smile, RotateCw, CheckCheck, Trash2, Square, CheckSquare, Edit, X, Lock, FileText, Sparkles, Clock, AlertTriangle, ChevronDown, Download } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "../lib/api";
+import { api, type MessageCursor } from "../lib/api";
+import { getAuthToken } from "../lib/apiClient";
+import { supabase } from "../lib/supabaseClient";
+import { useVisibilityRefresh } from "../hooks/use-visibility-refresh";
+import { useDialogFocus } from "../hooks/use-dialog-focus";
 
 function SafeImage({
   src,
@@ -38,6 +42,101 @@ function SafeImage({
   );
 }
 
+function useSecureMediaUrl(mediaId: string, numberId: string, retryNonce = 0) {
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+    setUrl("");
+    setError(false);
+
+    api.getMediaObjectUrl(mediaId, numberId).then((result) => {
+      if (!active) {
+        if (result.success) URL.revokeObjectURL(result.data);
+        return;
+      }
+      if (!result.success) {
+        setError(true);
+        return;
+      }
+      objectUrl = result.data;
+      setUrl(objectUrl);
+    });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [mediaId, numberId, retryNonce]);
+
+  return { url, error };
+}
+
+function SecureMediaImage({
+  mediaId,
+  numberId,
+  alt,
+  className,
+  fallbackText,
+}: {
+  mediaId: string;
+  numberId: string;
+  alt: string;
+  className?: string;
+  fallbackText: string;
+}) {
+  const [retryNonce, setRetryNonce] = useState(0);
+  const { url, error } = useSecureMediaUrl(mediaId, numberId, retryNonce);
+  if (error) return (
+    <span className="inline-flex flex-col items-start gap-1 text-xs text-slate-500" role="status">
+      <span>{fallbackText}</span>
+      <button type="button" className="font-semibold underline" onClick={() => setRetryNonce((value) => value + 1)}>Coba lagi</button>
+    </span>
+  );
+  if (!url) return <span className="text-slate-500 italic text-xs" role="status">Memuat media…</span>;
+
+  return (
+    <button type="button" className="block max-w-full text-left" aria-label={`Buka ${alt}`} onClick={() => window.open(url, "_blank", "noopener,noreferrer")}>
+      <SafeImage src={url} alt={alt} className={className} fallbackText={fallbackText} />
+    </button>
+  );
+}
+
+function SecureDocumentLink({
+  mediaId,
+  numberId,
+  fileName,
+}: {
+  mediaId: string;
+  numberId: string;
+  fileName: string;
+}) {
+  const [retryNonce, setRetryNonce] = useState(0);
+  const { url, error } = useSecureMediaUrl(mediaId, numberId, retryNonce);
+  if (error) return (
+    <button type="button" className="text-xs font-semibold text-red-600 underline" onClick={() => setRetryNonce((value) => value + 1)}>
+      Coba muat dokumen lagi
+    </button>
+  );
+  if (!url) return <span className="text-xs text-slate-500" role="status">Memuat dokumen…</span>;
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      download={fileName}
+      aria-label={`Buka atau unduh dokumen ${fileName}`}
+      className="w-9 h-9 rounded-full bg-white hover:bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-600 transition-colors shrink-0"
+      title="Buka atau unduh dokumen"
+    >
+      <Download className="w-4 h-4" />
+    </a>
+  );
+}
+
 interface Message {
   id: string;
   content: string;
@@ -46,6 +145,102 @@ interface Message {
   contactName?: string;
   messageType?: string;
   payload?: any;
+  status?: string;
+}
+
+const MESSAGE_STATUS_RANK: Record<string, number> = {
+  pending: 0,
+  queued: 0,
+  processing: 10,
+  accepted: 20,
+  sent: 20,
+  delivered: 30,
+  read: 40,
+  failed: -1,
+};
+
+function resolveMessageStatus(existingStatus?: string, incomingStatus?: string) {
+  const existing = String(existingStatus || "").toLowerCase();
+  const incoming = String(incomingStatus || "").toLowerCase();
+  if (!incoming) return existingStatus;
+  if (!existing) return incomingStatus;
+  if (existing === "failed") return existingStatus;
+  if (incoming === "failed") {
+    const existingRank = MESSAGE_STATUS_RANK[existing] ?? 0;
+    return existingRank < MESSAGE_STATUS_RANK.delivered ? incomingStatus : existingStatus;
+  }
+  const existingRank = MESSAGE_STATUS_RANK[existing] ?? 0;
+  const incomingRank = MESSAGE_STATUS_RANK[incoming] ?? 0;
+  return incomingRank >= existingRank ? incomingStatus : existingStatus;
+}
+
+function compareMessages(a: Message, b: Message) {
+  const byTime = new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+  return byTime || a.id.localeCompare(b.id);
+}
+
+function mergeMessages(current: Message[], incoming: Message[]): Message[] {
+  const byId = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) {
+    const existing = byId.get(message.id);
+    if (!existing) {
+      byId.set(message.id, message);
+      continue;
+    }
+    byId.set(message.id, {
+      ...existing,
+      ...message,
+      status: resolveMessageStatus(existing.status, message.status),
+    });
+  }
+  return [...byId.values()].sort(compareMessages);
+}
+
+function MessageStatus({ status }: { status?: string }) {
+  const normalized = String(status || "pending").toLowerCase();
+  const presentation = normalized === "read"
+    ? { label: "Dibaca", icon: CheckCheck, className: "text-blue-600" }
+    : normalized === "delivered"
+      ? { label: "Diterima", icon: CheckCheck, className: "text-emerald-600" }
+      : normalized === "sent" || normalized === "accepted"
+        ? { label: "Terkirim", icon: CheckCheck, className: "text-slate-600" }
+        : normalized === "failed"
+          ? { label: "Gagal", icon: AlertTriangle, className: "text-red-600" }
+          : { label: "Mengirim", icon: Clock, className: "text-slate-500" };
+  const StatusIcon = presentation.icon;
+  return (
+    <span className={`inline-flex items-center gap-1 ${presentation.className}`} aria-label={`Status pesan: ${presentation.label}`}>
+      <StatusIcon className="h-3 w-3" aria-hidden="true" />
+      {presentation.label}
+    </span>
+  );
+}
+
+function cursorFromMessage(message?: Message): MessageCursor | null {
+  return message ? { createdAt: message.timestamp, id: message.id } : null;
+}
+
+function isCursorAfter(candidate: MessageCursor, current: MessageCursor | null) {
+  if (!current) return true;
+  const timeDifference = new Date(candidate.createdAt).getTime() - new Date(current.createdAt).getTime();
+  return timeDifference > 0 || (timeDifference === 0 && candidate.id > current.id);
+}
+
+function mapRealtimeMessage(row: any): Message {
+  return {
+    id: String(row.id),
+    content: String(row.text_body ?? ""),
+    sender: row.direction === "out" ? "user" : "contact",
+    timestamp: String(row.created_at),
+    status: row.status ? String(row.status) : undefined,
+    messageType: row.message_type || "text",
+    payload: row.payload ?? null,
+  };
+}
+
+function logRealtimeDiagnostic(event: string, context: Record<string, unknown> = {}) {
+  if (!import.meta.env.DEV) return;
+  console.debug("[CHAT_REALTIME]", event, context);
 }
 
 interface Contact {
@@ -64,6 +259,7 @@ interface ChatInterfaceProps {
   numberId: string;
   numberName: string;
   onBack: () => void;
+  onViewTemplates?: () => void;
 }
 
 const EMOJI_CATEGORIES = [
@@ -180,16 +376,21 @@ function getInitials(name: string) {
   return cleanName[0].toUpperCase();
 }
 
-export function ChatInterface({ numberId, numberName, onBack }: ChatInterfaceProps) {
+export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }: ChatInterfaceProps) {
   const [selectedContact, setSelectedContact] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
+  const [realtimeState, setRealtimeState] = useState("CONNECTING");
   const [isEditMode, setIsEditMode] = useState(false);
   const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set());
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [conversationState, setConversationState] = useState({ loading: false, hasData: false, error: false });
+  const [contactsState, setContactsState] = useState({ loading: true, hasData: false, error: false });
   const [sending, setSending] = useState(false);
   const [tokenBalance, setTokenBalance] = useState(0);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -197,6 +398,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   // 24-Hour CS Window & Template Selector States
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
+  const [templateLoadState, setTemplateLoadState] = useState<"idle" | "loading" | "loaded" | "error">("idle");
   const [templatesList, setTemplatesList] = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<any | null>(null);
   const [templateVarValues, setTemplateVarValues] = useState<string[]>([]);
@@ -206,6 +408,14 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userIsAtBottomRef = useRef<boolean>(true);
   const autoScrollNextRef = useRef<boolean>(true);
+  const textSendAttemptRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const templateSendAttemptRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const olderCursorRef = useRef<MessageCursor | null>(null);
+  const latestCursorRef = useRef<MessageCursor | null>(null);
+  const conversationGenerationRef = useRef(0);
+  const markReadInFlightRef = useRef<string | null>(null);
+  const templateDialogRef = useDialogFocus<HTMLDivElement>(showTemplateModal, () => setShowTemplateModal(false), sendingTemplate);
+  const selectedContactRef = useRef<string | null>(selectedContact);
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
 
   const handleScroll = () => {
@@ -233,37 +443,50 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
     (Date.now() - new Date(lastIncomingMessage.timestamp).getTime() < 24 * 60 * 60 * 1000)
   );
 
-  const openTemplateModal = async () => {
-    setShowTemplateModal(true);
+  const loadApprovedTemplates = async () => {
     setLoadingTemplates(true);
-    setSelectedTemplate(null);
-    setTemplateVarValues([]);
+    setTemplateLoadState("loading");
     try {
       const res = await api.getBroadcastTemplates();
-      if (res.success && Array.isArray(res.data)) {
-        // Filter approved or active templates
-        const approved = res.data.filter(
-          (t: any) => String(t.status || "").toLowerCase() === "approved" || !t.status
-        );
-        setTemplatesList(approved.length > 0 ? approved : res.data);
-      } else {
-        toast.error("Gagal memuat daftar template");
-      }
+      if (!res.success || !Array.isArray(res.data)) throw new Error(res.success ? "Invalid template response" : res.error);
+      setTemplatesList(res.data.filter((template: any) => String(template.status || "").toLowerCase() === "approved"));
+      setTemplateLoadState("loaded");
     } catch (err) {
       console.error("Error fetching templates:", err);
-      toast.error("Terjadi kesalahan saat memuat template");
+      setTemplatesList([]);
+      setTemplateLoadState("error");
     } finally {
       setLoadingTemplates(false);
     }
+  };
+
+  const openTemplateModal = () => {
+    setShowTemplateModal(true);
+    setSelectedTemplate(null);
+    setTemplateVarValues([]);
+    void loadApprovedTemplates();
   };
 
   const handleSelectTemplate = (template: any) => {
     setSelectedTemplate(template);
     const text = String(template?.content || "");
     const variableMatches = [...text.matchAll(/\{\{(\d+)\}\}/g)].map((m) => Number(m[1]));
-    const count = variableMatches.length > 0 ? Math.max(...variableMatches) : 0;
+    const declaredCount = Array.isArray(template?.variables) ? template.variables.length : 0;
+    const count = Math.max(variableMatches.length > 0 ? Math.max(...variableMatches) : 0, declaredCount);
     setTemplateVarValues(Array(count).fill(""));
   };
+
+  const selectedTemplateRequiresMedia = Boolean(
+    Array.isArray(selectedTemplate?.components)
+    && selectedTemplate.components.some((component: any) =>
+      String(component?.type || "").toUpperCase() === "HEADER"
+      && ["IMAGE", "VIDEO", "DOCUMENT"].includes(String(component?.format || "").toUpperCase()),
+    ),
+  );
+  const invalidTemplateVariableIndexes = templateVarValues
+    .map((value, index) => value.trim() ? -1 : index)
+    .filter((index) => index >= 0);
+  const templatePrerequisitesValid = invalidTemplateVariableIndexes.length === 0 && !selectedTemplateRequiresMedia;
 
   const buildTemplatePreview = (content: string, vars: string[]) => {
     if (!content) return "";
@@ -277,37 +500,64 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
 
   const handleExecuteSendTemplate = async () => {
     if (!selectedTemplate || !selectedContact) return;
+    if (!templatePrerequisitesValid) return;
 
     if (!isWithin24Hours && tokenBalance <= 0) {
       toast.warning("Token Anda habis! Silakan top-up terlebih dahulu.");
       return;
     }
 
+    const requiresPaidSend = !isWithin24Hours;
     setSendingTemplate(true);
     try {
       const previewText = buildTemplatePreview(selectedTemplate.content, templateVarValues);
+      const fingerprint = JSON.stringify({
+        numberId,
+        contactId: selectedContact,
+        templateName: selectedTemplate.name,
+        variables: templateVarValues,
+        content: previewText,
+      });
+      if (templateSendAttemptRef.current?.fingerprint !== fingerprint) {
+        templateSendAttemptRef.current = { fingerprint, key: crypto.randomUUID() };
+      }
       const result = await api.sendMessage(numberId, selectedContact, {
         messageType: "template",
         templateName: selectedTemplate.name,
         language: selectedTemplate.language || "id",
         bodyVariables: templateVarValues,
         content: previewText,
-      });
+      }, templateSendAttemptRef.current.key);
 
       if ("error" in result) {
-        toast.error("Gagal mengirim template: " + result.error);
+        if (!result.retryable) templateSendAttemptRef.current = null;
+        console.error("Template send failed:", result.error);
+        toast.error("Template belum dapat dikirim. Silakan coba lagi.");
         return;
       }
 
+      if (result.data?.outcome === "processing") {
+        toast.info("Pengiriman sebelumnya masih diproses. SIPESA tidak mengirim duplikat.");
+        return;
+      }
+
+      templateSendAttemptRef.current = null;
+
       if (result.data) {
         autoScrollNextRef.current = true;
-        setMessages((prev) => [...prev, result.data]);
+        setMessages((previous) => mergeMessages(previous, [result.data]));
       }
       setTokenBalance(Number(result.tokensRemaining ?? tokenBalance));
       setShowTemplateModal(false);
       setSelectedTemplate(null);
-      toast.success("Pesan template disetujui Meta berhasil terkirim!");
-      loadMessages();
+      if (result.data?.outcome === "accepted_reconciliation_required") {
+        toast.warning("Pesan diterima Meta, tetapi sinkronisasi status lokal perlu diperiksa.");
+      } else {
+        toast.success("Pesan template sedang dikirim.");
+      }
+      void refreshContacts();
+      void reconcileVisibleMessages();
+      if (requiresPaidSend) void refreshBalance();
     } catch (err) {
       console.error("Error sending template:", err);
       toast.error("Terjadi kesalahan saat mengirim template pesan");
@@ -315,43 +565,6 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
       setSendingTemplate(false);
     }
   };
-
-  useEffect(() => {
-    setSelectedContact(null);
-    setMessages([]);
-  }, [numberId]);
-
-  useEffect(() => {
-    loadContacts();
-    loadTokenBalance();
-
-    const interval = setInterval(() => {
-      loadContacts();
-      loadTokenBalance();
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [numberId]);
-
-  useEffect(() => {
-    autoScrollNextRef.current = true;
-    userIsAtBottomRef.current = true;
-    setShowScrollBottomBtn(false);
-
-    if (selectedContact) {
-      loadMessages();
-    } else {
-      setMessages([]);
-    }
-
-    const interval = setInterval(() => {
-      if (selectedContact) {
-        pollMessages();
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [selectedContact, numberId]);
 
   useEffect(() => {
     if (autoScrollNextRef.current || userIsAtBottomRef.current) {
@@ -371,12 +584,15 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
   };
 
   const loadContacts = async () => {
+    setContactsState((previous) => ({ ...previous, loading: true, error: false }));
     try {
       const result = await api.getContacts(numberId);
-      if (!result.success) return;
+      if (!result.success) throw new Error(result.error);
       setContacts(result.data);
+      setContactsState({ loading: false, hasData: true, error: false });
     } catch (error) {
       console.error("Error loading contacts:", error);
+      setContactsState((previous) => ({ ...previous, loading: false, error: true }));
     }
   };
 
@@ -388,10 +604,12 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
         return;
       }
       toast.success("Semua pesan ditandai sebagai dibaca");
-      loadContacts();
-      if (selectedContact) {
-        loadMessages();
-      }
+      setMessages((previous) => previous.map((message) =>
+        message.sender === "contact" && message.status === "delivered"
+          ? { ...message, status: "read" }
+          : message
+      ));
+      void refreshContacts();
     } catch (error) {
       console.error("Error marking all as read:", error);
       toast.error("Terjadi kesalahan");
@@ -435,9 +653,13 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
       toast.success("Pesan terpilih berhasil ditandai sebagai dibaca");
       setSelectedContactIds(new Set());
       setIsEditMode(false);
-      loadContacts();
+      void refreshContacts();
       if (selectedContact && ids.includes(selectedContact)) {
-        loadMessages();
+        setMessages((previous) => previous.map((message) =>
+          message.sender === "contact" && message.status === "delivered"
+            ? { ...message, status: "read" }
+            : message
+        ));
       }
     } catch (error) {
       console.error(error);
@@ -466,7 +688,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
         setSelectedContact(null);
         setMessages([]);
       }
-      loadContacts();
+      void refreshContacts();
     } catch (error) {
       console.error(error);
       toast.error("Terjadi kesalahan");
@@ -475,78 +697,387 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
     }
   };
 
-  const loadMessages = async () => {
-    if (!selectedContact) return;
-
+  const loadMessages = async (contactId = selectedContact) => {
+    if (!contactId) return;
+    const generation = ++conversationGenerationRef.current;
     setLoading(true);
+    setConversationState((previous) => ({ ...previous, loading: true, error: false }));
     try {
-      const result = await api.getMessages(numberId, selectedContact);
-      if (!result.success) return;
-      setMessages(result.data);
+      const result = await api.getMessages(numberId, contactId, { limit: 50 });
+      if (!result.success) throw new Error(result.error);
+      if (generation !== conversationGenerationRef.current) return;
+      setMessages(result.data.messages);
+      setHasOlderMessages(result.data.hasMore);
+      olderCursorRef.current = result.data.olderCursor;
+      latestCursorRef.current = result.data.latestCursor;
+      setConversationState({ loading: false, hasData: true, error: false });
     } catch (error) {
+      if (generation !== conversationGenerationRef.current) return;
       console.error("Error loading messages:", error);
+      setConversationState((previous) => ({ ...previous, loading: false, error: true }));
     } finally {
-      setLoading(false);
+      if (generation === conversationGenerationRef.current) {
+        setLoading(false);
+        setConversationState((previous) => ({ ...previous, loading: false }));
+      }
     }
   };
 
-  const pollMessages = async () => {
-    if (!selectedContact) return;
+  const loadOlderMessages = async () => {
+    if (!selectedContact || !olderCursorRef.current || loadingOlderMessages) return;
+    const contactId = selectedContact;
+    const cursor = olderCursorRef.current;
+    const generation = conversationGenerationRef.current;
+    const previousScrollHeight = scrollContainerRef.current?.scrollHeight ?? 0;
+    setLoadingOlderMessages(true);
     try {
-      const result = await api.getMessages(numberId, selectedContact);
-      if (!result.success) return;
-      setMessages((prev) => {
-        if (
-          prev.length === result.data.length &&
-          prev.length > 0 &&
-          prev[prev.length - 1].id === result.data[result.data.length - 1].id &&
-          prev[prev.length - 1].timestamp === result.data[result.data.length - 1].timestamp
-        ) {
-          return prev;
+      const result = await api.getMessages(numberId, contactId, { before: cursor, limit: 50 });
+      if (!result.success) throw new Error(result.error);
+      if (generation !== conversationGenerationRef.current) return;
+      setMessages((previous) => mergeMessages(previous, result.data.messages));
+      setHasOlderMessages(result.data.hasMore);
+      olderCursorRef.current = result.data.olderCursor;
+      requestAnimationFrame(() => {
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop += scrollContainerRef.current.scrollHeight - previousScrollHeight;
         }
-        return result.data;
       });
     } catch (error) {
-      console.error("Error polling messages:", error);
+      console.error("Error loading older messages:", error);
+      setConversationState((previous) => ({ ...previous, error: true }));
+    } finally {
+      if (generation === conversationGenerationRef.current) setLoadingOlderMessages(false);
     }
   };
+
+  const reconcileMessages = async () => {
+    if (!selectedContact) return;
+    const contactId = selectedContact;
+    const generation = conversationGenerationRef.current;
+    let cursor = latestCursorRef.current;
+    if (!cursor) {
+      await loadMessages(contactId);
+      return;
+    }
+
+    try {
+      // Bound each request and drain a short burst page-by-page. If more than
+      // five pages arrive at once, the next reconciliation continues exactly
+      // after the last stable (created_at, id) cursor without gaps.
+      for (let page = 0; page < 5; page += 1) {
+        const result = await api.getMessages(numberId, contactId, { after: cursor, limit: 50 });
+        if (!result.success) throw new Error(result.error);
+        if (generation !== conversationGenerationRef.current) return;
+        if (result.data.messages.length > 0) {
+          setMessages((previous) => mergeMessages(previous, result.data.messages));
+        }
+        if (result.data.latestCursor) {
+          cursor = result.data.latestCursor;
+          latestCursorRef.current = cursor;
+        }
+        if (!result.data.hasMore || result.data.messages.length === 0) break;
+      }
+
+      const recentIds = messages.slice(-50).map((message) => message.id);
+      const statuses = await api.getMessageStatuses(numberId, contactId, recentIds);
+      if (statuses.success && generation === conversationGenerationRef.current) {
+        const statusById = new Map(statuses.data.map((row) => [row.id, row.status]));
+        setMessages((previous) => previous.map((message) => {
+          const status = statusById.get(message.id);
+          if (!status) return message;
+          return { ...message, status: resolveMessageStatus(message.status, status) };
+        }));
+      }
+      setConversationState((previous) => ({ ...previous, error: false }));
+    } catch (error) {
+      console.error("Error reconciling messages:", error);
+      setConversationState((previous) => ({ ...previous, error: true }));
+    }
+  };
+
+  const markActiveConversationRead = async () => {
+    if (!selectedContact || document.visibilityState === "hidden") return;
+    const hasUnreadInbound = messages.some(
+      (message) => message.sender === "contact" && message.status === "delivered",
+    );
+    if (!hasUnreadInbound) return;
+
+    const key = `${numberId}:${selectedContact}`;
+    if (markReadInFlightRef.current === key) return;
+    markReadInFlightRef.current = key;
+    try {
+      const result = await api.markConversationRead(numberId, selectedContact);
+      if (!result.success) return;
+      setMessages((previous) => previous.map((message) =>
+        message.sender === "contact" && message.status === "delivered"
+          ? { ...message, status: "read" }
+          : message
+      ));
+      await loadContacts();
+    } finally {
+      if (markReadInFlightRef.current === key) markReadInFlightRef.current = null;
+    }
+  };
+
+  const refreshContacts = useVisibilityRefresh(loadContacts, { intervalMs: 30_000 });
+  const refreshBalance = useVisibilityRefresh(loadTokenBalance);
+  const reconcileVisibleMessages = useVisibilityRefresh(reconcileMessages, {
+    enabled: Boolean(selectedContact),
+    intervalMs: 30_000,
+  });
+  const refreshReadState = useVisibilityRefresh(markActiveConversationRead, {
+    enabled: Boolean(selectedContact),
+  });
+
+  useEffect(() => {
+    setSelectedContact(null);
+    setMessages([]);
+    setHasOlderMessages(false);
+    olderCursorRef.current = null;
+    latestCursorRef.current = null;
+    conversationGenerationRef.current += 1;
+    void Promise.all([refreshContacts(), refreshBalance()]);
+  }, [numberId, refreshBalance, refreshContacts]);
+
+  useEffect(() => {
+    selectedContactRef.current = selectedContact;
+  }, [selectedContact]);
+
+  useEffect(() => {
+    autoScrollNextRef.current = true;
+    userIsAtBottomRef.current = true;
+    setShowScrollBottomBtn(false);
+    setMessages([]);
+    setHasOlderMessages(false);
+    olderCursorRef.current = null;
+    latestCursorRef.current = null;
+    conversationGenerationRef.current += 1;
+    setConversationState({ loading: Boolean(selectedContact), hasData: false, error: false });
+
+    if (selectedContact) void loadMessages(selectedContact);
+  }, [selectedContact, numberId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    void (async () => {
+      const token = getAuthToken();
+      logRealtimeDiagnostic("number_channel_auth", { numberId, tokenAvailable: Boolean(token) });
+      if (token) await supabase.realtime.setAuth(token);
+      if (cancelled) return;
+
+      channel = supabase
+        .channel(`chat-number-inserts:${numberId}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "wa_messages", filter: `number_id=eq.${numberId}` },
+          (payload) => {
+            const row: any = payload.new;
+            const eventNumberId = String(row.number_id || "");
+            const eventContactId = String(row.contact_id || "");
+            logRealtimeDiagnostic("insert_received", {
+              numberId,
+              messageId: row.id ? String(row.id) : null,
+              eventNumberId: eventNumberId || null,
+              eventContactId: eventContactId || null,
+              status: row.status ? String(row.status) : null,
+            });
+
+            if (eventNumberId !== numberId) {
+              logRealtimeDiagnostic("insert_rejected", {
+                reason: "number_id_mismatch",
+                numberId,
+                eventNumberId: eventNumberId || null,
+              });
+              return;
+            }
+            if (!eventContactId || !row.id || !row.created_at) {
+              logRealtimeDiagnostic("insert_rejected", {
+                reason: "missing_message_identity",
+                numberId,
+              });
+              return;
+            }
+
+            void refreshContacts();
+            const activeContactId = selectedContactRef.current;
+            if (!activeContactId || eventContactId !== activeContactId) {
+              logRealtimeDiagnostic("insert_summary_only", {
+                reason: activeContactId ? "different_active_contact" : "no_active_conversation",
+                numberId,
+                eventContactId,
+              });
+              return;
+            }
+
+            const message = mapRealtimeMessage(row);
+            setMessages((previous) => mergeMessages(previous, [message]));
+            const cursor = cursorFromMessage(message);
+            if (cursor && isCursorAfter(cursor, latestCursorRef.current)) latestCursorRef.current = cursor;
+          },
+        )
+        .subscribe((status, error) => {
+          setRealtimeState(status);
+          logRealtimeDiagnostic("number_channel_status", {
+            numberId,
+            status,
+            error: error?.message ?? null,
+          });
+        });
+    })().catch((error) => {
+      setRealtimeState("CHANNEL_ERROR");
+      logRealtimeDiagnostic("number_channel_setup_error", {
+        numberId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      logRealtimeDiagnostic("number_channel_cleanup", { numberId, channelCreated: Boolean(channel) });
+      if (channel) void supabase.removeChannel(channel);
+    };
+  }, [numberId, refreshContacts]);
+
+  useEffect(() => {
+    if (!selectedContact) return;
+    const contactId = selectedContact;
+    let cancelled = false;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    void (async () => {
+      const token = getAuthToken();
+      logRealtimeDiagnostic("conversation_channel_auth", {
+        numberId,
+        contactId,
+        tokenAvailable: Boolean(token),
+      });
+      if (token) await supabase.realtime.setAuth(token);
+      if (cancelled) return;
+
+      channel = supabase
+        .channel(`chat-contact-updates:${numberId}:${contactId}`)
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "wa_messages", filter: `contact_id=eq.${contactId}` },
+          (payload) => {
+            const row: any = payload.new;
+            const eventNumberId = String(row.number_id || "");
+            const eventContactId = String(row.contact_id || "");
+            logRealtimeDiagnostic("update_received", {
+              numberId,
+              contactId,
+              messageId: row.id ? String(row.id) : null,
+              eventNumberId: eventNumberId || null,
+              eventContactId: eventContactId || null,
+              status: row.status ? String(row.status) : null,
+            });
+            if (eventNumberId !== numberId || eventContactId !== contactId) {
+              logRealtimeDiagnostic("update_rejected", {
+                reason: eventNumberId !== numberId ? "number_id_mismatch" : "contact_id_mismatch",
+                numberId,
+                contactId,
+                eventNumberId: eventNumberId || null,
+                eventContactId: eventContactId || null,
+              });
+              return;
+            }
+            setMessages((previous) => mergeMessages(previous, [mapRealtimeMessage(row)]));
+          },
+        )
+        .subscribe((status, error) => {
+          setRealtimeState(status);
+          logRealtimeDiagnostic("conversation_channel_status", {
+            numberId,
+            contactId,
+            status,
+            error: error?.message ?? null,
+          });
+        });
+    })().catch((error) => {
+      setRealtimeState("CHANNEL_ERROR");
+      logRealtimeDiagnostic("conversation_channel_setup_error", {
+        numberId,
+        contactId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      logRealtimeDiagnostic("conversation_channel_cleanup", {
+        numberId,
+        contactId,
+        channelCreated: Boolean(channel),
+      });
+      if (channel) void supabase.removeChannel(channel);
+    };
+  }, [numberId, selectedContact]);
+
+  useEffect(() => {
+    void refreshReadState();
+  }, [messages, refreshReadState, selectedContact]);
 
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !selectedContact) return;
 
-    if (tokenBalance <= 0) {
+    if (!isWithin24Hours && tokenBalance <= 0) {
       toast.warning("Token Anda habis! Silakan top-up terlebih dahulu untuk mengirim pesan.");
       return;
     }
 
+    const requiresPaidSend = !isWithin24Hours;
     setSending(true);
     try {
-      const result = await api.sendMessage(numberId, selectedContact, messageInput);
+      const fingerprint = JSON.stringify({ numberId, contactId: selectedContact, content: messageInput });
+      if (textSendAttemptRef.current?.fingerprint !== fingerprint) {
+        textSendAttemptRef.current = { fingerprint, key: crypto.randomUUID() };
+      }
+      const result = await api.sendMessage(
+        numberId,
+        selectedContact,
+        messageInput,
+        textSendAttemptRef.current.key,
+      );
 
       if ("error" in result) {
+        if (!result.retryable) textSendAttemptRef.current = null;
+        console.error("Message send failed:", result.error);
         if (result.error.toLowerCase().includes("token")) {
           toast.warning("Token Anda habis! Silakan top-up terlebih dahulu.");
         } else {
-          toast.error("Gagal mengirim pesan: " + result.error);
+          toast.error("Pesan belum dapat dikirim. Silakan coba lagi.");
         }
         return;
       }
 
+      if (result.data?.outcome === "processing") {
+        toast.info("Pengiriman sebelumnya masih diproses. SIPESA tidak mengirim duplikat.");
+        return;
+      }
+
+      textSendAttemptRef.current = null;
+
       autoScrollNextRef.current = true;
-      setMessages((prev) => [...prev, result.data]);
+      setMessages((previous) => mergeMessages(previous, [result.data]));
       setMessageInput("");
       setTokenBalance(Number(result.tokensRemaining ?? tokenBalance));
       setShowEmojiPicker(false);
 
-      if (result.tokensRemaining < 100) {
-        toast.success("Pesan terkirim!", {
+      if (result.data?.outcome === "accepted_reconciliation_required") {
+        toast.warning("Pesan diterima Meta, tetapi sinkronisasi status lokal perlu diperiksa.");
+      } else if (result.tokensRemaining < 100) {
+        toast.success("Pesan sedang dikirim.", {
           description: `⚠️ Token tersisa: ${result.tokensRemaining}. Segera top-up!`,
         });
       } else {
-        toast.success(`Pesan terkirim! Token tersisa: ${result.tokensRemaining}`);
+        toast.success(`Pesan sedang dikirim. Token tersisa: ${result.tokensRemaining}`);
       }
 
-      loadMessages();
+      void refreshContacts();
+      void reconcileVisibleMessages();
+      if (requiresPaidSend) void refreshBalance();
     } catch (error) {
       console.error("Error sending message:", error);
       toast.error("Terjadi kesalahan saat mengirim pesan");
@@ -593,7 +1124,9 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
             <div className="flex items-center justify-between mb-3 gap-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100">
               <div className="flex items-center gap-1.5">
                 <button
+                  type="button"
                   onClick={handleSelectAll}
+                  aria-label={selectedContactIds.size === filteredContacts.length ? "Batalkan pilihan semua percakapan" : "Pilih semua percakapan"}
                   className="text-slate-500 hover:text-slate-700 transition-colors"
                   title={selectedContactIds.size === filteredContacts.length ? "Deselect All" : "Select All"}
                 >
@@ -609,7 +1142,9 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
               </div>
               <div className="flex items-center gap-1.5">
                 <button
+                  type="button"
                   onClick={handleMarkSelectedAsRead}
+                  aria-label="Tandai percakapan terpilih sebagai dibaca"
                   disabled={selectedContactIds.size === 0}
                   className={`p-1.5 rounded-lg transition-all ${selectedContactIds.size === 0
                     ? "text-slate-300 cursor-not-allowed"
@@ -620,7 +1155,9 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                   <CheckCheck className="w-4 h-4" />
                 </button>
                 <button
+                  type="button"
                   onClick={handleDeleteSelected}
+                  aria-label="Hapus percakapan terpilih"
                   disabled={selectedContactIds.size === 0}
                   className={`p-1.5 rounded-lg transition-all ${selectedContactIds.size === 0
                     ? "text-slate-300 cursor-not-allowed"
@@ -631,7 +1168,9 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                   <Trash2 className="w-4 h-4" />
                 </button>
                 <button
+                  type="button"
                   onClick={toggleEditMode}
+                  aria-label="Keluar dari mode pilih percakapan"
                   className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-all"
                   title="Batal"
                 >
@@ -647,7 +1186,9 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
               <div className="flex items-center gap-1">
                 {/* Edit Mode Toggle Button */}
                 <button
+                  type="button"
                   onClick={toggleEditMode}
+                  aria-label="Pilih percakapan untuk dikelola"
                   className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-all"
                   title="Edit Percakapan"
                 >
@@ -655,7 +1196,9 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                 </button>
                 {/* Mark All as Read Button */}
                 <button
+                  type="button"
                   onClick={handleMarkAllAsRead}
+                  aria-label="Tandai semua percakapan sebagai dibaca"
                   className="p-1.5 text-slate-500 hover:text-sky-700 hover:bg-sky-50 rounded-lg transition-all"
                   title="Tandai semua dibaca"
                 >
@@ -663,14 +1206,14 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                 </button>
                 {/* Refresh Button */}
                 <button
+                  type="button"
                   onClick={() => {
-                    loadContacts();
-                    loadTokenBalance();
-                    if (selectedContact) {
-                      loadMessages();
-                    }
+                    void refreshContacts();
+                    void refreshBalance();
+                    if (selectedContact) void reconcileVisibleMessages();
                     toast.success("Pesan diperbarui");
                   }}
+                  aria-label="Perbarui pesan"
                   className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-all"
                   title="Perbarui pesan"
                 >
@@ -683,6 +1226,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
             <Input
+              aria-label="Cari percakapan"
               placeholder="Cari percakapan..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -694,8 +1238,25 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
         {/* Contact List — plain scrollable div */}
         <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }} className="bg-white">
           <div className="p-2 space-y-0.5">
-            {filteredContacts.length === 0 ? (
-              <p className="text-center text-xs text-gray-400 py-8">Tidak ada percakapan ditemukan</p>
+            {contactsState.error && contactsState.hasData && (
+              <div className="m-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800" role="status">
+                <p>Daftar terakhir ditampilkan. Gagal memperbarui.</p>
+                <button type="button" onClick={() => void loadContacts()} className="mt-1 font-bold hover:underline">Coba Lagi</button>
+              </div>
+            )}
+            {!contactsState.hasData && contactsState.loading ? (
+              <div className="flex items-center justify-center gap-2 py-8 text-xs text-gray-500" role="status">
+                <RotateCw className="h-4 w-4 animate-spin" /> Memuat percakapan...
+              </div>
+            ) : !contactsState.hasData && contactsState.error ? (
+              <div className="py-8 text-center text-xs" role="alert">
+                <p className="font-semibold text-red-600">Percakapan belum dapat dimuat.</p>
+                <button type="button" onClick={() => void loadContacts()} className="mt-2 font-bold text-emerald-700 hover:underline">Coba Lagi</button>
+              </div>
+            ) : filteredContacts.length === 0 ? (
+              <p className="text-center text-xs text-gray-400 py-8">
+                {contacts.length === 0 ? "Belum ada percakapan." : "Tidak ada hasil pencarian."}
+              </p>
             ) : (
               filteredContacts.map((contact) => (
                 <button
@@ -790,7 +1351,9 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
               <div className="flex items-center gap-2 md:gap-3 min-w-0">
                 {/* Back button to list on mobile */}
                 <button
+                  type="button"
                   onClick={() => setSelectedContact(null)}
+                  aria-label="Kembali ke daftar percakapan"
                   className="p-1.5 hover:bg-gray-100 rounded-lg md:hidden text-gray-500 shrink-0"
                 >
                   <ArrowLeft className="w-5 h-5" />
@@ -815,6 +1378,13 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                   <p className="text-xs text-gray-500 mt-0.5">
                     {formatPhoneNumber(currentContact?.phone || "")}
                   </p>
+                  <span className="sr-only">Realtime: {realtimeState}</span>
+                  {realtimeState !== "SUBSCRIBED" && (
+                    <p className="mt-1 flex items-center gap-1 text-[11px] text-amber-700" role="status">
+                      <RotateCw className="h-3 w-3 animate-spin" aria-hidden="true" />
+                      Memperbarui koneksi…
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-100 rounded-full shadow-sm">
@@ -831,12 +1401,46 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
               onScroll={handleScroll}
               className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 z-10 relative"
             >
-              {loading ? (
-                <div className="flex items-center justify-center h-full">
+              {!conversationState.hasData && (loading || conversationState.loading) ? (
+                <div className="flex items-center justify-center h-full" role="status" aria-label="Memuat pesan">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600" />
+                </div>
+              ) : !conversationState.hasData && conversationState.error ? (
+                <div className="flex h-full items-center justify-center p-4" role="alert">
+                  <div className="max-w-sm rounded-xl border border-red-200 bg-white/95 p-5 text-center shadow-sm">
+                    <AlertTriangle className="mx-auto h-7 w-7 text-red-500" />
+                    <p className="mt-2 text-sm font-semibold text-slate-800">Pesan belum dapat dimuat.</p>
+                    <button type="button" onClick={() => void loadMessages(selectedContact)} className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white">Coba Lagi</button>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-6">
+                  {conversationState.error && (
+                    <div className="sticky top-0 z-20 mx-auto flex max-w-lg flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50/95 p-3 text-xs text-amber-800 shadow-sm" role="status">
+                      <span>Pesan terakhir ditampilkan. Gagal memperbarui.</span>
+                      <button type="button" onClick={() => void reconcileMessages()} className="font-bold hover:underline">Coba Lagi</button>
+                    </div>
+                  )}
+                  {hasOlderMessages && (
+                    <div className="flex justify-center">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void loadOlderMessages()}
+                        disabled={loadingOlderMessages}
+                        className="bg-white/90 text-xs"
+                      >
+                        {loadingOlderMessages ? "Memuat…" : "Muat pesan sebelumnya"}
+                      </Button>
+                    </div>
+                  )}
+                  {messages.length === 0 && (
+                    <div className="py-16 text-center text-sm text-slate-500">
+                      <MessageCircle className="mx-auto mb-3 h-10 w-10 text-slate-400 opacity-50" />
+                      <p className="font-semibold">Belum ada pesan.</p>
+                      <p className="mt-1 text-xs">Mulai percakapan saat siap.</p>
+                    </div>
+                  )}
                   {messages.map((message) => (
                     <div
                       key={message.id}
@@ -868,16 +1472,14 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                           const documentName = documentData?.filename || documentData?.file_name || "Dokumen";
                           const documentCaption = documentData?.caption || payloadObj?.caption || "";
                           const documentMimeType = documentData?.mime_type || payloadObj?.mime_type || "";
-                          const documentUrl = documentId ? api.getMediaUrl(documentId, numberId) : "";
-
                           if (message.messageType === "image" && imageId) {
                             return (
                               <div className="flex flex-col gap-1.5">
-                                <SafeImage
-                                  src={api.getMediaUrl(imageId, numberId)}
+                                <SecureMediaImage
+                                  mediaId={imageId}
+                                  numberId={numberId}
                                   alt="Media"
                                   className="rounded-lg max-w-full max-h-64 object-contain cursor-pointer hover:opacity-95 transition-opacity"
-                                  onClick={() => window.open(api.getMediaUrl(imageId, numberId), '_blank')}
                                   fallbackText="[Gambar (Gagal dimuat)]"
                                 />
                                 {imageCaption && (
@@ -900,17 +1502,12 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                                       {documentMimeType || "Dokumen WhatsApp"}
                                     </p>
                                   </div>
-                                  {documentUrl && (
-                                    <a
-                                      href={documentUrl}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      download={documentName}
-                                      className="w-9 h-9 rounded-full bg-white hover:bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-600 transition-colors shrink-0"
-                                      title="Buka atau unduh dokumen"
-                                    >
-                                      <Download className="w-4 h-4" />
-                                    </a>
+                                  {documentId && (
+                                    <SecureDocumentLink
+                                      mediaId={documentId}
+                                      numberId={numberId}
+                                      fileName={documentName}
+                                    />
                                   )}
                                 </div>
                                 {documentCaption && (
@@ -924,11 +1521,11 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                           } else if (message.messageType === "sticker") {
                             const stickerId = payloadObj?.sticker?.id || payloadObj?.id;
                             return stickerId ? (
-                              <SafeImage
-                                src={api.getMediaUrl(stickerId, numberId)}
+                              <SecureMediaImage
+                                mediaId={stickerId}
+                                numberId={numberId}
                                 alt="Sticker"
                                 className="w-28 h-28 object-contain rounded-lg hover:scale-105 transition-transform cursor-pointer"
-                                onClick={() => window.open(api.getMediaUrl(stickerId, numberId), '_blank')}
                                 fallbackText="[Stiker]"
                               />
                             ) : (
@@ -951,8 +1548,9 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                           }
                         })()}
                       </div>
-                      <span className="text-xs text-gray-500 mt-1.5 px-1 font-medium">
-                        {formatMessageTime(message.timestamp)}
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500 mt-1.5 px-1 font-medium">
+                        <span>{formatMessageTime(message.timestamp)}</span>
+                        {message.sender === "user" && <MessageStatus status={message.status} />}
                       </span>
                     </div>
                   ))}
@@ -1115,18 +1713,20 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
       {/* Template Selection Modal for >24h CS Window */}
       {showTemplateModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden border border-slate-100">
+          <div ref={templateDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="chat-template-title" className="w-full max-w-lg bg-white rounded-2xl shadow-2xl flex flex-col max-h-[85dvh] overflow-hidden border border-slate-100">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/80">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
                   <FileText className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-800 text-sm">Pilih Template Pesan Meta</h3>
+                  <h3 id="chat-template-title" className="font-bold text-slate-800 text-sm">Pilih Template Pesan Meta</h3>
                   <p className="text-[11px] text-slate-500">Wajib untuk pesan &gt; 24 jam</p>
                 </div>
               </div>
               <button
+                type="button"
+                aria-label="Tutup pemilih template"
                 onClick={() => {
                   setShowTemplateModal(false);
                   setSelectedTemplate(null);
@@ -1138,10 +1738,19 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
             </div>
 
             <div className="p-6 overflow-y-auto space-y-4 flex-1">
-              {loadingTemplates ? (
+              {loadingTemplates || templateLoadState === "loading" ? (
                 <div className="py-12 text-center text-slate-500 flex flex-col items-center gap-3">
                   <RotateCw className="w-7 h-7 animate-spin text-emerald-600" />
                   <span className="text-xs font-semibold text-slate-600">Memuat template disetujui Meta...</span>
+                </div>
+              ) : templateLoadState === "error" ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-center" role="alert">
+                  <AlertTriangle className="mx-auto h-8 w-8 text-red-500" />
+                  <p className="mt-2 text-sm font-semibold text-slate-800">Template belum dapat dimuat.</p>
+                  <p className="mt-1 text-xs text-slate-600">Silakan coba kembali tanpa menutup percakapan.</p>
+                  <button type="button" onClick={() => void loadApprovedTemplates()} className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white">
+                    <RotateCw className="h-3.5 w-3.5" /> Coba Lagi
+                  </button>
                 </div>
               ) : !selectedTemplate ? (
                 <div className="space-y-3">
@@ -1151,10 +1760,15 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                   {templatesList.length === 0 ? (
                     <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
                       <AlertTriangle className="w-8 h-8 mx-auto mb-2 text-amber-500" />
-                      <p className="font-semibold text-slate-700 text-sm">Belum Ada Template Disetujui</p>
+                      <p className="font-semibold text-slate-700 text-sm">Belum ada template yang siap digunakan.</p>
                       <p className="text-xs text-slate-500 mt-1">
                         Buat atau sinkronkan template terlebih dahulu pada menu Template Pesan.
                       </p>
+                      {onViewTemplates && (
+                        <button type="button" onClick={() => { setShowTemplateModal(false); onViewTemplates(); }} className="mt-3 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50">
+                          Lihat Template
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
@@ -1217,16 +1831,29 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                               newVars[idx] = e.target.value;
                               setTemplateVarValues(newVars);
                             }}
-                            className="bg-white text-xs"
+                            aria-invalid={!templateVarValues[idx]?.trim()}
+                            aria-describedby={`template-variable-error-${idx}`}
+                            className={`bg-white text-xs ${!templateVarValues[idx]?.trim() ? "border-red-300 focus-visible:ring-red-400" : ""}`}
                           />
+                          {!templateVarValues[idx]?.trim() && (
+                            <p id={`template-variable-error-${idx}`} className="mt-1 text-[11px] font-medium text-red-600" role="alert">
+                              Variabel ini wajib diisi.
+                            </p>
+                          )}
                         </div>
                       ))}
                     </div>
                   )}
 
+                  {selectedTemplateRequiresMedia && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800" role="alert">
+                      Template ini memerlukan media header. Pengiriman template media belum tersedia dari Chat.
+                    </div>
+                  )}
+
                   {/* Message Preview */}
                   <div className="p-3.5 bg-emerald-100/70 border border-emerald-200/80 rounded-xl text-xs space-y-1">
-                    <span className="font-bold text-emerald-950 block">Preview Pesan Terkirim:</span>
+                    <span className="font-bold text-emerald-950 block">Preview Pesan:</span>
                     <p className="text-emerald-950 font-medium whitespace-pre-wrap leading-relaxed">
                       {buildTemplatePreview(selectedTemplate.content, templateVarValues)}
                     </p>
@@ -1254,7 +1881,7 @@ export function ChatInterface({ numberId, numberName, onBack }: ChatInterfacePro
                 {selectedTemplate && (
                   <Button
                     onClick={handleExecuteSendTemplate}
-                    disabled={sendingTemplate}
+                    disabled={sendingTemplate || !templatePrerequisitesValid}
                     className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold"
                   >
                     {sendingTemplate ? "Mengirim..." : "Kirim Template"}

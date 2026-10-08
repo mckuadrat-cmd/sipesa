@@ -5,6 +5,7 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Lock, Mail, Eye, EyeOff, AlertCircle, Building2, UserRound, Phone } from "lucide-react";
 import { AppModal } from "./AppModal";
+import { authErrorMessage } from "../lib/auth-error";
 
 interface LoginViewProps {
   onLogin: (identifier: string, password: string) => Promise<void>;
@@ -16,37 +17,8 @@ interface LoginViewProps {
     username: string,
     waNumber: string
   ) => Promise<{ emailVerificationRequired: boolean } | undefined>;
+  onForgotPassword: (email: string) => Promise<void>;
   initialIsLogin?: boolean;
-}
-
-function getErrorMessage(err: unknown): string {
-  if (typeof err === "string") return err;
-
-  if (err && typeof err === "object") {
-    const e = err as any;
-
-    if (typeof e.message === "string" && e.message.trim()) return e.message;
-    if (typeof e.error === "string" && e.error.trim()) return e.error;
-
-    if (e.error && typeof e.error === "object") {
-      if (typeof e.error.message === "string" && e.error.message.trim()) {
-        return e.error.message;
-      }
-      try {
-        return JSON.stringify(e.error);
-      } catch {
-        return "Terjadi kesalahan";
-      }
-    }
-
-    try {
-      return JSON.stringify(e);
-    } catch {
-      return "Terjadi kesalahan";
-    }
-  }
-
-  return "Terjadi kesalahan";
 }
 
 function normalizeUsername(value: string) {
@@ -57,11 +29,15 @@ function normalizeUsername(value: string) {
     .replace(/[^a-z0-9_]/g, "");
 }
 
-export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginViewProps) {
+export function LoginView({ onLogin, onSignup, onForgotPassword, initialIsLogin = true }: LoginViewProps) {
   const [isLogin, setIsLogin] = useState(initialIsLogin);
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
+  const [recoveryRequested, setRecoveryRequested] = useState(false);
 
   useEffect(() => {
     setIsLogin(initialIsLogin);
+    setIsForgotPassword(false);
+    setRecoveryRequested(false);
   }, [initialIsLogin]);
   const [isRegistered, setIsRegistered] = useState(false);
 
@@ -162,7 +138,7 @@ export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginVie
     try {
       await onLogin(identifier.trim(), password);
     } catch (err) {
-      setError(getErrorMessage(err));
+      setError(authErrorMessage(err, "login"));
     } finally {
       setLoading(false);
     }
@@ -184,7 +160,28 @@ export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginVie
         setIsRegistered(true);
       }
     } catch (err) {
-      setError(getErrorMessage(err));
+      setError(authErrorMessage(err, "register"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (loading) return;
+    const email = identifier.trim();
+    setError("");
+    if (!/\S+@\S+\.\S+/.test(email)) {
+      setError("Masukkan alamat email yang valid.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await onForgotPassword(email);
+      setRecoveryRequested(true);
+    } catch (err) {
+      setError(authErrorMessage(err, "forgot"));
     } finally {
       setLoading(false);
     }
@@ -252,11 +249,13 @@ export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginVie
               />
 
               <h1 className="text-3xl font-bold mb-2" style={{ color: "#3C405B" }}>
-                {isLogin ? "Login" : "Register"}
+                {isForgotPassword ? "Lupa Password" : isLogin ? "Login" : "Register"}
               </h1>
 
               <p className="text-muted-foreground">
-                {isLogin
+                {isForgotPassword
+                  ? "Masukkan email untuk menerima instruksi pemulihan"
+                  : isLogin
                   ? "Masuk untuk mengelola WhatsApp Business Anda"
                   : "Buat akun untuk mulai mengelola WhatsApp Business Anda dengan mudah"}
               </p>
@@ -269,6 +268,53 @@ export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginVie
               </div>
             )}
 
+            {isForgotPassword ? (
+              <form onSubmit={handleForgotPassword} className="flex flex-col flex-1 min-h-0 space-y-4">
+                {recoveryRequested ? (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800" role="status">
+                    Jika email terdaftar, instruksi pemulihan akan dikirim.
+                  </div>
+                ) : (
+                  <div>
+                    <Label htmlFor="forgot-email">Email</Label>
+                    <div className="relative mt-2">
+                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <Input
+                        id="forgot-email"
+                        type="email"
+                        value={identifier}
+                        onChange={(event) => {
+                          setIdentifier(event.target.value);
+                          resetFormError();
+                        }}
+                        placeholder="email@example.com"
+                        className="pl-10"
+                        disabled={loading}
+                        aria-invalid={Boolean(error)}
+                      />
+                    </div>
+                  </div>
+                )}
+                {!recoveryRequested && (
+                  <Button type="submit" disabled={loading} className="w-full h-11 rounded-xl" style={{ backgroundColor: "#DF7A5E" }}>
+                    {loading ? "Mengirim..." : "Kirim Instruksi Pemulihan"}
+                  </Button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsForgotPassword(false);
+                    setRecoveryRequested(false);
+                    setError("");
+                  }}
+                  disabled={loading}
+                  className="text-sm font-medium hover:underline disabled:opacity-50"
+                  style={{ color: "#DF7A5E" }}
+                >
+                  Kembali ke Login
+                </button>
+              </form>
+            ) : (
             <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0 space-y-4 overflow-hidden">
               <div className="space-y-4 overflow-y-auto flex-1 pr-1 pb-2">
                 {!isLogin && (
@@ -347,10 +393,11 @@ export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginVie
                 )}
 
                 <div>
-                  <Label>{isLogin ? "Email / Username" : "Email *"}</Label>
+                  <Label htmlFor="auth-identifier">{isLogin ? "Email / Username" : "Email *"}</Label>
                   <div className="relative mt-2">
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
+                      id="auth-identifier"
                       type={isLogin ? "text" : "email"}
                       placeholder={isLogin ? "Masukkan email/username anda" : "email@example.com"}
                       value={identifier}
@@ -365,10 +412,28 @@ export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginVie
                 </div>
 
                 <div>
-                  <Label>Password *</Label>
+                  <div className="flex items-center justify-between gap-3">
+                    <Label htmlFor="auth-password">Password *</Label>
+                    {isLogin && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsForgotPassword(true);
+                          setRecoveryRequested(false);
+                          setError("");
+                          setPassword("");
+                        }}
+                        className="text-xs font-medium hover:underline"
+                        style={{ color: "#DF7A5E" }}
+                      >
+                        Lupa password?
+                      </button>
+                    )}
+                  </div>
                   <div className="relative mt-2">
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
+                      id="auth-password"
                       type={showPassword ? "text" : "password"}
                       placeholder="••••••••"
                       value={password}
@@ -381,6 +446,7 @@ export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginVie
                     />
                     <button
                       type="button"
+                      aria-label={showPassword ? "Sembunyikan password" : "Tampilkan password"}
                       onClick={() => setShowPassword(!showPassword)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     >
@@ -433,14 +499,16 @@ export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginVie
                 </Button>
               </div>
             </form>
+            )}
 
-            <div className="text-center mt-4 flex-shrink-0">
+            {!isForgotPassword && <div className="text-center mt-4 flex-shrink-0">
               <p className="text-sm text-muted-foreground">
                 {isLogin ? "Belum punya akun?" : "Sudah punya akun?"}{" "}
                 <button
                   type="button"
                   onClick={() => {
                     setIsLogin(!isLogin);
+                    setIsForgotPassword(false);
                     setError("");
                     setPassword("");
                     setConfirmPassword("");
@@ -452,7 +520,7 @@ export function LoginView({ onLogin, onSignup, initialIsLogin = true }: LoginVie
                   {isLogin ? "Daftar sekarang" : "Masuk"}
                 </button>
               </p>
-            </div>
+            </div>}
           </Card>
         )}
       </div>
