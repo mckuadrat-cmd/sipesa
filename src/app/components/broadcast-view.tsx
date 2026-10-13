@@ -330,43 +330,20 @@ function parseContactsFromStructuredCsv(text: string, selectedTemplate: LocalTem
 }
 
 function getTemplateDateValue(template: any) {
-  const raw =
-    template?.updatedAt ||
-    template?.updated_at ||
-    template?.createdAt ||
-    template?.created_at ||
-    template?.synced_at ||
-    template?.submitted_at ||
-    template?.timestamp;
+  const raw = template?.createdAt || template?.created_at;
 
   if (raw) {
     const date = new Date(raw).getTime();
     if (!Number.isNaN(date)) return date;
   }
 
-  const numericId = Number(String(template?.id || "").replace(/\D/g, ""));
-  return Number.isFinite(numericId) ? numericId : 0;
+  return 0;
 }
 
 function compareTemplates(a: any, b: any) {
-  const aHasMeta = !!(a.metaTemplateId || a.meta_template_id);
-  const bHasMeta = !!(b.metaTemplateId || b.meta_template_id);
-
-  // 1. Prioritize drafts (no metaTemplateId) to the top
-  if (!aHasMeta && bHasMeta) return -1;
-  if (aHasMeta && !bHasMeta) return 1;
-
-  // 2. If both are drafts, sort by date (newest first)
-  if (!aHasMeta && !bHasMeta) {
-    const aTime = new Date(a.updatedAt || a.createdAt || a.updated_at || a.created_at || 0).getTime();
-    const bTime = new Date(b.updatedAt || b.createdAt || b.updated_at || b.created_at || 0).getTime();
-    return bTime - aTime;
-  }
-
-  // 3. If both are synced, sort by metaTemplateId descending (newer Meta templates have larger IDs)
-  const aMetaId = String(a.metaTemplateId || a.meta_template_id || "");
-  const bMetaId = String(b.metaTemplateId || b.meta_template_id || "");
-  return bMetaId.localeCompare(aMetaId, undefined, { numeric: true });
+  const timeDiff = getTemplateDateValue(b) - getTemplateDateValue(a);
+  if (timeDiff !== 0) return timeDiff;
+  return String(b.id || "").localeCompare(String(a.id || ""));
 }
 
 function HeaderPreviewBox({ type, text }: { type: HeaderType; text?: string }) {
@@ -625,10 +602,19 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
   const [templates, setTemplates] = useState<LocalTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const availableTemplates = useMemo(() => {
+    const sender = whatsappNumbers.find((number) => number.id === selectedNumber);
+    return templates.filter((template) => Boolean(sender?.wabaId && template.wabaId && sender.wabaId === template.wabaId));
+  }, [templates, whatsappNumbers, selectedNumber]);
   const selectedTemplate = useMemo(
-    () => templates.find((t) => t.id === selectedTemplateId) || null,
-    [templates, selectedTemplateId],
+    () => availableTemplates.find((t) => t.id === selectedTemplateId) || null,
+    [availableTemplates, selectedTemplateId],
   );
+  useEffect(() => {
+    if (selectedTemplateId && !availableTemplates.some((template) => template.id === selectedTemplateId)) {
+      setSelectedTemplateId(availableTemplates[0]?.id || "");
+    }
+  }, [availableTemplates, selectedTemplateId]);
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [uploadMethod, setUploadMethod] = useState<UploadMethod>("csv");
@@ -1125,7 +1111,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       }
 
       const mapped = (result.data || [])
-        .filter((template) => String(template.status || "").toLowerCase() === "approved")
+        .filter((template) => String(template.status || "").toLowerCase() === "approved" && template.runtimeSupport?.supported !== false)
         .map((template) => {
           const header = extractHeaderInfo(template.components);
           return {
@@ -1708,7 +1694,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                   <RefreshCw className="w-4 h-4 mr-2" /> Coba Lagi
                 </Button>
               </div>
-            ) : templates.length === 0 ? (
+            ) : templates.length === 0 || availableTemplates.length === 0 ? (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
                 Belum ada template berstatus approved yang dapat dipakai untuk broadcast.
               </div>
@@ -1719,7 +1705,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                 onChange={(e) => setSelectedTemplateId(e.target.value)}
               >
                 <option value="">Pilih template</option>
-                {templates.map((template) => (
+                {availableTemplates.map((template) => (
                   <option key={template.id} value={template.id}>
                     {template.name}
                   </option>

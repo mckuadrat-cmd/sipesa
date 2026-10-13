@@ -447,9 +447,19 @@ export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }:
     setLoadingTemplates(true);
     setTemplateLoadState("loading");
     try {
-      const res = await api.getBroadcastTemplates();
+      const [res, numbersRes] = await Promise.all([api.getBroadcastTemplates(), api.getNumbers()]);
       if (!res.success || !Array.isArray(res.data)) throw new Error(res.success ? "Invalid template response" : res.error);
-      setTemplatesList(res.data.filter((template: any) => String(template.status || "").toLowerCase() === "approved"));
+      const selectedNumber = numbersRes.success ? numbersRes.data.find((number) => number.id === numberId) : null;
+      const approvedTemplates = res.data.filter((template: any) => String(template.status || "").toLowerCase() === "approved");
+      setTemplatesList(approvedTemplates.filter((template: any) => {
+        const hasMediaHeader = Array.isArray(template.components) && template.components.some((component: any) =>
+          String(component?.type || "").toUpperCase() === "HEADER"
+          && ["IMAGE", "VIDEO", "DOCUMENT"].includes(String(component?.format || "").toUpperCase()),
+        );
+        return template.runtimeSupport?.supported !== false
+          && Boolean(template.wabaId && selectedNumber?.wabaId && template.wabaId === selectedNumber.wabaId)
+          && !hasMediaHeader;
+      }));
       setTemplateLoadState("loaded");
     } catch (err) {
       console.error("Error fetching templates:", err);
@@ -523,6 +533,7 @@ export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }:
       }
       const result = await api.sendMessage(numberId, selectedContact, {
         messageType: "template",
+        templateId: selectedTemplate.id,
         templateName: selectedTemplate.name,
         language: selectedTemplate.language || "id",
         bodyVariables: templateVarValues,

@@ -26,7 +26,7 @@ import {
   Send,
   Search,
 } from "lucide-react";
-import { api, TemplateItem, BroadcastHistoryItem } from "../lib/api";
+import { api, TemplateItem, BroadcastHistoryItem, NumberItem } from "../lib/api";
 import { useVisibilityRefresh } from "../hooks/use-visibility-refresh";
 import { useDialogFocus } from "../hooks/use-dialog-focus";
 
@@ -183,6 +183,7 @@ function validateHeaderText(value: string): string | null {
 
 function validateFooterText(value: string): string | null {
   if (value.length > 60) return "Footer maksimal 60 karakter.";
+  if (/\{\{.*?\}\}/.test(value)) return "Footer tidak boleh memiliki variabel.";
   return null;
 }
 
@@ -316,6 +317,8 @@ function getStatusColor(status: string) {
   if (s === "pending") return "bg-amber-100 text-amber-700 border-amber-200";
   if (s === "rejected") return "bg-red-100 text-red-700 border-red-200";
   if (s === "draft") return "bg-slate-100 text-slate-700 border-slate-200";
+  if (s === "paused") return "bg-orange-100 text-orange-700 border-orange-200";
+  if (s === "disabled" || s === "deleted" || s === "missing") return "bg-zinc-200 text-zinc-700 border-zinc-300";
   return "bg-slate-100 text-slate-700 border-slate-200";
 }
 
@@ -325,47 +328,28 @@ function getStatusLabel(status: string) {
   if (s === "pending") return "Menunggu";
   if (s === "rejected") return "Ditolak";
   if (s === "draft") return "Draf";
-  return status;
+  if (s === "paused") return "Dijeda";
+  if (s === "disabled") return "Dinonaktifkan";
+  if (s === "deleted") return "Dihapus di Meta";
+  if (s === "missing") return "Tidak ditemukan di Meta";
+  return status ? `Tidak dikenal (${status})` : "Status tidak dikenal";
 }
 
 function getTemplateDateValue(template: any) {
-  const raw =
-    template?.updated_at ||
-    template?.updatedAt ||
-    template?.created_at ||
-    template?.createdAt ||
-    template?.synced_at ||
-    template?.submitted_at ||
-    template?.timestamp;
+  const raw = template?.created_at || template?.createdAt;
 
   if (raw) {
     const date = new Date(raw).getTime();
     if (!Number.isNaN(date)) return date;
   }
 
-  const numericId = Number(String(template?.id || "").replace(/\D/g, ""));
-  return Number.isFinite(numericId) ? numericId : 0;
+  return 0;
 }
 
 function compareTemplates(a: any, b: any) {
-  const aHasMeta = !!(a.metaTemplateId || a.meta_template_id);
-  const bHasMeta = !!(b.metaTemplateId || b.meta_template_id);
-
-  // 1. Prioritize drafts (no metaTemplateId) to the top
-  if (!aHasMeta && bHasMeta) return -1;
-  if (aHasMeta && !bHasMeta) return 1;
-
-  // 2. If both are drafts, sort by date (newest first)
-  if (!aHasMeta && !bHasMeta) {
-    const aTime = new Date(a.updatedAt || a.createdAt || a.updated_at || a.created_at || 0).getTime();
-    const bTime = new Date(b.updatedAt || b.createdAt || b.updated_at || b.created_at || 0).getTime();
-    return bTime - aTime;
-  }
-
-  // 3. If both are synced, sort by metaTemplateId descending (newer Meta templates have larger IDs)
-  const aMetaId = String(a.metaTemplateId || a.meta_template_id || "");
-  const bMetaId = String(b.metaTemplateId || b.meta_template_id || "");
-  return bMetaId.localeCompare(aMetaId, undefined, { numeric: true });
+  const timeDiff = getTemplateDateValue(b) - getTemplateDateValue(a);
+  if (timeDiff !== 0) return timeDiff;
+  return String(b.id || "").localeCompare(String(a.id || ""));
 }
 
 function formatTemplateDate(iso?: string) {
@@ -550,6 +534,7 @@ function WhatsAppBubblePreview({
 
 export function TemplateManagement() {
   const [templates, setTemplates] = useState<LocalTemplate[]>([]);
+  const [numbers, setNumbers] = useState<NumberItem[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<LocalTemplate | null>(null);
   const [sentCounts, setSentCounts] = useState<Record<string, number>>({});
   const [showModal, setShowModal] = useState(false);
@@ -581,6 +566,7 @@ export function TemplateManagement() {
     buttons: ["", "", ""],
     mediaSampleFileName: "",
     mediaSampleHandle: "",
+    wabaId: "",
   });
 
   const [examples, setExamples] = useState<Record<number, string>>({});
@@ -595,9 +581,10 @@ export function TemplateManagement() {
   const loadTemplates = async (showLoading = true) => {
     if (showLoading) setLoading(true);
     try {
-      const [result, historyResult] = await Promise.all([
+      const [result, historyResult, numbersResult] = await Promise.all([
         api.getBroadcastTemplates(),
         api.getBroadcastHistory({ page: 1, pageSize: 50 }),
+        api.getNumbers(),
       ]);
 
       if ("error" in result) {
@@ -615,6 +602,9 @@ export function TemplateManagement() {
         });
       }
       setSentCounts(counts);
+      if (numbersResult.success) {
+        setNumbers(numbersResult.data.filter((number) => Boolean(number.wabaId)));
+      }
 
       const mapped: LocalTemplate[] = (result.data ?? []).map((tpl) => {
         const header = extractHeaderInfo(tpl.components);
@@ -740,6 +730,7 @@ export function TemplateManagement() {
       buttons: ["", "", ""],
       mediaSampleFileName: "",
       mediaSampleHandle: "",
+      wabaId: numbers.find((number) => number.wabaId)?.wabaId || "",
     });
     setExamples({});
     setNameError(null);
@@ -751,6 +742,15 @@ export function TemplateManagement() {
   };
 
   const openEditModal = (tpl: LocalTemplate) => {
+    if (tpl.category?.toLowerCase() === "authentication" || tpl.runtimeSupport?.supported === false) {
+      toast.info("Template ini memiliki komponen Meta yang belum dapat diedit di SIPESA.");
+      setSelectedTemplate(tpl);
+      return;
+    }
+    if (tpl.metaTemplateId && !["approved", "rejected", "paused"].includes(String(tpl.status).toLowerCase())) {
+      toast.info(`Template berstatus ${getStatusLabel(tpl.status)} belum dapat diedit.`);
+      return;
+    }
     setEditingTemplate(tpl);
 
     const body = tpl.content || extractBodyTextFromComponents(tpl.components);
@@ -768,6 +768,7 @@ export function TemplateManagement() {
       buttons: [buttons[0] || "", buttons[1] || "", buttons[2] || ""],
       mediaSampleFileName: tpl.mediaSampleName || "",
       mediaSampleHandle: tpl.mediaSampleHandle || "",
+      wabaId: tpl.wabaId || "",
     });
 
     const storedExamples = tpl.previewExamples || {};
@@ -817,6 +818,10 @@ export function TemplateManagement() {
   const handleSave = async () => {
     if (saving) return;
     if (!validateAll()) return;
+    if (!formData.wabaId) {
+      toast.error("Pilih WABA pemilik template.");
+      return;
+    }
 
     setSaving(true);
     try {
@@ -826,6 +831,7 @@ export function TemplateManagement() {
         language: formData.language,
         content: formData.body.trim(),
         variables: variables.map((v) => `{{${v}}}`),
+        wabaId: formData.wabaId,
         components: buildComponentsFromForm({
           headerType: formData.headerType,
           headerText: formData.headerText,
@@ -1063,6 +1069,10 @@ export function TemplateManagement() {
                     <option value="pending">Menunggu</option>
                     <option value="rejected">Ditolak</option>
                     <option value="draft">Draf</option>
+                    <option value="paused">Dijeda</option>
+                    <option value="disabled">Dinonaktifkan</option>
+                    <option value="missing">Tidak ditemukan di Meta</option>
+                    <option value="deleted">Dihapus di Meta</option>
                   </select>
                 </div>
               </div>
@@ -1156,6 +1166,9 @@ export function TemplateManagement() {
                           <span className="block truncate max-w-[200px]" title={template.name}>
                             {template.name}
                           </span>
+                          <span className="block text-[11px] font-normal text-slate-500 mt-0.5">
+                            {formatTemplateDate(template.createdAt)}{template.wabaId ? ` · WABA ${template.wabaId}` : " · WABA belum terselesaikan"}
+                          </span>
                         </td>
                         <td className="px-5 py-3 text-sm text-slate-600 hidden sm:table-cell">
                           <Badge variant="outline" className="capitalize text-xs font-normal">
@@ -1171,6 +1184,7 @@ export function TemplateManagement() {
                           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${getStatusColor(template.status)}`}>
                             {getStatusLabel(template.status)}
                           </span>
+                          {template.rejectionReason && <span className="block mt-1 text-[11px] text-red-600" title={template.rejectionReason}>Alasan penolakan tersedia</span>}
                         </td>
                         <td className="px-5 py-3 text-sm text-slate-700 text-center font-medium hidden md:table-cell">
                           {sentCount.toLocaleString("id-ID")}
@@ -1196,6 +1210,7 @@ export function TemplateManagement() {
                               onClick={() => openEditModal(template)}
                               aria-label={`Edit template ${template.name}`}
                               className="h-8 px-2.5"
+                              disabled={template.category?.toLowerCase() === "authentication" || template.runtimeSupport?.supported === false || Boolean(template.metaTemplateId && !["approved", "rejected", "paused"].includes(String(template.status).toLowerCase()))}
                             >
                               <Edit className="w-3.5 h-3.5 sm:mr-1.5" />
                               <span className="hidden sm:inline">Edit</span>
@@ -1231,6 +1246,16 @@ export function TemplateManagement() {
               <p className="text-sm text-muted-foreground">Pilih template untuk melihat preview</p>
             ) : (
               <div className="space-y-5">
+                {(selectedTemplate.category?.toLowerCase() === "authentication" || selectedTemplate.runtimeSupport?.supported === false) && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800" role="status">
+                    Template ini memiliki komponen Meta yang belum dapat diedit di SIPESA. Template ditampilkan read-only dan tidak didukung untuk pengiriman.
+                  </div>
+                )}
+                {selectedTemplate.rejectionReason && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                    <strong>Alasan penolakan:</strong> {selectedTemplate.rejectionReason}
+                  </div>
+                )}
                 <WhatsAppBubblePreview
                   headerType={selectedTemplate.headerType || "none"}
                   headerText={selectedTemplate.headerText}
@@ -1285,11 +1310,28 @@ export function TemplateManagement() {
                     placeholder="contoh: reminder_pembayaran"
                     value={formData.name}
                     onChange={(e) => handleNameChange(e.target.value)}
+                    disabled={Boolean(editingTemplate?.metaTemplateId)}
                   />
                   {nameError && <p id="template-name-error" className="text-xs text-red-600 mt-1">{nameError}</p>}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                  <div>
+                    <Label htmlFor="template-waba">WABA Pemilik *</Label>
+                    <select
+                      id="template-waba"
+                      required
+                      className="w-full p-3 border rounded-lg mt-2 bg-white"
+                      value={formData.wabaId}
+                      disabled={Boolean(editingTemplate)}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, wabaId: e.target.value }))}
+                    >
+                      <option value="">Pilih WABA</option>
+                      {[...new Map(numbers.filter((number) => number.wabaId).map((number) => [number.wabaId, number])).values()].map((number) => (
+                        <option key={number.wabaId!} value={number.wabaId!}>{number.name} · {number.wabaId}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div>
                     <Label htmlFor="template-category">Kategori *</Label>
                     <select
@@ -1306,7 +1348,6 @@ export function TemplateManagement() {
                     >
                       <option value="marketing">Marketing</option>
                       <option value="utility">Utility</option>
-                      <option value="authentication">Authentication</option>
                     </select>
                   </div>
 
@@ -1317,6 +1358,7 @@ export function TemplateManagement() {
                       required
                       className="w-full p-3 border rounded-lg mt-2 bg-white"
                       value={formData.language}
+                      disabled={Boolean(editingTemplate?.metaTemplateId)}
                       onChange={(e) =>
                         setFormData((prev) => ({
                           ...prev,
@@ -1352,7 +1394,6 @@ export function TemplateManagement() {
                       <option value="image">Image</option>
                       <option value="video">Video</option>
                       <option value="document">Document</option>
-                      <option value="location">Location</option>
                     </select>
                   </div>
                 </div>
@@ -1400,7 +1441,11 @@ export function TemplateManagement() {
 
                           const toastId = toast.loading("Mengunggah file contoh ke Meta...");
                           try {
-                            const result = await api.uploadTemplateSample(file);
+                            if (!formData.wabaId) {
+                              toast.error("Pilih WABA sebelum mengunggah media.", { id: toastId });
+                              return;
+                            }
+                            const result = await api.uploadTemplateSample(file, formData.wabaId);
                             if ("error" in result) {
                               toast.error("Gagal mengunggah ke Meta: " + result.error, { id: toastId });
                               return;

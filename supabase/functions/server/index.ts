@@ -267,6 +267,118 @@ function getTemplateSendRequirements(template: any) {
   };
 }
 
+const TEMPLATE_SENDABLE_STATUSES = new Set(["approved"]);
+const TEMPLATE_EDITABLE_META_STATUSES = new Set(["approved", "rejected", "paused"]);
+const TEMPLATE_CATEGORIES = new Set(["marketing", "utility"]);
+const TEMPLATE_COMPONENT_TYPES = new Set(["HEADER", "BODY", "FOOTER", "BUTTONS"]);
+const TEMPLATE_HEADER_FORMATS = new Set(["TEXT", "IMAGE", "VIDEO", "DOCUMENT"]);
+
+function inspectTemplateRuntime(template: any) {
+  const reasons: string[] = [];
+  const components = Array.isArray(template?.components) ? template.components : [];
+  const category = String(template?.category ?? "").toLowerCase();
+  if (category === "authentication") reasons.push("Template Authentication belum didukung di SIPESA");
+
+  for (const component of components) {
+    const type = String(component?.type ?? "").toUpperCase();
+    if (!TEMPLATE_COMPONENT_TYPES.has(type)) {
+      reasons.push(`Komponen ${type || "UNKNOWN"} belum didukung`);
+      continue;
+    }
+    if (type === "HEADER") {
+      const format = String(component?.format ?? "").toUpperCase();
+      if (!TEMPLATE_HEADER_FORMATS.has(format)) reasons.push(`Header ${format || "UNKNOWN"} belum didukung`);
+      if (format === "TEXT" && /\{\{\d+\}\}/.test(String(component?.text ?? ""))) {
+        reasons.push("Variabel header text belum didukung");
+      }
+    }
+    if (type === "BUTTONS") {
+      for (const button of Array.isArray(component?.buttons) ? component.buttons : []) {
+        const buttonType = String(button?.type ?? "").toUpperCase();
+        if (buttonType !== "QUICK_REPLY") reasons.push(`Tombol ${buttonType || "UNKNOWN"} belum didukung`);
+      }
+    }
+  }
+
+  return { supported: reasons.length === 0, reasons: [...new Set(reasons)] };
+}
+
+function validateTemplatePayload(body: any) {
+  const errors: string[] = [];
+  const nameRaw = String(body?.name ?? "").trim();
+  const name = nameRaw.toLowerCase();
+  const category = String(body?.category ?? "").trim().toLowerCase();
+  const language = String(body?.language ?? "").trim();
+  const components = buildTemplateComponentsFromPayload(body);
+  const bodyComponent = components.find((item: any) => String(item?.type ?? "").toUpperCase() === "BODY");
+  const bodyText = String(bodyComponent?.text ?? "");
+  const header = components.find((item: any) => String(item?.type ?? "").toUpperCase() === "HEADER");
+  const footer = components.find((item: any) => String(item?.type ?? "").toUpperCase() === "FOOTER");
+  const buttons = components.find((item: any) => String(item?.type ?? "").toUpperCase() === "BUTTONS");
+
+  if (!nameRaw) errors.push("Nama template wajib");
+  if (nameRaw !== name) errors.push("Nama template wajib lowercase");
+  if (name.length > 512) errors.push("Nama template maksimal 512 karakter");
+  if (name && !/^[a-z0-9_]+$/.test(name)) errors.push("Nama template hanya boleh huruf kecil, angka, dan underscore");
+  if (!TEMPLATE_CATEGORIES.has(category)) {
+    errors.push(category === "authentication" ? "Authentication belum didukung di SIPESA" : "Kategori template tidak valid");
+  }
+  if (!/^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(language)) errors.push("Format bahasa template tidak valid");
+  if (!bodyText.trim()) errors.push("Konten template wajib");
+  if (bodyText.length > 1024) errors.push("Konten template maksimal 1024 karakter");
+  if (/\{\{[^}]*$|(^|[^\{])\{\d+\}\}|\{\{[^\d]|\{\{\d+[^}]|\{\{\d+\}(?!\})/.test(bodyText)) {
+    errors.push("Placeholder template malformed");
+  }
+  if (/^\s*\{\{\d+\}\}/.test(bodyText) || /\{\{\d+\}\}\s*$/.test(bodyText)) {
+    errors.push("Variabel tidak boleh tepat di awal atau akhir pesan");
+  }
+  const indexes = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map((match) => Number(match[1]));
+  const uniqueIndexes = [...new Set(indexes)].sort((a, b) => a - b);
+  if (uniqueIndexes.some((value, index) => value !== index + 1)) errors.push("Nomor variabel harus berurutan mulai dari {{1}}");
+
+  if (header) {
+    const format = String(header?.format ?? "").toUpperCase();
+    if (!TEMPLATE_HEADER_FORMATS.has(format)) errors.push(`Header ${format || "UNKNOWN"} belum didukung`);
+    if (format === "TEXT" && String(header?.text ?? "").length > 60) errors.push("Header text maksimal 60 karakter");
+    if (format === "TEXT" && /\{\{\d+\}\}/.test(String(header?.text ?? ""))) errors.push("Variabel header text belum didukung");
+    if (["IMAGE", "VIDEO", "DOCUMENT"].includes(format)) {
+      const handle = header?.example?.header_handle?.[0];
+      if (!String(handle ?? "").startsWith("4::")) errors.push("Media header memerlukan sample handle Meta yang valid");
+    }
+  }
+  if (footer) {
+    const footerText = String(footer?.text ?? "");
+    if (footerText.length > 60) errors.push("Footer maksimal 60 karakter");
+    if (/\{\{.*?\}\}/.test(footerText)) errors.push("Footer tidak boleh memiliki variabel");
+  }
+  if (buttons) {
+    const items = Array.isArray(buttons?.buttons) ? buttons.buttons : [];
+    if (items.length > 10) errors.push("Maksimal 10 tombol");
+    for (const button of items) {
+      if (String(button?.type ?? "").toUpperCase() !== "QUICK_REPLY") errors.push("Hanya tombol quick reply yang didukung");
+      if (!String(button?.text ?? "").trim() || String(button?.text ?? "").length > 25) errors.push("Teks tombol wajib dan maksimal 25 karakter");
+    }
+  }
+  const runtime = inspectTemplateRuntime({ category, components });
+  errors.push(...runtime.reasons);
+  return { name, category, language, components, errors: [...new Set(errors)] };
+}
+
+function getTemplateSendability(template: any, numberRow: any) {
+  const reasons: string[] = [];
+  const status = normalizeTemplateStatus(template?.status);
+  if (!template) reasons.push("Template tidak ditemukan");
+  if (!TEMPLATE_SENDABLE_STATUSES.has(status)) reasons.push(`Template berstatus ${status} dan tidak dapat dikirim`);
+  if (template?.deleted_at || ["paused", "disabled", "deleted", "missing"].includes(status)) reasons.push("Template tidak aktif");
+  if (!template?.waba_id) reasons.push("Kepemilikan WABA template belum terselesaikan; lakukan rekonsiliasi manual");
+  if (!numberRow?.waba_id) reasons.push("Nomor pengirim belum memiliki WABA");
+  if (template?.waba_id && numberRow?.waba_id && String(template.waba_id) !== String(numberRow.waba_id)) {
+    reasons.push("Template dan nomor pengirim berasal dari WABA berbeda");
+  }
+  reasons.push(...inspectTemplateRuntime(template).reasons);
+  return { sendable: reasons.length === 0, reasons: [...new Set(reasons)] };
+}
+
 function logContactsRouteFailure(
   stage: string,
   error: any,
@@ -692,38 +804,92 @@ async function syncMetaTemplatesForNumber(params: {
 }) {
   const supa = sb();
 
-  const url = `https://graph.facebook.com/${graphVersion()}/${params.wabaId}/message_templates`;
+  const items: any[] = [];
+  let after: string | null = null;
+  const seenCursors = new Set<string>();
+  const maxPages = 100;
+  for (let page = 0; page < maxPages; page += 1) {
+    const url = new URL(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(params.wabaId)}/message_templates`);
+    url.searchParams.set("limit", "100");
+    url.searchParams.set("fields", "id,name,status,category,language,components,quality_score,rejected_reason,reason,previous_category");
+    if (after) url.searchParams.set("after", after);
+    const res = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${params.accessToken}` } });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json?.error?.message || "Gagal mengambil template dari Meta");
+    items.push(...(Array.isArray(json?.data) ? json.data : []));
 
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${params.accessToken}`,
-    },
-  });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(json?.error?.message || "Gagal mengambil template dari Meta");
+    const nextCursor = String(json?.paging?.cursors?.after ?? "").trim();
+    const hasNext = Boolean(json?.paging?.next && nextCursor);
+    if (!hasNext) break;
+    if (seenCursors.has(nextCursor)) throw new Error("Pagination Meta berulang; sync dihentikan dengan aman");
+    seenCursors.add(nextCursor);
+    after = nextCursor;
+    if (page === maxPages - 1) throw new Error("Batas aman 100 halaman sync tercapai");
   }
 
-  const items = Array.isArray(json?.data) ? json.data : [];
+  const syncedAt = nowIso();
+  const seenMetaIds = new Set<string>();
 
   for (const tpl of items) {
-    await supa.from("wa_templates").upsert(
-      {
-        org_id: params.orgId,
-        name: String(tpl.name ?? "").trim().toLowerCase(),
-        category: String(tpl.category ?? "marketing").toLowerCase(),
-        language: String(tpl.language ?? "id"),
-        status: String(tpl.status ?? "pending").toLowerCase(),
-        components: tpl.components ?? [],
-        meta_template_id: tpl.id ?? null,
-      },
-      {
-        onConflict: "org_id,name,language",
-      },
-    );
+    const rawStatus = String(tpl.status ?? "UNKNOWN");
+    const metaTemplateId = String(tpl.id ?? "").trim() || null;
+    if (metaTemplateId) seenMetaIds.add(metaTemplateId);
+    const values = {
+      org_id: params.orgId,
+      waba_id: params.wabaId,
+      name: String(tpl.name ?? "").trim().toLowerCase(),
+      category: String(tpl.category ?? "marketing").toLowerCase(),
+      language: String(tpl.language ?? "id"),
+      status: normalizeTemplateStatus(rawStatus),
+      components: tpl.components ?? [],
+      meta_template_id: metaTemplateId,
+      rejection_reason: tpl.rejected_reason ?? tpl.reason ?? null,
+      quality_rating: tpl.quality_score?.score ?? tpl.quality_score ?? null,
+      previous_category: tpl.previous_category ?? null,
+      meta_status_raw: rawStatus,
+      synced_at: syncedAt,
+      missing_from_meta_at: null,
+      deleted_at: null,
+    };
+    let existingByMetaId: any = null;
+    if (metaTemplateId) {
+      const { data, error } = await supa
+        .from("wa_templates")
+        .select("id")
+        .eq("org_id", params.orgId)
+        .eq("waba_id", params.wabaId)
+        .eq("meta_template_id", metaTemplateId)
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      existingByMetaId = data;
+    }
+    const mutation = existingByMetaId
+      ? supa.from("wa_templates").update(values).eq("id", existingByMetaId.id)
+      : supa.from("wa_templates").upsert(values, { onConflict: "org_id,waba_id,name,language" });
+    const { error: upsertError } = await mutation;
+    if (upsertError) throw upsertError;
+  }
+
+  const { data: localRows, error: localError } = await supa
+    .from("wa_templates")
+    .select("id, meta_template_id")
+    .eq("org_id", params.orgId)
+    .eq("waba_id", params.wabaId)
+    .not("meta_template_id", "is", null)
+    .is("deleted_at", null);
+  if (localError) throw localError;
+  const missingIds = (localRows ?? [])
+    .filter((row: any) => !seenMetaIds.has(String(row.meta_template_id)))
+    .map((row: any) => row.id);
+  if (missingIds.length > 0) {
+    const { error: missingError } = await supa
+      .from("wa_templates")
+      .update({ status: "missing", meta_status_raw: "MISSING", missing_from_meta_at: syncedAt, synced_at: syncedAt })
+      .eq("org_id", params.orgId)
+      .eq("waba_id", params.wabaId)
+      .in("id", missingIds);
+    if (missingError) throw missingError;
   }
 
   if (params.userId) {
@@ -1811,31 +1977,37 @@ app.post(`${API_PREFIX}/templates/sync-default`, requireAuth, requireOrgAdmin, a
     const user = c.get("authUser");
     const supa = sb();
 
-    const { data: numberRow, error } = await supa
+    const { data: numberRows, error } = await supa
       .from("wa_numbers")
-      .select("*")
+      .select("id, waba_id, access_token")
       .eq("org_id", user.org_id)
       .not("waba_id", "is", null)
       .not("access_token", "is", null)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+      .order("created_at", { ascending: true });
 
     if (error) return c.json(jsonFail(error.message), 500);
-    if (!numberRow) return c.json(jsonFail("Belum ada nomor/WABA aktif untuk sync template"), 404);
+    if (!numberRows?.length) return c.json(jsonFail("Belum ada nomor/WABA aktif untuk sync template"), 404);
 
-    const result = await syncMetaTemplatesForNumber({
-      orgId: user.org_id,
-      userId: user.id,
-      wabaId: String(numberRow.waba_id),
-      accessToken: String(numberRow.access_token),
-    });
+    const uniqueWabas = new Map<string, any>();
+    for (const row of numberRows) {
+      const wabaId = String(row.waba_id ?? "").trim();
+      if (wabaId && !uniqueWabas.has(wabaId)) uniqueWabas.set(wabaId, row);
+    }
+    const results = [];
+    for (const [wabaId, row] of uniqueWabas) {
+      const result = await syncMetaTemplatesForNumber({
+        orgId: user.org_id,
+        userId: user.id,
+        wabaId,
+        accessToken: String(row.access_token),
+      });
+      results.push({ wabaId, sourceNumberId: row.id, total: result.total });
+    }
 
     return c.json(
       jsonOk({
-        total: result.total,
-        wabaId: numberRow.waba_id,
-        sourceNumberId: numberRow.id,
+        total: results.reduce((sum, item) => sum + item.total, 0),
+        wabas: results,
       })
     );
   } catch (e) {
@@ -2056,9 +2228,10 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
       return c.json(jsonFail("Idempotency key pengiriman wajib dan tidak valid"), 400);
     }
 
-    const isTemplate = body.messageType === "template" || !!body.templateName;
-    const templateName = String(body.templateName ?? "").trim();
-    const language = String(body.language ?? "id").trim();
+    const isTemplate = body.messageType === "template" || !!body.templateId || !!body.templateName;
+    const templateId = String(body.templateId ?? "").trim();
+    let templateName = String(body.templateName ?? "").trim();
+    let language = String(body.language ?? "id").trim();
     const bodyVariables = Array.isArray(body.bodyVariables)
       ? body.bodyVariables.map((value: any) => String(value ?? ""))
       : [];
@@ -2078,6 +2251,29 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
 
     if (numberErr) return c.json(jsonFail(numberErr.message), 500);
     if (!numberRow) return c.json(jsonFail("Nomor tidak ditemukan"), 404);
+
+    let authoritativeTemplate: any = null;
+    if (isTemplate) {
+      if (!templateId) return c.json(jsonFail("templateId wajib untuk pengiriman template"), 400);
+      const { data: template, error: templateError } = await supa
+        .from("wa_templates")
+        .select("*")
+        .eq("id", templateId)
+        .eq("org_id", user.org_id)
+        .maybeSingle();
+      if (templateError) return c.json(jsonFail(templateError.message), 500);
+      if (!template) return c.json(jsonFail("Template tidak ditemukan"), 404);
+      const sendability = getTemplateSendability(template, numberRow);
+      if (!sendability.sendable) return c.json(jsonFail(sendability.reasons[0]), 409);
+      const requirements = getTemplateSendRequirements(template);
+      if (requirements.requiresMedia) return c.json(jsonFail("Chat belum mendukung template dengan media header"), 409);
+      if (bodyVariables.length !== requirements.bodyVariableCount || bodyVariables.some((value: string) => !value.trim())) {
+        return c.json(jsonFail(`Template memerlukan ${requirements.bodyVariableCount} parameter body yang lengkap`), 400);
+      }
+      authoritativeTemplate = template;
+      templateName = String(template.name);
+      language = String(template.language);
+    }
 
     const { data: contact, error: contactErr } = await supa
       .from("wa_contacts")
@@ -2123,6 +2319,7 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
         existing.contact_id === contactId &&
         existing.text_body === content &&
         existing.message_type === (isTemplate ? "template" : "text") &&
+        String(existing.payload?.templateId ?? "") === (authoritativeTemplate?.id ?? "") &&
         String(existing.payload?.templateName ?? "") === templateName;
 
       if (!sameLogicalPayload) {
@@ -2243,6 +2440,7 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
         payload: {
           source: "manual",
           isTemplate,
+          templateId: authoritativeTemplate?.id ?? null,
           templateName,
           bodyVariables,
           manual_send_reference: manualSendReference,
@@ -2655,8 +2853,8 @@ app.get(`${API_PREFIX}/templates`, requireAuth, async (c) => {
     .from("wa_templates")
     .select("*")
     .eq("org_id", user.org_id)
-    .order("updated_at", { ascending: false })
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false });
 
     if (error) return c.json(jsonFail(error.message), 500);
 
@@ -2670,7 +2868,16 @@ app.get(`${API_PREFIX}/templates`, requireAuth, async (c) => {
         language: row.language ?? "id",
         status: normalizeTemplateStatus(row.status),
         components: row.components ?? [],
+        wabaId: row.waba_id ?? null,
         metaTemplateId: row.meta_template_id ?? null,
+        rejectionReason: row.rejection_reason ?? null,
+        qualityRating: row.quality_rating ?? null,
+        previousCategory: row.previous_category ?? null,
+        metaStatusRaw: row.meta_status_raw ?? null,
+        syncedAt: row.synced_at ?? null,
+        deletedAt: row.deleted_at ?? null,
+        missingFromMetaAt: row.missing_from_meta_at ?? null,
+        runtimeSupport: inspectTemplateRuntime(row),
         createdAt: row.created_at,
         updatedAt: row.updated_at ?? row.created_at,
         content: meta.content,
@@ -2693,6 +2900,7 @@ app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, requireOrgAdmin, 
     const user = c.get("authUser");
     const body = await c.req.parseBody();
     const file = body.file;
+    const wabaId = String(body.wabaId ?? "").trim();
 
     if (!file || !(file instanceof File)) {
       return c.json(jsonFail("File wajib diunggah"), 400);
@@ -2701,6 +2909,7 @@ app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, requireOrgAdmin, 
     if (file.size > 5 * 1024 * 1024) {
       return c.json(jsonFail("Ukuran file contoh maksimal 5MB"), 400);
     }
+    if (!wabaId) return c.json(jsonFail("WABA wajib dipilih untuk upload sample"), 400);
 
     const fileName = file.name;
     const fileType = file.type;
@@ -2712,9 +2921,8 @@ app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, requireOrgAdmin, 
       .from("wa_numbers")
       .select("*")
       .eq("org_id", user.org_id)
-      .not("waba_id", "is", null)
+      .eq("waba_id", wabaId)
       .not("access_token", "is", null)
-      .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
 
@@ -2724,7 +2932,9 @@ app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, requireOrgAdmin, 
     const accessToken = numberRow.access_token;
 
     // 1. Dapatkan App ID dari Meta
-    const appRes = await fetch(`https://graph.facebook.com/v25.0/app?access_token=${accessToken}`);
+    const appRes = await fetch(`https://graph.facebook.com/${graphVersion()}/app`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
     if (!appRes.ok) {
       const err = await appRes.json();
       return c.json(jsonFail(err?.error?.message || "Gagal mendapatkan App ID dari Meta"), 400);
@@ -2734,8 +2944,8 @@ app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, requireOrgAdmin, 
 
     // 2. Buat sesi upload
     const uploadInitRes = await fetch(
-      `https://graph.facebook.com/v25.0/${appId}/uploads?file_name=${encodeURIComponent(fileName)}&file_length=${fileLength}&file_type=${encodeURIComponent(fileType)}&access_token=${accessToken}`,
-      { method: "POST" }
+      `https://graph.facebook.com/${graphVersion()}/${appId}/uploads?file_name=${encodeURIComponent(fileName)}&file_length=${fileLength}&file_type=${encodeURIComponent(fileType)}`,
+      { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } }
     );
     if (!uploadInitRes.ok) {
       const err = await uploadInitRes.json();
@@ -2746,11 +2956,11 @@ app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, requireOrgAdmin, 
 
     // 3. Upload file binary
     const uploadRes = await fetch(
-      `https://graph.facebook.com/v25.0/${sessionId}`,
+      `https://graph.facebook.com/${graphVersion()}/${sessionId}`,
       {
         method: "POST",
         headers: {
-          "Authorization": `OAuth ${accessToken}`,
+          "Authorization": `Bearer ${accessToken}`,
           "file_offset": "0",
           "Content-Type": "application/octet-stream",
         },
@@ -2776,23 +2986,26 @@ app.post(`${API_PREFIX}/templates`, requireAuth, requireOrgAdmin, async (c) => {
     const supa = sb();
     const body = await c.req.json();
 
-    const name = String(body.name ?? "").trim().toLowerCase();
-    const category = String(body.category ?? "marketing").trim().toLowerCase();
-    const language = String(body.language ?? "id").trim();
-    const content = String(body.content ?? body.body ?? "").trim();
-
-    if (!name) return c.json(jsonFail("Nama template wajib"), 400);
-    if (!/^[a-z0-9_]+$/.test(name)) {
-      return c.json(jsonFail("Nama template hanya boleh huruf kecil, angka, dan underscore"), 400);
-    }
-    if (!content) return c.json(jsonFail("Konten template wajib"), 400);
-
-    const components = buildTemplateComponentsFromPayload(body);
+    const validated = validateTemplatePayload(body);
+    if (validated.errors.length > 0) return c.json(jsonFail(validated.errors[0]), 400);
+    const { name, category, language, components } = validated;
+    const wabaId = String(body.wabaId ?? "").trim();
+    if (!wabaId) return c.json(jsonFail("WABA wajib dipilih"), 400);
+    const { data: ownerNumber, error: ownerError } = await supa
+      .from("wa_numbers")
+      .select("id")
+      .eq("org_id", user.org_id)
+      .eq("waba_id", wabaId)
+      .limit(1)
+      .maybeSingle();
+    if (ownerError) return c.json(jsonFail(ownerError.message), 500);
+    if (!ownerNumber) return c.json(jsonFail("WABA tidak dimiliki organisasi ini"), 403);
 
     const { data, error } = await supa
       .from("wa_templates")
       .insert({
         org_id: user.org_id,
+        waba_id: wabaId,
         name,
         category,
         language,
@@ -2824,6 +3037,7 @@ app.post(`${API_PREFIX}/templates`, requireAuth, requireOrgAdmin, async (c) => {
         status: normalizeTemplateStatus(data.status),
         components: data.components,
         metaTemplateId: data.meta_template_id,
+        wabaId: data.waba_id,
         createdAt: data.created_at,
         content: meta.content,
         variables: meta.variables,
@@ -2845,16 +3059,9 @@ app.put(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c) =
     const id = c.req.param("id");
     const body = await c.req.json();
 
-    const name = String(body.name ?? "").trim().toLowerCase();
-    const category = String(body.category ?? "marketing").trim().toLowerCase();
-    const language = String(body.language ?? "id").trim();
-    const content = String(body.content ?? body.body ?? "").trim();
-
-    if (!name) return c.json(jsonFail("Nama template wajib"), 400);
-    if (!/^[a-z0-9_]+$/.test(name)) {
-      return c.json(jsonFail("Nama template hanya boleh huruf kecil, angka, dan underscore"), 400);
-    }
-    if (!content) return c.json(jsonFail("Konten template wajib"), 400);
+    const validated = validateTemplatePayload(body);
+    if (validated.errors.length > 0) return c.json(jsonFail(validated.errors[0]), 400);
+    const { name, category, language } = validated;
 
     const { data: existing, error: exErr } = await supa
       .from("wa_templates")
@@ -2866,16 +3073,26 @@ app.put(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c) =
     if (exErr) return c.json(jsonFail(exErr.message), 500);
     if (!existing) return c.json(jsonFail("Template tidak ditemukan"), 404);
 
-    const components = buildTemplateComponentsFromPayload(body);
+    const components = validated.components;
+
+    if (existing.meta_template_id && (name !== existing.name || language !== existing.language)) {
+      return c.json(jsonFail("Nama dan bahasa template Meta tidak dapat diubah dari SIPESA"), 409);
+    }
+    const existingRuntime = inspectTemplateRuntime(existing);
+    if (!existingRuntime.supported) {
+      return c.json(jsonFail("Template ini memiliki komponen Meta yang belum dapat diedit di SIPESA."), 409);
+    }
+    if (existing.meta_template_id && !TEMPLATE_EDITABLE_META_STATUSES.has(normalizeTemplateStatus(existing.status))) {
+      return c.json(jsonFail(`Template berstatus ${normalizeTemplateStatus(existing.status)} tidak dapat diedit`), 409);
+    }
 
     if (existing.meta_template_id) {
       const { data: numberRow, error: numErr } = await supa
         .from("wa_numbers")
         .select("*")
         .eq("org_id", user.org_id)
-        .not("waba_id", "is", null)
+        .eq("waba_id", existing.waba_id)
         .not("access_token", "is", null)
-        .order("created_at", { ascending: true })
         .limit(1)
         .maybeSingle();
 
@@ -2953,16 +3170,20 @@ app.put(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c) =
       if (!res.ok) {
         return c.json(jsonFail(json?.error?.message || "Gagal mengupdate template di Meta"), 400);
       }
+      body.__metaResponseStatus = json?.status ?? null;
     }
 
     const { data, error } = await supa
       .from("wa_templates")
       .update({
-        name,
+        name: existing.meta_template_id ? existing.name : name,
         category,
-        language,
+        language: existing.meta_template_id ? existing.language : language,
         components,
-        status: existing.meta_template_id ? "pending" : normalizeTemplateStatus(existing.status || "draft"),
+        status: body.__metaResponseStatus
+          ? normalizeTemplateStatus(body.__metaResponseStatus)
+          : normalizeTemplateStatus(existing.status || "draft"),
+        meta_status_raw: body.__metaResponseStatus ?? existing.meta_status_raw ?? null,
         updated_at: nowIso(),
       })
       .eq("org_id", user.org_id)
@@ -2991,6 +3212,7 @@ app.put(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c) =
         status: normalizeTemplateStatus(data.status),
         components: data.components,
         metaTemplateId: data.meta_template_id,
+        wabaId: data.waba_id,
         createdAt: data.created_at,
         content: meta.content,
         variables: meta.variables,
@@ -3013,7 +3235,7 @@ app.delete(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c
 
     const { data: existing, error: exErr } = await supa
       .from("wa_templates")
-      .select("id, name")
+      .select("*")
       .eq("org_id", user.org_id)
       .eq("id", id)
       .maybeSingle();
@@ -3021,42 +3243,37 @@ app.delete(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c
     if (exErr) return c.json(jsonFail(exErr.message), 500);
     if (!existing) return c.json(jsonFail("Template tidak ditemukan"), 404);
 
-    // Try to delete from Meta if we have WABA credentials
-    const { data: numberRow } = await supa
-      .from("wa_numbers")
-      .select("*")
-      .eq("org_id", user.org_id)
-      .not("waba_id", "is", null)
-      .not("access_token", "is", null)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+    if (existing.meta_template_id) {
+      if (!existing.waba_id) return c.json(jsonFail("WABA template belum terselesaikan; template tidak dihapus"), 409);
+      const { data: numberRow, error: numberError } = await supa
+        .from("wa_numbers")
+        .select("waba_id, access_token")
+        .eq("org_id", user.org_id)
+        .eq("waba_id", existing.waba_id)
+        .not("access_token", "is", null)
+        .limit(1)
+        .maybeSingle();
+      if (numberError) return c.json(jsonFail(numberError.message), 500);
+      if (!numberRow) return c.json(jsonFail("Kredensial WABA template tidak tersedia; template tidak dihapus"), 409);
 
-    if (numberRow) {
-      const wabaId = String(numberRow.waba_id ?? "").trim();
-      const accessToken = String(numberRow.access_token ?? "").trim();
-      if (wabaId && accessToken) {
-        try {
-          const deleteUrl = `https://graph.facebook.com/${graphVersion()}/${wabaId}/message_templates?name=${encodeURIComponent(existing.name)}`;
-          const metaRes = await fetch(deleteUrl, {
-            method: "DELETE",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-            },
-          });
-          const metaJson = await metaRes.json();
-          console.log("Meta delete template response:", metaJson);
-        } catch (metaErr) {
-          console.error("Failed to delete template from Meta:", metaErr);
-        }
+      const deleteUrl = new URL(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(existing.waba_id)}/message_templates`);
+      deleteUrl.searchParams.set("hsm_id", String(existing.meta_template_id));
+      deleteUrl.searchParams.set("name", String(existing.name));
+      const metaRes = await fetch(deleteUrl, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${numberRow.access_token}` },
+      });
+      const metaJson = await metaRes.json().catch(() => null);
+      if (!metaRes.ok || metaJson?.success === false) {
+        return c.json(jsonFail(metaJson?.error?.message || "Meta menolak penghapusan; data lokal dipertahankan"), 409);
       }
     }
 
-    const { error } = await supa
-      .from("wa_templates")
-      .delete()
-      .eq("org_id", user.org_id)
-      .eq("id", id);
+    const deletionTime = nowIso();
+    const mutation = existing.meta_template_id
+      ? supa.from("wa_templates").update({ status: "deleted", meta_status_raw: "DELETED", deleted_at: deletionTime, updated_at: deletionTime })
+      : supa.from("wa_templates").delete();
+    const { error } = await mutation.eq("org_id", user.org_id).eq("id", id);
 
     if (error) return c.json(jsonFail(error.message), 500);
 
@@ -3068,7 +3285,7 @@ app.delete(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c
       meta: { template_id: existing.id },
     });
 
-    return c.json(jsonOk({ deleted: true, id }));
+    return c.json(jsonOk({ deleted: true, id, tombstoned: Boolean(existing.meta_template_id) }));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -3081,54 +3298,24 @@ app.post(`${API_PREFIX}/templates/sync`, requireAuth, requireOrgAdmin, async (c)
     const body = await c.req.json();
 
     const wabaId = String(body.wabaId ?? "").trim();
-    const accessToken = String(body.accessToken ?? "").trim();
-
     if (!wabaId) return c.json(jsonFail("wabaId wajib"), 400);
-    if (!accessToken) return c.json(jsonFail("accessToken wajib"), 400);
-
-    const url = `https://graph.facebook.com/${graphVersion()}/${wabaId}/message_templates`;
-
-    const res = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
+    const { data: numberRow, error: numberError } = await supa
+      .from("wa_numbers")
+      .select("waba_id, access_token")
+      .eq("org_id", user.org_id)
+      .eq("waba_id", wabaId)
+      .not("access_token", "is", null)
+      .limit(1)
+      .maybeSingle();
+    if (numberError) return c.json(jsonFail(numberError.message), 500);
+    if (!numberRow) return c.json(jsonFail("WABA tidak dimiliki organisasi atau kredensial tidak tersedia"), 403);
+    const result = await syncMetaTemplatesForNumber({
+      orgId: user.org_id,
+      userId: user.id,
+      wabaId,
+      accessToken: String(numberRow.access_token),
     });
-
-    const json = await res.json();
-
-    if (!res.ok) {
-      return c.json(jsonFail(json?.error?.message || "Gagal mengambil template dari Meta"), 400);
-    }
-
-    const items = Array.isArray(json?.data) ? json.data : [];
-
-    for (const tpl of items) {
-      await supa.from("wa_templates").upsert(
-        {
-          org_id: user.org_id,
-          name: String(tpl.name ?? "").trim().toLowerCase(),
-          category: String(tpl.category ?? "marketing").toLowerCase(),
-          language: String(tpl.language ?? "id"),
-          status: normalizeTemplateStatus(tpl.status),
-          components: tpl.components ?? [],
-          meta_template_id: tpl.id ?? null,
-        },
-        {
-          onConflict: "org_id,name,language",
-        },
-      );
-    }
-
-    await supa.from("app_activity").insert({
-      org_id: user.org_id,
-      actor_user_id: user.id,
-      type: "template_sync",
-      message: `Sync template Meta: ${items.length} template`,
-      meta: { waba_id: wabaId, total: items.length },
-    });
-
-    return c.json(jsonOk({ total: items.length, templates: items }));
+    return c.json(jsonOk({ total: result.total, wabaId }));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -3149,14 +3336,17 @@ app.post(`${API_PREFIX}/templates/:id/push-meta`, requireAuth, requireOrgAdmin, 
 
     if (tplErr) return c.json(jsonFail(tplErr.message), 500);
     if (!tpl) return c.json(jsonFail("Template tidak ditemukan"), 404);
+    if (tpl.meta_template_id) return c.json(jsonFail("Template sudah terdaftar di Meta"), 409);
+    if (!tpl.waba_id) return c.json(jsonFail("WABA template belum dipilih"), 409);
+    const runtime = inspectTemplateRuntime(tpl);
+    if (!runtime.supported) return c.json(jsonFail(runtime.reasons[0]), 409);
 
     const { data: numberRow, error: numErr } = await supa
       .from("wa_numbers")
       .select("*")
       .eq("org_id", user.org_id)
-      .not("waba_id", "is", null)
+      .eq("waba_id", tpl.waba_id)
       .not("access_token", "is", null)
-      .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
 
@@ -3243,6 +3433,8 @@ app.post(`${API_PREFIX}/templates/:id/push-meta`, requireAuth, requireOrgAdmin, 
       .update({
         meta_template_id: json?.id ?? null,
         status: normalizeTemplateStatus(json?.status ?? "pending"),
+        meta_status_raw: String(json?.status ?? "PENDING"),
+        synced_at: nowIso(),
         updated_at: nowIso(),
       })
       .eq("org_id", user.org_id)
@@ -3735,6 +3927,8 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
         .maybeSingle();
       if (templateErr) return c.json(jsonFail(templateErr.message), 500);
       if (!template) return c.json(jsonFail("Template tidak ditemukan"), 404);
+      const sendability = getTemplateSendability(template, numberRow);
+      if (!sendability.sendable) return c.json(jsonFail(sendability.reasons[0]), 409);
       templateRow = template;
     }
 
@@ -4539,12 +4733,21 @@ async function runBroadcastWorker(
         .from("wa_templates")
         .select("*")
         .eq("id", broadcast.template_id)
+        .eq("org_id", orgId)
         .maybeSingle();
 
       if (templateErr || !template) {
         await supa
           .from("wa_broadcasts")
           .update({ status: "failed", error: "Template tidak ditemukan", updated_at: nowIso() })
+          .eq("id", broadcastId);
+        return;
+      }
+      const sendability = getTemplateSendability(template, numberRow);
+      if (!sendability.sendable) {
+        await supa
+          .from("wa_broadcasts")
+          .update({ status: "failed", error: sendability.reasons[0], updated_at: nowIso() })
           .eq("id", broadcastId);
         return;
       }
@@ -5459,24 +5662,58 @@ const handleWebhookPost = async (c: any) => {
         const value = change?.value ?? {};
 
         if (field === "message_template_status_update") {
-          const event = String(value?.event ?? "").toLowerCase(); // "approved", "rejected", etc.
+          const eventRaw = String(value?.event ?? value?.status ?? "UNKNOWN");
+          const event = normalizeTemplateStatus(eventRaw);
           const metaTemplateId = String(value?.message_template_id ?? "");
-          const templateName = String(value?.message_template_name ?? "");
+          const templateName = String(value?.message_template_name ?? "").trim().toLowerCase();
+          const language = String(value?.message_template_language ?? value?.language ?? "").trim();
+          const wabaId = String(entry?.id ?? value?.waba_id ?? "").trim();
+          let resolved: any = null;
 
-          if (metaTemplateId || templateName) {
-            let query = supa.from("wa_templates").update({
-              status: normalizeTemplateStatus(event),
-              updated_at: nowIso(),
+          if (wabaId && metaTemplateId) {
+            const { data } = await supa
+              .from("wa_templates")
+              .select("id, org_id, waba_id")
+              .eq("waba_id", wabaId)
+              .eq("meta_template_id", metaTemplateId)
+              .limit(1)
+              .maybeSingle();
+            resolved = data;
+          } else if (wabaId && templateName && language) {
+            const { data } = await supa
+              .from("wa_templates")
+              .select("id, org_id, waba_id")
+              .eq("waba_id", wabaId)
+              .eq("name", templateName)
+              .eq("language", language)
+              .limit(1)
+              .maybeSingle();
+            resolved = data;
+          }
+
+          if (!resolved) {
+            console.warn("Webhook template status ignored: authoritative identity unresolved.", {
+              wabaId: wabaId || null,
+              metaTemplateId: metaTemplateId || null,
+              templateName: templateName || null,
+              language: language || null,
             });
-
-            if (metaTemplateId) {
-              query = query.eq("meta_template_id", metaTemplateId);
-            } else {
-              query = query.eq("name", templateName);
-            }
-
-            const { error: tplUpdErr } = await query;
-            console.log("Webhook template status update:", { event, metaTemplateId, templateName, tplUpdErr });
+          } else {
+            const { error: tplUpdErr } = await supa
+              .from("wa_templates")
+              .update({
+                status: event,
+                meta_status_raw: eventRaw,
+                rejection_reason: value?.reason ?? value?.rejection_reason ?? null,
+                quality_rating: value?.quality_score?.score ?? value?.quality_score ?? value?.quality_rating ?? null,
+                previous_category: value?.previous_category ?? null,
+                synced_at: nowIso(),
+                updated_at: nowIso(),
+              })
+              .eq("id", resolved.id)
+              .eq("org_id", resolved.org_id)
+              .eq("waba_id", resolved.waba_id);
+            if (tplUpdErr) console.error("Webhook template status update failed.", { templateId: resolved.id, error: tplUpdErr.message });
           }
         }
 

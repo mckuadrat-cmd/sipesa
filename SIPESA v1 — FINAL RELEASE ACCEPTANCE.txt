@@ -1,0 +1,93 @@
+SIPESA v1 — FINAL RELEASE ACCEPTANCE
+Status: READY FOR GO-LIVE
+SIPESA sudah melewati seluruh remediation utama dari Billing Core, security, tenant isolation, pricing, scheduler, performance, cleanup, UI/UX, direct payment, sampai responsive production.
+Secara keseluruhan, fase development utama selesai dan aplikasi sudah layak masuk fase operasional.
+1. Core system
+- Billing Core atomic dan idempotent: PASS
+- Meta Webhook security: PASS
+- Manual Chat billing flow: PASS
+- Tenant / RLS / role / media security: PASS
+- Canonical pricing: PASS
+- Scheduler & recipient validation: PASS
+- Large-data pagination & aggregation: PASS
+- Performance/polling cleanup: PASS
+2. Broadcast
+- Direct broadcast: PASS by regression/production contract
+- Scheduled broadcast: PASS by regression/production contract
+- Campaign limit 5.000 recipient: PASS
+- Recipient preflight: PASS
+- History/detail/status lifecycle: PASS
+- Cancellation architecture: PASS
+- Pending-cancel production verification: PASS
+- Sending-cancel acceptance: operational follow-up
+3. Chat / Inbox
+- Realtime active conversation: PASS
+- 30-second visible fallback: PASS
+- No 1-second polling: PASS
+- Message dedupe & monotonic statuses: PASS
+- Media security/loading/error UX: PASS
+- Manual Chat pricing/billing: PASS
+4. Contacts / Templates
+- Contact pagination/search: PASS
+- Import preflight max 100/request: PASS
+- Organization-wide duplicate detection: PASS
+- Cross-chunk duplicate handling: PASS
+- Mutation concurrency bounded: PASS
+- Template loading/search/error states: PASS
+- Submit/delete confirmations: PASS
+5. Authentication & Settings
+- Login error safety: PASS
+- Forgot password: PASS
+- Recovery flow: PASS
+- Settings mutation truth/partial success: PASS
+- Avatar handling: PASS
+- Double-submit protection: PASS
+6. Direct Payment & Manual Verification
+Primary model SIPESA sekarang:
+Top Up → Bank/QRIS → Upload Bukti → Verifikasi Admin → Billing Core → Saldo
+Status:
+- Bank Transfer: PASS
+- QRIS Static: PASS
+- Private payment proof: PASS
+- Server-authoritative pricing: PASS
+- Unique 3-digit reconciliation code: PASS
+- Transfer amount = base + unique code: PASS
+- Unique code tidak menambah saldo: PASS
+- Manual approval atomic: PASS
+- Double-credit protection: PASS
+- Reject tanpa kredit: PASS
+- Legacy Midtrans primary dependency: NONE
+- Legacy insecure webhook: DISABLED
+7. UI/UX & Responsive
+- Batch 8A Critical UX: PASS
+- Batch 8B Final Polish: PASS
+- Modal/accessibility: PASS
+- Navigation/state terminology: PASS
+- Mobile Landing 375/430: PASS
+- Mobile Login 375/430: PASS
+- Desktop/tablet regression: PASS
+- Production mobile smoke: PASS
+8. Production infrastructure
+- Supabase backend: ACTIVE
+- Database migrations: APPLIED
+- GitHub repository: CLEAN
+- Git history sensitive client credential cleanup: COMPLETE
+- Vercel frontend: DEPLOYED
+- Production health: PASS
+- No critical 5xx observed during smoke windows
+9. Known non-blocking backlog
+Ini tidak menghalangi go-live:
+- JS bundle optimization
+- Billing/Superadmin large-data pagination
+- Future Midtrans/Duitku/Xendit adapter
+- Broader automated production E2E fixtures
+- Some authenticated runtime acceptance scenarios
+- Cancel Sending Cloud E2E observation
+- Scheduler operational observation over time
+- Legacy inactive TypeScript/component cleanup
+Final Decision
+SIPESA v1: PRODUCTION RELEASE ACCEPTED
+Mulai sekarang sebaiknya jangan lagi masuk mode “tambah fitur sebelum rilis”. SIPESA sudah masuk fase:
+Go-Live → Monitoring → Bugfix → Maintenance → Improvement v1.x
+Dan repo utama sekarang adalah:
+D:\Buildapps\sipesa

@@ -151,6 +151,15 @@ export type TemplateItem = {
   status: string;
   components?: any;
   metaTemplateId?: string | null;
+  wabaId?: string | null;
+  rejectionReason?: string | null;
+  qualityRating?: string | null;
+  previousCategory?: string | null;
+  metaStatusRaw?: string | null;
+  syncedAt?: string | null;
+  deletedAt?: string | null;
+  missingFromMetaAt?: string | null;
+  runtimeSupport?: { supported: boolean; reasons: string[] };
   content: string;
   variables: string[];
   createdAt?: string;
@@ -635,6 +644,7 @@ export const api = {
     contentOrPayload: string | {
       content?: string;
       messageType?: string;
+      templateId?: string;
       templateName?: string;
       language?: string;
       bodyVariables?: string[];
@@ -931,9 +941,10 @@ export const api = {
     return ok(res.data ?? []);
   },
 
-  async uploadTemplateSample(file: File): Promise<AppResult<{ handle: string; fileName: string }>> {
+  async uploadTemplateSample(file: File, wabaId: string): Promise<AppResult<{ handle: string; fileName: string }>> {
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("wabaId", wabaId);
 
     const res = await apiFetch<any>(`${API_PREFIX}/templates/upload-sample`, {
       method: "POST",
@@ -968,6 +979,15 @@ export const api = {
         status: String(t.status ?? "unknown").toLowerCase(),
         components: t.components ?? null,
         metaTemplateId: t.metaTemplateId ?? t.meta_template_id ?? null,
+        wabaId: t.wabaId ?? t.waba_id ?? null,
+        rejectionReason: t.rejectionReason ?? t.rejection_reason ?? null,
+        qualityRating: t.qualityRating ?? t.quality_rating ?? null,
+        previousCategory: t.previousCategory ?? t.previous_category ?? null,
+        metaStatusRaw: t.metaStatusRaw ?? t.meta_status_raw ?? null,
+        syncedAt: t.syncedAt ?? t.synced_at ?? null,
+        deletedAt: t.deletedAt ?? t.deleted_at ?? null,
+        missingFromMetaAt: t.missingFromMetaAt ?? t.missing_from_meta_at ?? null,
+        runtimeSupport: t.runtimeSupport,
         content,
         variables: t.variables ?? extractTemplateVariablesFromContent(content),
         createdAt: t.createdAt ?? t.created_at ?? new Date().toISOString(),
@@ -984,6 +1004,8 @@ export const api = {
     language: string;
     content: string;
     variables?: string[];
+    components?: any[];
+    wabaId: string;
   }): Promise<AppResult<any>> {
     const res = await apiFetch<any>(`${API_PREFIX}/templates`, {
       method: "POST",
@@ -1002,6 +1024,8 @@ export const api = {
       language: string;
       content: string;
       variables?: string[];
+      components?: any[];
+      wabaId?: string;
     },
   ): Promise<AppResult<any>> {
     const res = await apiFetch<any>(`${API_PREFIX}/templates/${id}`, {
