@@ -25,21 +25,30 @@ import {
   ChevronRight,
   Send,
   Search,
+  Link as LinkIcon,
+  Phone,
+  GripVertical,
+  CheckCircle2,
+  Bold,
+  Italic,
+  Strikethrough,
+  Code,
 } from "lucide-react";
 import { api, TemplateItem, BroadcastHistoryItem, NumberItem } from "../lib/api";
+import { META_TEMPLATE_LANGUAGES, type MetaTemplateLanguageCode } from "../lib/meta-template-languages";
 import { useVisibilityRefresh } from "../hooks/use-visibility-refresh";
 import { useDialogFocus } from "../hooks/use-dialog-focus";
 
 type TemplateCategory = "marketing" | "utility" | "authentication";
 type HeaderType = "none" | "text" | "image" | "video" | "document" | "location";
-type ButtonType = "none" | "quick_reply";
-type LanguageCode = "id" | "en_US" | "en";
+type TemplateButtonType = "QUICK_REPLY" | "URL" | "PHONE_NUMBER";
+type TemplateButton = { id: string; type: TemplateButtonType; text: string; value: string };
 
 interface LocalTemplate extends TemplateItem {
   headerType?: HeaderType;
   headerText?: string;
   footerText?: string;
-  buttons?: Array<{ type: "QUICK_REPLY"; text: string }>;
+  buttons?: TemplateButton[];
   mediaSampleName?: string;
   mediaSampleHandle?: string;
   previewExamples?: Record<number, string>;
@@ -96,22 +105,32 @@ function extractFooterText(components: any): string {
   return typeof footer?.text === "string" ? footer.text : "";
 }
 
-function extractButtons(components: any): Array<{ type: "QUICK_REPLY"; text: string }> {
+function extractButtons(components: any): TemplateButton[] {
   if (!Array.isArray(components)) return [];
   const btnComp = components.find((c: any) => String(c?.type || "").toUpperCase() === "BUTTONS");
   if (!btnComp || !Array.isArray(btnComp.buttons)) return [];
 
-  return btnComp.buttons
-    .filter((b: any) => String(b?.type || "").toUpperCase() === "QUICK_REPLY")
-    .map((b: any) => ({
-      type: "QUICK_REPLY",
+  return btnComp.buttons.map((b: any, index: number) => {
+    const type = String(b?.type || "").toUpperCase() as TemplateButtonType;
+    return {
+      id: `imported-${index}`,
+      type,
       text: String(b?.text || ""),
-    }));
+      value: type === "URL" ? String(b?.url || "") : type === "PHONE_NUMBER" ? String(b?.phone_number || "") : "",
+    };
+  });
 }
 
 function extractPreviewExamples(components: any): Record<number, string> {
   if (!Array.isArray(components)) return {};
   const body = components.find((c: any) => String(c?.type || "").toUpperCase() === "BODY");
+  const metaBodyText = body?.example?.body_text?.[0];
+  if (Array.isArray(metaBodyText)) {
+    return metaBodyText.reduce<Record<number, string>>((acc, value, index) => {
+      if (typeof value === "string") acc[index + 1] = value;
+      return acc;
+    }, {});
+  }
   const raw = body?.example_values || body?.examples || body?.preview_examples;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
 
@@ -212,11 +231,28 @@ function validateBody(body: string): string | null {
   return null;
 }
 
-function validateButtons(buttons: string[]): string | null {
-  const clean = buttons.filter((b) => b.trim());
-  if (clean.length > 10) return "Maksimal 10 tombol.";
-  for (const btn of clean) {
-    if (btn.length > 25) return "Teks tombol maksimal 25 karakter.";
+function validateButtons(buttons: TemplateButton[]): string | null {
+  const quickReplies = buttons.filter((button) => button.type === "QUICK_REPLY");
+  const actions = buttons.filter((button) => button.type !== "QUICK_REPLY");
+  if (quickReplies.length && actions.length) return "Quick Reply dan tombol tindakan belum dapat digabung di SIPESA.";
+  if (quickReplies.length > 3) return "Maksimal 3 tombol Quick Reply di SIPESA.";
+  if (actions.length > 2) return "Maksimal 2 tombol tindakan di SIPESA.";
+  if (buttons.filter((button) => button.type === "URL").length > 1) return "Maksimal satu tombol website.";
+  if (buttons.filter((button) => button.type === "PHONE_NUMBER").length > 1) return "Maksimal satu tombol telepon.";
+  for (const btn of buttons) {
+    if (!btn.text.trim()) return "Teks tombol wajib diisi.";
+    if (btn.text.length > 25) return "Teks tombol maksimal 25 karakter.";
+    if (btn.type === "URL") {
+      if (/\{\{\d+\}\}/.test(btn.value)) return "URL dinamis belum didukung di SIPESA.";
+      try {
+        if (new URL(btn.value).protocol !== "https:") return "URL website wajib menggunakan HTTPS.";
+      } catch {
+        return "URL website tidak valid.";
+      }
+    }
+    if (btn.type === "PHONE_NUMBER" && !/^\+[1-9]\d{7,14}$/.test(btn.value)) {
+      return "Nomor telepon wajib format E.164, contoh +628123456789.";
+    }
   }
   return null;
 }
@@ -226,7 +262,7 @@ function buildComponentsFromForm(form: {
   headerText: string;
   body: string;
   footerText: string;
-  buttons: string[];
+  buttons: TemplateButton[];
   examples: Record<number, string>;
   mediaSampleFileName?: string;
   mediaSampleHandle?: string;
@@ -294,17 +330,15 @@ function buildComponentsFromForm(form: {
     });
   }
 
-  const quickReplies = form.buttons
-    .filter((b) => b.trim())
-    .map((b) => ({
-      type: "QUICK_REPLY",
-      text: b.trim(),
-    }));
-
-  if (quickReplies.length > 0) {
+  if (form.buttons.length > 0) {
     components.push({
       type: "BUTTONS",
-      buttons: quickReplies,
+      buttons: form.buttons.map((button) => ({
+        type: button.type,
+        text: button.text.trim(),
+        ...(button.type === "URL" ? { url: button.value.trim() } : {}),
+        ...(button.type === "PHONE_NUMBER" ? { phone_number: button.value.trim() } : {}),
+      })),
     });
   }
 
@@ -486,7 +520,7 @@ function WhatsAppBubblePreview({
   mediaSampleName?: string;
   body: string;
   footer?: string;
-  buttons?: Array<{ type: "QUICK_REPLY"; text: string }>;
+  buttons?: TemplateButton[];
 }) {
   const activeButtons = buttons?.filter((btn) => btn.text?.trim()) || [];
 
@@ -519,7 +553,7 @@ function WhatsAppBubblePreview({
                   className={`w-full flex items-center justify-center gap-2 px-3 py-3 text-[13px] font-medium text-[#1677f2] ${idx !== 0 ? "border-t" : ""
                     }`}
                 >
-                  <MessageSquare className="w-4 h-4" />
+                  {btn.type === "URL" ? <LinkIcon className="w-4 h-4" /> : btn.type === "PHONE_NUMBER" ? <Phone className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
                   <span>{btn.text}</span>
                 </button>
               ))}
@@ -553,17 +587,19 @@ export function TemplateManagement() {
   const [templateIdToDelete, setTemplateIdToDelete] = useState<string | null>(null);
   const [deletingTemplate, setDeletingTemplate] = useState(false);
   const [templateToSubmit, setTemplateToSubmit] = useState<LocalTemplate | null>(null);
+  const [builderStep, setBuilderStep] = useState<1 | 2 | 3>(1);
 
   const [formData, setFormData] = useState({
     name: "",
     category: "marketing" as TemplateCategory,
-    language: "id" as LanguageCode,
+    templateType: "default",
+    variableType: "number",
+    language: "id" as MetaTemplateLanguageCode,
     headerType: "none" as HeaderType,
     headerText: "",
     body: "",
     footerText: "",
-    buttonType: "none" as ButtonType,
-    buttons: ["", "", ""],
+    buttons: [] as TemplateButton[],
     mediaSampleFileName: "",
     mediaSampleHandle: "",
     wabaId: "",
@@ -577,6 +613,7 @@ export function TemplateManagement() {
   const [buttonError, setButtonError] = useState<string | null>(null);
 
   const sampleInputRef = useRef<HTMLInputElement | null>(null);
+  const bodyInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const loadTemplates = async (showLoading = true) => {
     if (showLoading) setLoading(true);
@@ -721,13 +758,14 @@ export function TemplateManagement() {
     setFormData({
       name: "",
       category: "marketing",
+      templateType: "default",
+      variableType: "number",
       language: "id",
       headerType: "none",
       headerText: "",
       body: "",
       footerText: "",
-      buttonType: "none",
-      buttons: ["", "", ""],
+      buttons: [],
       mediaSampleFileName: "",
       mediaSampleHandle: "",
       wabaId: numbers.find((number) => number.wabaId)?.wabaId || "",
@@ -738,6 +776,7 @@ export function TemplateManagement() {
     setBodyError(null);
     setFooterError(null);
     setButtonError(null);
+    setBuilderStep(1);
     setShowModal(true);
   };
 
@@ -754,18 +793,22 @@ export function TemplateManagement() {
     setEditingTemplate(tpl);
 
     const body = tpl.content || extractBodyTextFromComponents(tpl.components);
-    const buttons = tpl.buttons?.map((b) => b.text) ?? [];
+    const buttons = (tpl.buttons ?? []).map((button, index) => ({
+      ...button,
+      id: button.id || `edit-${index}`,
+    }));
 
     setFormData({
       name: tpl.name,
       category: (tpl.category?.toLowerCase() as TemplateCategory) || "marketing",
-      language: (tpl.language as LanguageCode) || "id",
+      templateType: "default",
+      variableType: "number",
+      language: (tpl.language as MetaTemplateLanguageCode) || "id",
       headerType: tpl.headerType || "none",
       headerText: tpl.headerText || "",
       body,
       footerText: tpl.footerText || "",
-      buttonType: buttons.length > 0 ? "quick_reply" : "none",
-      buttons: [buttons[0] || "", buttons[1] || "", buttons[2] || ""],
+      buttons,
       mediaSampleFileName: tpl.mediaSampleName || "",
       mediaSampleHandle: tpl.mediaSampleHandle || "",
       wabaId: tpl.wabaId || "",
@@ -779,6 +822,7 @@ export function TemplateManagement() {
     setBodyError(null);
     setFooterError(null);
     setButtonError(null);
+    setBuilderStep(2);
     setShowModal(true);
   };
 
@@ -799,8 +843,7 @@ export function TemplateManagement() {
           : null;
     const nextBodyError = validateBody(formData.body);
     const nextFooterError = validateFooterText(formData.footerText);
-    const nextButtonError =
-      formData.buttonType === "quick_reply" ? validateButtons(formData.buttons) : null;
+    const nextButtonError = validateButtons(formData.buttons);
 
     setNameError(nextNameError);
     setHeaderError(nextHeaderError);
@@ -812,10 +855,15 @@ export function TemplateManagement() {
       toast.warning("Silakan unggah file media contoh terlebih dahulu.");
     }
 
-    return !nextNameError && !nextHeaderError && !nextBodyError && !nextFooterError && !nextButtonError;
+    const missingExample = variables.find((index) => !String(examples[index] ?? "").trim());
+    if (missingExample) {
+      toast.warning(`Contoh untuk variabel {{${missingExample}}} wajib diisi.`);
+    }
+
+    return !nextNameError && !nextHeaderError && !nextBodyError && !nextFooterError && !nextButtonError && !missingExample;
   };
 
-  const handleSave = async () => {
+  const persistTemplate = async (submitForReview: boolean) => {
     if (saving) return;
     if (!validateAll()) return;
     if (!formData.wabaId) {
@@ -832,16 +880,24 @@ export function TemplateManagement() {
         content: formData.body.trim(),
         variables: variables.map((v) => `{{${v}}}`),
         wabaId: formData.wabaId,
-        components: buildComponentsFromForm({
-          headerType: formData.headerType,
-          headerText: formData.headerText,
-          body: formData.body.trim(),
-          footerText: formData.footerText,
-          buttons: formData.buttonType === "quick_reply" ? formData.buttons : [],
-          examples,
-          mediaSampleFileName: formData.mediaSampleFileName,
-          mediaSampleHandle: formData.mediaSampleHandle,
-        }),
+        normalizedModel: {
+          templateType: formData.templateType,
+          variableType: formData.variableType,
+          header: {
+            type: formData.headerType,
+            text: formData.headerText,
+            mediaHandle: formData.mediaSampleHandle,
+            fileName: formData.mediaSampleFileName,
+          },
+          body: { text: formData.body.trim(), examples },
+          footer: { text: formData.footerText },
+          buttons: formData.buttons.map((button) => ({
+            type: button.type,
+            text: button.text,
+            ...(button.type === "URL" ? { url: button.value } : {}),
+            ...(button.type === "PHONE_NUMBER" ? { phone: button.value } : {}),
+          })),
+        },
       };
 
       const result = editingTemplate
@@ -853,7 +909,18 @@ export function TemplateManagement() {
         return;
       }
 
-      toast.success(editingTemplate ? "Template berhasil diupdate!" : "Template berhasil dibuat!");
+      const targetId = editingTemplate?.id || String(result.data?.id || "");
+      const shouldPush = submitForReview && !editingTemplate?.metaTemplateId;
+      if (shouldPush) {
+        const pushResult = await api.pushTemplateToMeta(targetId);
+        if ("error" in pushResult) {
+          toast.error("Draf tersimpan, tetapi gagal dikirim ke Meta: " + pushResult.error);
+          await refreshTemplates();
+          return;
+        }
+      }
+
+      toast.success(submitForReview ? "Template berhasil dikirim untuk ditinjau Meta." : editingTemplate ? "Template berhasil diupdate!" : "Draf template berhasil disimpan!");
       setShowModal(false);
       setEditingTemplate(null);
       await refreshTemplates();
@@ -864,6 +931,9 @@ export function TemplateManagement() {
       setSaving(false);
     }
   };
+
+  const handleSave = async () => persistTemplate(false);
+  const handleSubmitReview = async () => persistTemplate(true);
 
   const handleDelete = (templateId: string) => {
     setTemplateIdToDelete(templateId);
@@ -964,21 +1034,71 @@ export function TemplateManagement() {
     const nextIndex = nums.length > 0 ? Math.max(...nums) + 1 : 1;
     const token = `{{${nextIndex}}}`;
 
-    const newBody = current ? `${current} ${token}` : token;
+    const textarea = bodyInputRef.current;
+    const cursor = textarea?.selectionStart ?? current.length;
+    const separator = cursor > 0 && !/\s$/.test(current.slice(0, cursor)) ? " " : "";
+    const newBody = `${current.slice(0, cursor)}${separator}${token}${current.slice(cursor)}`;
     setFormData((prev) => ({ ...prev, body: newBody }));
     setBodyError(validateBody(newBody));
     setExamples((prev) => ({
       ...prev,
       [nextIndex]: prev[nextIndex] || guessVariableExample(newBody, nextIndex),
     }));
+    requestAnimationFrame(() => {
+      const nextCursor = cursor + separator.length + token.length;
+      bodyInputRef.current?.focus();
+      bodyInputRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
   };
 
-  const handleButtonChange = (index: number, value: string) => {
-    const nextButtons = [...formData.buttons];
-    nextButtons[index] = value;
+  const handleButtonChange = (id: string, field: "text" | "value" | "type", value: string) => {
+    const nextButtons = formData.buttons.map((button) => button.id === id ? { ...button, [field]: value } : button) as TemplateButton[];
     setFormData((prev) => ({ ...prev, buttons: nextButtons }));
     setButtonError(validateButtons(nextButtons));
   };
+
+  const addButton = (type: TemplateButtonType) => {
+    const existingQuick = formData.buttons.filter((button) => button.type === "QUICK_REPLY").length;
+    const existingActions = formData.buttons.length - existingQuick;
+    if ((type === "QUICK_REPLY" && existingActions > 0) || (type !== "QUICK_REPLY" && existingQuick > 0)) {
+      setButtonError("Quick Reply dan tombol tindakan belum dapat digabung di SIPESA.");
+      return;
+    }
+    if (type === "QUICK_REPLY" && existingQuick >= 3) return setButtonError("Maksimal 3 tombol Quick Reply di SIPESA.");
+    if (type !== "QUICK_REPLY" && existingActions >= 2) return setButtonError("Maksimal 2 tombol tindakan di SIPESA.");
+    if (type === "URL" && formData.buttons.some((button) => button.type === "URL")) return setButtonError("Maksimal satu tombol website.");
+    if (type === "PHONE_NUMBER" && formData.buttons.some((button) => button.type === "PHONE_NUMBER")) return setButtonError("Maksimal satu tombol telepon.");
+    const next = [...formData.buttons, { id: crypto.randomUUID(), type, text: "", value: "" }];
+    setFormData((prev) => ({ ...prev, buttons: next }));
+    setButtonError(null);
+  };
+
+  const removeButton = (id: string) => {
+    const next = formData.buttons.filter((button) => button.id !== id);
+    setFormData((prev) => ({ ...prev, buttons: next }));
+    setButtonError(validateButtons(next));
+  };
+
+  const moveButton = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= formData.buttons.length) return;
+    const next = [...formData.buttons];
+    [next[index], next[target]] = [next[target], next[index]];
+    setFormData((prev) => ({ ...prev, buttons: next }));
+  };
+
+  const applyBodyFormatting = (marker: "*" | "_" | "~" | "```") => {
+    const textarea = bodyInputRef.current;
+    if (!textarea) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const selected = formData.body.slice(start, end) || "teks";
+    const next = `${formData.body.slice(0, start)}${marker}${selected}${marker}${formData.body.slice(end)}`;
+    handleBodyChange(next);
+    requestAnimationFrame(() => textarea.focus());
+  };
+
+  const canAdvanceSetup = Boolean(formData.wabaId && ["marketing", "utility"].includes(formData.category) && formData.templateType === "default");
 
   if (loading) {
     return (
@@ -1172,7 +1292,7 @@ export function TemplateManagement() {
                         </td>
                         <td className="px-5 py-3 text-sm text-slate-600 hidden sm:table-cell">
                           <Badge variant="outline" className="capitalize text-xs font-normal">
-                            {template.category}
+                            {template.category} · {template.category?.toLowerCase() === "authentication" ? "OTP" : "Default"}
                           </Badge>
                         </td>
                         <td className="px-5 py-3 text-sm text-slate-600 hidden sm:table-cell">
@@ -1292,9 +1412,82 @@ export function TemplateManagement() {
                 <X className="w-4 h-4" aria-hidden="true" />
               </Button>
             </div>
+            <nav aria-label="Tahapan pembuatan template" className="border-b px-4 py-3 sm:px-6">
+              <ol className="grid grid-cols-3 gap-2">
+                {["Siapkan Template", "Edit Template", "Kirim untuk Ditinjau"].map((label, index) => {
+                  const step = (index + 1) as 1 | 2 | 3;
+                  return (
+                    <li key={label} className={`flex min-w-0 items-center gap-2 rounded-lg px-2 py-2 text-xs sm:text-sm ${builderStep === step ? "bg-emerald-50 font-semibold text-emerald-700" : builderStep > step ? "text-emerald-700" : "text-slate-500"}`} aria-current={builderStep === step ? "step" : undefined}>
+                      <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${builderStep >= step ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-300"}`}>{builderStep > step ? "✓" : step}</span>
+                      <span className="truncate">{label}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </nav>
 
             <div className="p-6 grid grid-cols-1 xl:grid-cols-[1.25fr_0.75fr] gap-6 flex-1 overflow-y-auto min-h-0">
               <div className="space-y-6">
+                {builderStep === 1 ? (
+                  <div className="space-y-6">
+                    <div>
+                      <Label htmlFor="template-waba-setup">WABA Pemilik *</Label>
+                      <select id="template-waba-setup" aria-label="WABA pemilik template" className="mt-2 w-full rounded-lg border bg-white p-3" value={formData.wabaId} disabled={Boolean(editingTemplate)} onChange={(e) => setFormData((prev) => ({ ...prev, wabaId: e.target.value }))}>
+                        <option value="">Pilih WABA</option>
+                        {[...new Map(numbers.filter((number) => number.wabaId).map((number) => [number.wabaId, number])).values()].map((number) => (
+                          <option key={number.wabaId!} value={number.wabaId!}>{number.name} · {number.wabaId}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <fieldset>
+                      <legend className="mb-3 text-sm font-medium">Kategori *</legend>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        {([
+                          ["marketing", "Marketing", "Promosi, penawaran, dan engagement pelanggan."],
+                          ["utility", "Utility", "Pembaruan transaksi dan informasi layanan."],
+                          ["authentication", "Authentication", "Kode OTP dengan struktur khusus Meta."],
+                        ] as const).map(([value, label, description]) => (
+                          <button key={value} type="button" aria-pressed={formData.category === value} onClick={() => setFormData((prev) => ({ ...prev, category: value, templateType: value === "authentication" ? "otp" : "default" }))} className={`rounded-xl border p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${formData.category === value ? "border-emerald-500 bg-emerald-50" : "border-slate-200 hover:border-slate-300"}`}>
+                            <span className="block font-semibold">{label}</span>
+                            <span className="mt-1 block text-xs text-slate-500">{description}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </fieldset>
+                    <fieldset>
+                      <legend className="mb-3 text-sm font-medium">Tipe Template *</legend>
+                      <div className="space-y-2">
+                        <button type="button" disabled={formData.category === "authentication"} aria-pressed={formData.templateType === "default"} onClick={() => setFormData((prev) => ({ ...prev, templateType: "default" }))} className={`w-full rounded-xl border p-4 text-left ${formData.templateType === "default" && formData.category !== "authentication" ? "border-emerald-500 bg-emerald-50" : "border-slate-200"} disabled:cursor-not-allowed disabled:opacity-60`}>
+                          <span className="font-semibold">{formData.category === "authentication" ? "One-time passcode" : "Default"}</span>
+                          <span className="ml-2 text-xs text-slate-500">{formData.category === "authentication" ? "Belum didukung di SIPESA" : "Template normal dengan komponen yang didukung end-to-end."}</span>
+                        </button>
+                        {formData.category !== "authentication" && ["Flows", formData.category === "marketing" ? "Catalogue" : null, "Calling permissions request"].filter(Boolean).map((label) => (
+                          <button key={label} type="button" disabled className="w-full cursor-not-allowed rounded-xl border border-dashed border-slate-200 p-3 text-left text-sm text-slate-500"><span className="font-medium text-slate-700">{label}</span> · Belum didukung di SIPESA</button>
+                        ))}
+                      </div>
+                    </fieldset>
+                    {formData.category === "authentication" && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800" role="status">Template Authentication menggunakan struktur OTP khusus Meta dan belum dapat dibuat dari SIPESA.</div>}
+                  </div>
+                ) : builderStep === 3 ? (
+                  <div className="space-y-5">
+                    <div className="flex items-center gap-2"><CheckCircle2 className="h-5 w-5 text-emerald-600" /><h4 className="font-semibold">Tinjau template sebelum dikirim</h4></div>
+                    <dl className="grid grid-cols-1 gap-3 rounded-xl border bg-slate-50 p-4 text-sm sm:grid-cols-2">
+                      <div><dt className="text-slate-500">WABA</dt><dd className="break-all font-medium">{formData.wabaId}</dd></div>
+                      <div><dt className="text-slate-500">Kategori · Tipe</dt><dd className="font-medium capitalize">{formData.category} · {formData.templateType}</dd></div>
+                      <div><dt className="text-slate-500">Nama</dt><dd className="break-words font-medium">{formData.name}</dd></div>
+                      <div><dt className="text-slate-500">Bahasa</dt><dd className="font-medium">{META_TEMPLATE_LANGUAGES.find(([code]) => code === formData.language)?.[1]} ({formData.language})</dd></div>
+                      <div><dt className="text-slate-500">Header</dt><dd className="font-medium capitalize">{formData.headerType}</dd></div>
+                      <div><dt className="text-slate-500">Variabel</dt><dd className="font-medium">{variables.length} positional</dd></div>
+                      <div><dt className="text-slate-500">Footer</dt><dd className="font-medium">{formData.footerText || "Tidak ada"}</dd></div>
+                      <div><dt className="text-slate-500">Tombol</dt><dd className="font-medium">{formData.buttons.length}</dd></div>
+                    </dl>
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"><strong>VALID</strong> · Template siap disimpan atau dikirim untuk ditinjau Meta.</div>
+                  </div>
+                ) : (<>
+                <div className="rounded-lg border bg-slate-50 px-4 py-3 text-sm">
+                  <span className="font-semibold capitalize">{formData.category} · {formData.templateType}</span>
+                  <span className="ml-2 text-slate-500">Variabel: Positional (angka)</span>
+                </div>
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <Label htmlFor="template-name">Nama Template *</Label>
@@ -1315,8 +1508,8 @@ export function TemplateManagement() {
                   {nameError && <p id="template-name-error" className="text-xs text-red-600 mt-1">{nameError}</p>}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-                  <div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="hidden">
                     <Label htmlFor="template-waba">WABA Pemilik *</Label>
                     <select
                       id="template-waba"
@@ -1332,7 +1525,7 @@ export function TemplateManagement() {
                       ))}
                     </select>
                   </div>
-                  <div>
+                  <div className="hidden">
                     <Label htmlFor="template-category">Kategori *</Label>
                     <select
                       id="template-category"
@@ -1362,13 +1555,11 @@ export function TemplateManagement() {
                       onChange={(e) =>
                         setFormData((prev) => ({
                           ...prev,
-                          language: e.target.value as LanguageCode,
+                          language: e.target.value as MetaTemplateLanguageCode,
                         }))
                       }
                     >
-                      <option value="id">Bahasa Indonesia</option>
-                      <option value="en_US">English (US)</option>
-                      <option value="en">English</option>
+                      {META_TEMPLATE_LANGUAGES.map(([code, label]) => <option key={code} value={code}>{label} ({code})</option>)}
                     </select>
                   </div>
 
@@ -1394,7 +1585,11 @@ export function TemplateManagement() {
                       <option value="image">Image</option>
                       <option value="video">Video</option>
                       <option value="document">Document</option>
+                      <option value="location" disabled>Location — Belum didukung</option>
                     </select>
+                    {formData.headerType === "text" && (
+                      <p className="mt-1 text-xs text-slate-500">Variabel pada text header belum didukung dan akan ditolak oleh server.</p>
+                    )}
                   </div>
                 </div>
 
@@ -1490,7 +1685,15 @@ export function TemplateManagement() {
                     </span>
                   </div>
 
+                  <div className="mb-2 flex flex-wrap gap-1" role="toolbar" aria-label="Format teks body">
+                    <Button type="button" variant="outline" size="sm" aria-label="Format tebal" onClick={() => applyBodyFormatting("*")}><Bold className="h-4 w-4" /></Button>
+                    <Button type="button" variant="outline" size="sm" aria-label="Format miring" onClick={() => applyBodyFormatting("_")}><Italic className="h-4 w-4" /></Button>
+                    <Button type="button" variant="outline" size="sm" aria-label="Format coret" onClick={() => applyBodyFormatting("~")}><Strikethrough className="h-4 w-4" /></Button>
+                    <Button type="button" variant="outline" size="sm" aria-label="Format monospace" onClick={() => applyBodyFormatting("```")}><Code className="h-4 w-4" /></Button>
+                  </div>
+
                   <Textarea
+                    ref={bodyInputRef}
                     id="template-body"
                     required
                     aria-invalid={Boolean(bodyError)}
@@ -1560,49 +1763,38 @@ export function TemplateManagement() {
                 </div>
 
                 <div>
-                  <Label htmlFor="template-button-type">Tombol</Label>
-                  <div className="mt-2 grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4">
-                    <select
-                      id="template-button-type"
-                      className="w-full p-3 border rounded-lg bg-white"
-                      value={formData.buttonType}
-                      onChange={(e) =>
-                        setFormData((prev) => ({
-                          ...prev,
-                          buttonType: e.target.value as ButtonType,
-                        }))
-                      }
-                    >
-                      <option value="none">Tanpa Button</option>
-                      <option value="quick_reply">Quick Reply</option>
-                    </select>
-
-                    {formData.buttonType === "quick_reply" && (
-                      <div className="space-y-2">
-                        {[0, 1, 2].map((idx) => (
-                          <Input
-                            key={idx}
-                            placeholder={`Quick Reply ${idx + 1}`}
-                            value={formData.buttons[idx]}
-                            onChange={(e) => handleButtonChange(idx, e.target.value)}
-                          />
-                        ))}
-                      </div>
-                    )}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div><Label>Tombol · Opsional</Label><p className="text-xs text-slate-500">Quick Reply atau maksimal dua tombol tindakan.</p></div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="outline" size="sm" onClick={() => addButton("QUICK_REPLY")}><Plus className="mr-1 h-4 w-4" />Quick Reply</Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => addButton("URL")}><LinkIcon className="mr-1 h-4 w-4" />Website</Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => addButton("PHONE_NUMBER")}><Phone className="mr-1 h-4 w-4" />Telepon</Button>
+                    </div>
                   </div>
-                  {buttonError && <p className="text-xs text-red-600 mt-1">{buttonError}</p>}
+                  <div className="mt-3 space-y-3">
+                    {formData.buttons.map((button, index) => (
+                      <div key={button.id} className="rounded-xl border p-3">
+                        <div className="mb-3 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 text-sm font-medium"><GripVertical className="h-4 w-4 text-slate-400" />Tombol {index + 1} · {button.type}</div>
+                          <div className="flex gap-1">
+                            <Button type="button" variant="ghost" size="sm" aria-label={`Naikkan tombol ${index + 1}`} disabled={index === 0} onClick={() => moveButton(index, -1)}>↑</Button>
+                            <Button type="button" variant="ghost" size="sm" aria-label={`Turunkan tombol ${index + 1}`} disabled={index === formData.buttons.length - 1} onClick={() => moveButton(index, 1)}>↓</Button>
+                            <Button type="button" variant="ghost" size="sm" aria-label={`Hapus tombol ${index + 1}`} onClick={() => removeButton(button.id)}><Trash2 className="h-4 w-4 text-red-600" /></Button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div><Label htmlFor={`button-text-${button.id}`}>Teks</Label><Input id={`button-text-${button.id}`} className="mt-1" maxLength={25} value={button.text} onChange={(e) => handleButtonChange(button.id, "text", e.target.value)} /></div>
+                          {button.type === "URL" && <div><Label htmlFor={`button-value-${button.id}`}>URL statis HTTPS</Label><Input id={`button-value-${button.id}`} className="mt-1" placeholder="https://example.com" value={button.value} onChange={(e) => handleButtonChange(button.id, "value", e.target.value)} /></div>}
+                          {button.type === "PHONE_NUMBER" && <div><Label htmlFor={`button-value-${button.id}`}>Nomor E.164</Label><Input id={`button-value-${button.id}`} className="mt-1" placeholder="+628123456789" value={button.value} onChange={(e) => handleButtonChange(button.id, "value", e.target.value)} /></div>}
+                        </div>
+                      </div>
+                    ))}
+                    {formData.buttons.length === 0 && <p className="rounded-lg border border-dashed p-3 text-sm text-slate-500">Belum ada tombol.</p>}
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500">URL dinamis, Copy Code, Flow, katalog, dan tombol conditional lain belum didukung.</div>
+                  {buttonError && <p className="mt-1 text-xs text-red-600">{buttonError}</p>}
                 </div>
-
-                <div className="flex gap-3">
-                  <Button onClick={handleSave} className="flex-1 bg-primary hover:bg-primary/90" disabled={saving}>
-                    <Save className="w-4 h-4 mr-2" />
-                    {saving ? "Menyimpan..." : editingTemplate ? "Update Template" : "Simpan Template"}
-                  </Button>
-
-                  <Button variant="outline" onClick={closeModal} className="flex-1" disabled={saving}>
-                    Batal
-                  </Button>
-                </div>
+                </>)}
               </div>
 
               <div className="space-y-4 xl:sticky xl:top-0 h-fit">
@@ -1612,20 +1804,18 @@ export function TemplateManagement() {
                     <strong className="text-sm">Preview Template</strong>
                   </div>
 
-                  <WhatsAppBubblePreview
-                    headerType={formData.headerType}
-                    headerText={formData.headerText}
-                    mediaSampleName={formData.mediaSampleFileName || defaultSampleName(formData.headerType)}
-                    body={previewBody}
-                    footer={formData.footerText}
-                    buttons={
-                      formData.buttonType === "quick_reply"
-                        ? formData.buttons
-                          .filter((b) => b.trim())
-                          .map((text) => ({ type: "QUICK_REPLY" as const, text }))
-                        : []
-                    }
-                  />
+                  {builderStep === 1 ? (
+                    <div className="rounded-xl border border-dashed bg-white p-6 text-center text-sm text-slate-500">Preview aktif setelah setup template selesai.</div>
+                  ) : (
+                    <WhatsAppBubblePreview
+                      headerType={formData.headerType}
+                      headerText={formData.headerText}
+                      mediaSampleName={formData.mediaSampleFileName || defaultSampleName(formData.headerType)}
+                      body={applyExamplesToText(previewBody, examples, "token")}
+                      footer={formData.footerText}
+                      buttons={formData.buttons}
+                    />
+                  )}
                 </div>
 
                 {/*   <div className="rounded-xl border bg-white p-4 space-y-3">
@@ -1662,6 +1852,20 @@ export function TemplateManagement() {
                     </div>
                   </div>
                 </div> */}
+              </div>
+            </div>
+            <div className="flex flex-col-reverse gap-2 border-t px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+              <div>
+                {builderStep > 1 && <Button type="button" variant="outline" onClick={() => setBuilderStep((builderStep - 1) as 1 | 2)} disabled={saving}>Sebelumnya</Button>}
+              </div>
+              <div className="flex flex-col-reverse gap-2 sm:flex-row">
+                <Button type="button" variant="ghost" onClick={closeModal} disabled={saving}>Batal</Button>
+                {builderStep === 1 && <Button type="button" disabled={!canAdvanceSetup || saving} onClick={() => setBuilderStep(2)}>Lanjut ke Editor</Button>}
+                {builderStep === 2 && <Button type="button" disabled={saving} onClick={() => { if (validateAll()) setBuilderStep(3); }}>Tinjau Template</Button>}
+                {builderStep === 3 && <>
+                  <Button type="button" variant="outline" disabled={saving} onClick={() => void handleSave()}><Save className="mr-2 h-4 w-4" />Simpan Draf</Button>
+                  <Button type="button" disabled={saving} onClick={() => void handleSubmitReview()}><CloudUpload className="mr-2 h-4 w-4" />{saving ? "Memproses..." : editingTemplate?.metaTemplateId ? "Simpan Perubahan" : "Kirim untuk Ditinjau"}</Button>
+                </>}
               </div>
             </div>
           </div>
@@ -1701,7 +1905,7 @@ export function TemplateManagement() {
         }
       >
         <p className="text-sm text-slate-600">
-          Hapus template <strong>{templateToDelete?.name || "ini"}</strong> dari SIPESA? Jika terhubung, sistem juga akan mencoba menghapusnya dari Meta, tetapi hasil penghapusan di Meta tidak dijamin. Tindakan lokal ini tidak dapat dibatalkan.
+          Hapus template <strong>{templateToDelete?.name || "ini"}</strong>? Template yang sudah terhubung akan dihapus di Meta terlebih dahulu. Jika Meta menolak, data SIPESA tetap dipertahankan dan pesan kegagalan akan ditampilkan.
         </p>
       </AppModal>
 

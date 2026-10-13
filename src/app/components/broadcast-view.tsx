@@ -93,7 +93,7 @@ interface LocalTemplate extends TemplateItem {
   headerType?: HeaderType;
   headerText?: string;
   footerText?: string;
-  buttons?: Array<{ type: "QUICK_REPLY"; text: string }>;
+  buttons?: Array<{ type: string; text: string; url?: string; phone?: string }>;
   previewExamples?: Record<number, string>;
 }
 
@@ -172,22 +172,29 @@ function extractFooterText(components: any): string {
   return typeof footer?.text === "string" ? footer.text : "";
 }
 
-function extractButtons(components: any): Array<{ type: "QUICK_REPLY"; text: string }> {
+function extractButtons(components: any): Array<{ type: string; text: string; url?: string; phone?: string }> {
   if (!Array.isArray(components)) return [];
   const btnComp = components.find((c: any) => String(c?.type || "").toUpperCase() === "BUTTONS");
   if (!btnComp || !Array.isArray(btnComp.buttons)) return [];
 
-  return btnComp.buttons
-    .filter((b: any) => String(b?.type || "").toUpperCase() === "QUICK_REPLY")
-    .map((b: any) => ({
-      type: "QUICK_REPLY",
-      text: String(b?.text || ""),
-    }));
+  return btnComp.buttons.map((b: any) => ({
+    type: String(b?.type || "").toUpperCase(),
+    text: String(b?.text || ""),
+    ...(b?.url ? { url: String(b.url) } : {}),
+    ...(b?.phone_number ? { phone: String(b.phone_number) } : {}),
+  }));
 }
 
 function extractPreviewExamples(components: any): Record<number, string> {
   if (!Array.isArray(components)) return {};
   const body = components.find((c: any) => String(c?.type || "").toUpperCase() === "BODY");
+  const metaBodyText = body?.example?.body_text?.[0];
+  if (Array.isArray(metaBodyText)) {
+    return metaBodyText.reduce<Record<number, string>>((acc, value, index) => {
+      if (typeof value === "string") acc[index + 1] = value;
+      return acc;
+    }, {});
+  }
   const raw = body?.example_values || body?.examples || body?.preview_examples;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
 
@@ -455,7 +462,7 @@ function WhatsAppBubblePreview({
   headerText?: string;
   body: string;
   footer?: string;
-  buttons?: Array<{ type: "QUICK_REPLY"; text: string }>;
+  buttons?: Array<{ type: string; text: string }>;
 }) {
   const activeButtons = buttons?.filter((btn) => btn.text?.trim()) || [];
 

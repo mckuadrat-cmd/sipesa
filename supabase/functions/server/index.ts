@@ -272,6 +272,14 @@ const TEMPLATE_EDITABLE_META_STATUSES = new Set(["approved", "rejected", "paused
 const TEMPLATE_CATEGORIES = new Set(["marketing", "utility"]);
 const TEMPLATE_COMPONENT_TYPES = new Set(["HEADER", "BODY", "FOOTER", "BUTTONS"]);
 const TEMPLATE_HEADER_FORMATS = new Set(["TEXT", "IMAGE", "VIDEO", "DOCUMENT"]);
+const TEMPLATE_BUTTON_TYPES = new Set(["QUICK_REPLY", "URL", "PHONE_NUMBER"]);
+const META_TEMPLATE_LANGUAGE_CODES = new Set([
+  "af", "sq", "ar", "ar_EG", "ar_AE", "ar_LB", "ar_MA", "ar_QA", "az", "be_BY", "bn", "bg", "ca",
+  "zh_CN", "zh_HK", "zh_TW", "hr", "cs", "da", "nl", "en", "en_GB", "en_US", "et", "fil", "fi", "fr",
+  "de", "el", "gu", "ha", "he", "hi", "hu", "id", "ga", "it", "ja", "kn", "kk", "ko", "lo", "lv", "lt",
+  "mk", "ms", "ml", "mr", "nb", "fa", "pl", "pt_BR", "pt_PT", "pa", "ro", "ru", "sr", "sk", "sl", "es",
+  "es_AR", "es_ES", "es_MX", "sw", "sv", "ta", "te", "th", "tr", "uk", "ur", "uz", "vi", "zu",
+]);
 
 function inspectTemplateRuntime(template: any) {
   const reasons: string[] = [];
@@ -293,9 +301,17 @@ function inspectTemplateRuntime(template: any) {
       }
     }
     if (type === "BUTTONS") {
-      for (const button of Array.isArray(component?.buttons) ? component.buttons : []) {
+      const componentButtons = Array.isArray(component?.buttons) ? component.buttons : [];
+      const quickCount = componentButtons.filter((button: any) => String(button?.type ?? "").toUpperCase() === "QUICK_REPLY").length;
+      const actionCount = componentButtons.filter((button: any) => ["URL", "PHONE_NUMBER"].includes(String(button?.type ?? "").toUpperCase())).length;
+      if (quickCount && actionCount) reasons.push("Kombinasi Quick Reply dan tombol tindakan belum didukung");
+      if (quickCount > 3 || actionCount > 2) reasons.push("Jumlah tombol melampaui subset runtime SIPESA");
+      for (const button of componentButtons) {
         const buttonType = String(button?.type ?? "").toUpperCase();
-        if (buttonType !== "QUICK_REPLY") reasons.push(`Tombol ${buttonType || "UNKNOWN"} belum didukung`);
+        if (!TEMPLATE_BUTTON_TYPES.has(buttonType)) reasons.push(`Tombol ${buttonType || "UNKNOWN"} belum didukung`);
+        if (buttonType === "URL" && /\{\{\d+\}\}/.test(String(button?.url ?? ""))) {
+          reasons.push("URL dinamis belum didukung");
+        }
       }
     }
   }
@@ -305,6 +321,9 @@ function inspectTemplateRuntime(template: any) {
 
 function validateTemplatePayload(body: any) {
   const errors: string[] = [];
+  if (!body?.normalizedModel || typeof body.normalizedModel !== "object") {
+    errors.push("Model template terstruktur wajib digunakan");
+  }
   const nameRaw = String(body?.name ?? "").trim();
   const name = nameRaw.toLowerCase();
   const category = String(body?.category ?? "").trim().toLowerCase();
@@ -323,7 +342,13 @@ function validateTemplatePayload(body: any) {
   if (!TEMPLATE_CATEGORIES.has(category)) {
     errors.push(category === "authentication" ? "Authentication belum didukung di SIPESA" : "Kategori template tidak valid");
   }
-  if (!/^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(language)) errors.push("Format bahasa template tidak valid");
+  if (!META_TEMPLATE_LANGUAGE_CODES.has(language)) errors.push("Kode bahasa template tidak didukung Meta");
+  if (body?.normalizedModel) {
+    const templateType = String(body.normalizedModel.templateType ?? "").toLowerCase();
+    const variableType = String(body.normalizedModel.variableType ?? "").toLowerCase();
+    if (templateType !== "default") errors.push("Hanya tipe Default yang didukung di SIPESA");
+    if (variableType !== "number") errors.push("Hanya variabel posisi bernomor yang didukung");
+  }
   if (!bodyText.trim()) errors.push("Konten template wajib");
   if (bodyText.length > 1024) errors.push("Konten template maksimal 1024 karakter");
   if (/\{\{[^}]*$|(^|[^\{])\{\d+\}\}|\{\{[^\d]|\{\{\d+[^}]|\{\{\d+\}(?!\})/.test(bodyText)) {
@@ -335,6 +360,12 @@ function validateTemplatePayload(body: any) {
   const indexes = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map((match) => Number(match[1]));
   const uniqueIndexes = [...new Set(indexes)].sort((a, b) => a - b);
   if (uniqueIndexes.some((value, index) => value !== index + 1)) errors.push("Nomor variabel harus berurutan mulai dari {{1}}");
+  const bodyExamples = bodyComponent?.example_values;
+  for (const index of uniqueIndexes) {
+    if (!bodyExamples || typeof bodyExamples !== "object" || !String(bodyExamples[index] ?? "").trim()) {
+      errors.push(`Contoh untuk variabel {{${index}}} wajib diisi`);
+    }
+  }
 
   if (header) {
     const format = String(header?.format ?? "").toUpperCase();
@@ -353,10 +384,29 @@ function validateTemplatePayload(body: any) {
   }
   if (buttons) {
     const items = Array.isArray(buttons?.buttons) ? buttons.buttons : [];
-    if (items.length > 10) errors.push("Maksimal 10 tombol");
+    const quickReplies = items.filter((button: any) => String(button?.type ?? "").toUpperCase() === "QUICK_REPLY");
+    const actions = items.filter((button: any) => ["URL", "PHONE_NUMBER"].includes(String(button?.type ?? "").toUpperCase()));
+    if (quickReplies.length && actions.length) errors.push("Quick Reply dan tombol tindakan belum dapat digabung di SIPESA");
+    if (quickReplies.length > 3) errors.push("Maksimal 3 tombol Quick Reply di SIPESA");
+    if (actions.length > 2) errors.push("Maksimal 2 tombol tindakan di SIPESA");
+    if (items.filter((button: any) => String(button?.type ?? "").toUpperCase() === "URL").length > 1) errors.push("Maksimal satu tombol website");
+    if (items.filter((button: any) => String(button?.type ?? "").toUpperCase() === "PHONE_NUMBER").length > 1) errors.push("Maksimal satu tombol telepon");
     for (const button of items) {
-      if (String(button?.type ?? "").toUpperCase() !== "QUICK_REPLY") errors.push("Hanya tombol quick reply yang didukung");
+      const type = String(button?.type ?? "").toUpperCase();
+      if (!TEMPLATE_BUTTON_TYPES.has(type)) errors.push(`Tombol ${type || "UNKNOWN"} belum didukung`);
       if (!String(button?.text ?? "").trim() || String(button?.text ?? "").length > 25) errors.push("Teks tombol wajib dan maksimal 25 karakter");
+      if (type === "URL") {
+        const url = String(button?.url ?? "").trim();
+        if (/\{\{\d+\}\}/.test(url)) errors.push("URL dinamis belum didukung");
+        try {
+          if (new URL(url).protocol !== "https:") errors.push("URL website wajib menggunakan HTTPS");
+        } catch {
+          errors.push("URL website tidak valid");
+        }
+      }
+      if (type === "PHONE_NUMBER" && !/^\+[1-9]\d{7,14}$/.test(String(button?.phone_number ?? ""))) {
+        errors.push("Nomor tombol telepon wajib format E.164");
+      }
     }
   }
   const runtime = inspectTemplateRuntime({ category, components });
@@ -2713,8 +2763,51 @@ function normalizeTemplateStatus(status: unknown) {
 }
 
 function buildTemplateComponentsFromPayload(body: any) {
-  if (Array.isArray(body.components) && body.components.length > 0) {
-    return body.components;
+  const model = body?.normalizedModel;
+  if (model && typeof model === "object") {
+    const components: any[] = [];
+    const header = model.header && typeof model.header === "object" ? model.header : {};
+    const headerType = String(header.type ?? "none").toUpperCase();
+    if (headerType === "TEXT" && String(header.text ?? "").trim()) {
+      components.push({ type: "HEADER", format: "TEXT", text: String(header.text).trim() });
+    } else if (["IMAGE", "VIDEO", "DOCUMENT"].includes(headerType)) {
+      components.push({
+        type: "HEADER",
+        format: headerType,
+        example: {
+          header_handle: [String(header.mediaHandle ?? "")],
+          ...(header.fileName ? { file_name: String(header.fileName) } : {}),
+        },
+      });
+    } else if (headerType !== "NONE") {
+      components.push({ type: "HEADER", format: headerType });
+    }
+
+    const bodyModel = model.body && typeof model.body === "object" ? model.body : {};
+    components.push({
+      type: "BODY",
+      text: String(bodyModel.text ?? ""),
+      example_values: bodyModel.examples && typeof bodyModel.examples === "object" ? bodyModel.examples : {},
+    });
+    const footerText = String(model.footer?.text ?? "").trim();
+    if (footerText) components.push({ type: "FOOTER", text: footerText });
+
+    const modelButtons = Array.isArray(model.buttons) ? model.buttons : [];
+    if (modelButtons.length > 0) {
+      components.push({
+        type: "BUTTONS",
+        buttons: modelButtons.map((button: any) => {
+          const type = String(button?.type ?? "").toUpperCase();
+          return {
+            type,
+            text: String(button?.text ?? "").trim(),
+            ...(type === "URL" ? { url: String(button?.url ?? "").trim() } : {}),
+            ...(type === "PHONE_NUMBER" ? { phone_number: String(button?.phone ?? button?.phone_number ?? "").trim() } : {}),
+          };
+        }),
+      });
+    }
+    return components;
   }
 
   const components: any[] = [];
@@ -2798,7 +2891,7 @@ function extractTemplateMeta(components: any) {
   let headerType = "none";
   let headerText = "";
   let footerText = "";
-  let buttons: Array<{ type: "QUICK_REPLY"; text: string }> = [];
+  let buttons: Array<{ type: string; text: string; url?: string; phone?: string }> = [];
 
   if (Array.isArray(components)) {
     const header = components.find((c: any) => String(c?.type ?? "").toUpperCase() === "HEADER");
@@ -2821,12 +2914,12 @@ function extractTemplateMeta(components: any) {
     if (footer?.text) footerText = String(footer.text);
 
     if (Array.isArray(btns?.buttons)) {
-      buttons = btns.buttons
-        .filter((b: any) => String(b?.type ?? "").toUpperCase() === "QUICK_REPLY")
-        .map((b: any) => ({
-          type: "QUICK_REPLY",
-          text: String(b?.text ?? ""),
-        }));
+      buttons = btns.buttons.map((b: any) => ({
+        type: String(b?.type ?? "").toUpperCase(),
+        text: String(b?.text ?? ""),
+        ...(b?.url ? { url: String(b.url) } : {}),
+        ...(b?.phone_number ? { phone: String(b.phone_number) } : {}),
+      }));
     }
   }
 

@@ -1005,6 +1005,7 @@ export const api = {
     content: string;
     variables?: string[];
     components?: any[];
+    normalizedModel?: any;
     wabaId: string;
   }): Promise<AppResult<any>> {
     const res = await apiFetch<any>(`${API_PREFIX}/templates`, {
@@ -1025,6 +1026,7 @@ export const api = {
       content: string;
       variables?: string[];
       components?: any[];
+      normalizedModel?: any;
       wabaId?: string;
     },
   ): Promise<AppResult<any>> {
