@@ -33,9 +33,10 @@ assert.match(chat, /template\.wabaId === selectedNumber\.wabaId/);
 console.log("PASS 4-8 SENDABILITY - rejected/paused/disabled and wrong-WABA sends are rejected in Broadcast and Chat");
 
 assert.doesNotMatch(section(templates, 'id="template-category"', 'id="template-language"'), /value="authentication"/);
-assert.match(server, /Authentication belum didukung di SIPESA/);
+assert.match(server, /Template Authentication memerlukan workflow OTP khusus/);
+assert.match(server, /validateAuthenticationTemplatePayload/);
 assert.match(templates, /Template ini memiliki komponen Meta yang belum dapat diedit di SIPESA/);
-console.log("PASS 9-10 AUTHENTICATION - generic creation is hidden and imports are read-only");
+console.log("PASS 9-10 AUTHENTICATION - generic builder stays isolated; dedicated OTP validation and unknown import read-only safety remain");
 
 const edit = section(server, 'app.put(`${API_PREFIX}/templates/:id`', 'app.delete(`${API_PREFIX}/templates/:id`');
 assert.match(edit, /name !== existing\.name \|\| language !== existing\.language/);

@@ -42,6 +42,9 @@ interface Contact {
   variables?: string[];
   mediaUrl?: string;
   fileName?: string;
+  headerTextVariables?: string[];
+  buttonValues?: Array<{ index: number; type: "URL" | "COPY_CODE"; value: string }>;
+  location?: { latitude: number; longitude: number; name: string; address: string };
   rowNumber?: number;
 }
 
@@ -103,6 +106,12 @@ interface ManualRecipient {
   mediaUrl: string;
   fileName: string;
   contactName: string;
+  headerValue: string;
+  buttonValues: string[];
+  latitude: string;
+  longitude: string;
+  locationName: string;
+  locationAddress: string;
 }
 
 function parseCsvLine(line: string): string[] {
@@ -265,6 +274,9 @@ function parseContactsFromStructuredCsv(text: string, selectedTemplate: LocalTem
   const contactNameIndex = idx("contactname");
   const mediaIndex = idx("follow_media");
   const fileNameIndex = idx("filename");
+  const headerValueIndex = idx("header_var1");
+  const latitudeIndex = idx("latitude"); const longitudeIndex = idx("longitude");
+  const locationNameIndex = idx("location_name"); const locationAddressIndex = idx("location_address");
   const varIndexes = header
     .map((col, i) => ({ col, i }))
     .filter((x) => /^var[\s_]*\d+$/.test(x.col))
@@ -295,6 +307,9 @@ function parseContactsFromStructuredCsv(text: string, selectedTemplate: LocalTem
     const variables = varIndexes.map((v) => cols[v.i] || "");
     const mediaUrl = mediaIndex >= 0 ? (cols[mediaIndex] || "").trim() : "";
     const fileName = fileNameIndex >= 0 ? (cols[fileNameIndex] || "").trim() : "";
+    const headerValue = headerValueIndex >= 0 ? (cols[headerValueIndex] || "").trim() : "";
+    const requirements = selectedTemplate?.runtimeRequirements;
+    const buttonValues = (requirements?.buttonRequirements || []).map((requirement, index) => ({ ...requirement, value: (cols[idx(`button_param${index + 1}`)] || "").trim() }));
     const contactName =
       (contactNameIndex >= 0 ? cols[contactNameIndex] : "")?.trim() ||
       phone ||
@@ -314,6 +329,12 @@ function parseContactsFromStructuredCsv(text: string, selectedTemplate: LocalTem
         reason: "follow_media wajib diisi karena template memakai header media",
       });
     }
+    if (requirements?.headerTextVariableCount && !headerValue) issues.push({ rowNumber, reason: "header_var1 wajib diisi" });
+    if (buttonValues.some((item) => !item.value)) issues.push({ rowNumber, reason: "button_param wajib diisi" });
+    if (requirements?.requiresLocation) {
+      const lat = Number(cols[latitudeIndex] || ""); const lng = Number(cols[longitudeIndex] || "");
+      if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lng) || lng < -180 || lng > 180 || !String(cols[locationNameIndex] || "").trim() || !String(cols[locationAddressIndex] || "").trim()) issues.push({ rowNumber, reason: "Kolom lokasi belum lengkap" });
+    }
 
     if (phone) {
       if (seenPhones.has(phone)) {
@@ -329,6 +350,12 @@ function parseContactsFromStructuredCsv(text: string, selectedTemplate: LocalTem
       variables,
       mediaUrl,
       fileName,
+      headerTextVariables: requirements?.headerTextVariableCount ? [headerValue] : [],
+      buttonValues,
+      location: requirements?.requiresLocation ? {
+        latitude: Number(cols[latitudeIndex] || ""), longitude: Number(cols[longitudeIndex] || ""),
+        name: String(cols[locationNameIndex] || "").trim(), address: String(cols[locationAddressIndex] || "").trim(),
+      } : undefined,
       rowNumber,
     });
   });
@@ -1035,6 +1062,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     () => ["image", "video", "document"].includes(selectedTemplate?.headerType || "none"),
     [selectedTemplate],
   );
+  const runtimeRequirements = selectedTemplate?.runtimeRequirements;
 
   useEffect(() => {
     setManualRecipients((prev) => {
@@ -1046,6 +1074,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
             mediaUrl: "",
             fileName: "",
             contactName: "",
+            headerValue: "",
+            buttonValues: Array.from({ length: runtimeRequirements?.buttonRequirements?.length || 0 }, () => ""),
+            latitude: "", longitude: "", locationName: "", locationAddress: "",
           },
         ];
       }
@@ -1053,9 +1084,10 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       return prev.map((row) => ({
         ...row,
         variables: Array.from({ length: variableCount }, (_, i) => row.variables?.[i] || ""),
+        buttonValues: Array.from({ length: runtimeRequirements?.buttonRequirements?.length || 0 }, (_, i) => row.buttonValues?.[i] || ""),
       }));
     });
-  }, [variableCount]);
+  }, [variableCount, runtimeRequirements?.buttonRequirements?.length]);
 
   const previewBody = useMemo(() => {
     if (!selectedTemplate) return "Pilih template untuk melihat preview";
@@ -1360,6 +1392,11 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       }),
     );
   };
+  const updateManualButtonValue = (rowIndex: number, valueIndex: number, value: string) => {
+    setManualRecipients((rows) => rows.map((row, index) => index === rowIndex
+      ? { ...row, buttonValues: row.buttonValues.map((item, itemIndex) => itemIndex === valueIndex ? value : item) }
+      : row));
+  };
 
   const addManualRecipient = () => {
     if (manualRecipients.length >= MAX_BROADCAST_RECIPIENTS) {
@@ -1374,6 +1411,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         mediaUrl: "",
         fileName: "",
         contactName: "",
+        headerValue: "",
+        buttonValues: Array.from({ length: runtimeRequirements?.buttonRequirements?.length || 0 }, () => ""),
+        latitude: "", longitude: "", locationName: "", locationAddress: "",
       },
     ]);
   };
@@ -1388,6 +1428,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
             mediaUrl: "",
             fileName: "",
             contactName: "",
+            headerValue: "",
+            buttonValues: Array.from({ length: runtimeRequirements?.buttonRequirements?.length || 0 }, () => ""),
+            latitude: "", longitude: "", locationName: "", locationAddress: "",
           },
         ];
       }
@@ -1423,6 +1466,21 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         });
         return;
       }
+      if (runtimeRequirements?.headerTextVariableCount && !row.headerValue.trim()) {
+        issues.push({ rowNumber, reason: "Nilai variabel header belum diisi" });
+        return;
+      }
+      if ((runtimeRequirements?.buttonRequirements || []).some((_, requirementIndex) => !row.buttonValues[requirementIndex]?.trim())) {
+        issues.push({ rowNumber, reason: "Parameter tombol belum diisi" });
+        return;
+      }
+      if (runtimeRequirements?.requiresLocation) {
+        const lat = Number(row.latitude); const lng = Number(row.longitude);
+        if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lng) || lng < -180 || lng > 180 || !row.locationName.trim() || !row.locationAddress.trim()) {
+          issues.push({ rowNumber, reason: "Lokasi belum lengkap" });
+          return;
+        }
+      }
 
       if (seenPhones.has(phone)) {
         duplicates += 1;
@@ -1436,6 +1494,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         variables: row.variables.map((v) => v || ""),
         mediaUrl: row.mediaUrl.trim() || undefined,
         fileName: row.fileName.trim() || undefined,
+        headerTextVariables: runtimeRequirements?.headerTextVariableCount ? [row.headerValue.trim()] : [],
+        buttonValues: (runtimeRequirements?.buttonRequirements || []).map((requirement, requirementIndex) => ({ ...requirement, value: row.buttonValues[requirementIndex]?.trim() || "" })),
+        location: runtimeRequirements?.requiresLocation ? { latitude: Number(row.latitude), longitude: Number(row.longitude), name: row.locationName.trim(), address: row.locationAddress.trim() } : undefined,
         rowNumber,
       });
     });
@@ -1463,6 +1524,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       ...Array.from({ length: Math.max(varsCount, 2) }, (_, i) => `Var${i + 1}`),
       "follow_media",
       "filename",
+      ...(runtimeRequirements?.headerTextVariableCount ? ["header_var1"] : []),
+      ...(runtimeRequirements?.buttonRequirements || []).map((_, index) => `button_param${index + 1}`),
+      ...(runtimeRequirements?.requiresLocation ? ["latitude", "longitude", "location_name", "location_address"] : []),
       "contactname",
     ];
 
@@ -1474,6 +1538,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       ),
       requiresMedia ? "https://drive.google.com/uc?export=download&id=xxxxx" : "",
       requiresMedia && selectedTemplate?.headerType === "document" ? "Dokumen Contoh.pdf" : "",
+      ...(runtimeRequirements?.headerTextVariableCount ? ["INV-2026-001"] : []),
+      ...(runtimeRequirements?.buttonRequirements || []).map((requirement) => requirement.type === "COPY_CODE" ? "PROMO2026" : "ABC123"),
+      ...(runtimeRequirements?.requiresLocation ? ["-6.597", "106.806", "Sekolah Pesat", "Bogor"] : []),
       "Bapak/Ibu Fulan",
     ];
 
@@ -1485,6 +1552,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       ),
       "",
       "",
+      ...(runtimeRequirements?.headerTextVariableCount ? ["INV-2026-002"] : []),
+      ...(runtimeRequirements?.buttonRequirements || []).map((requirement) => requirement.type === "COPY_CODE" ? "PROMO2026" : "XYZ789"),
+      ...(runtimeRequirements?.requiresLocation ? ["-6.2", "106.8", "Lokasi", "Jakarta"] : []),
       "Orang Tua Siswa",
     ];
 
@@ -1529,6 +1599,19 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         "Media header belum lengkap",
         `Template ini butuh media header. Baris yang belum punya follow_media: ${invalidMediaRows.slice(0, 10).join(", ")}`,
       );
+      return;
+    }
+    const incompleteRuntimeRows = contacts.filter((contact) => {
+      if (runtimeRequirements?.headerTextVariableCount && !contact.headerTextVariables?.[0]?.trim()) return true;
+      if ((runtimeRequirements?.buttonRequirements || []).length && (contact.buttonValues?.some((item) => !item.value.trim()) || contact.buttonValues?.length !== runtimeRequirements?.buttonRequirements.length)) return true;
+      if (runtimeRequirements?.requiresLocation) {
+        const location = contact.location;
+        if (!location || !Number.isFinite(location.latitude) || location.latitude < -90 || location.latitude > 90 || !Number.isFinite(location.longitude) || location.longitude < -180 || location.longitude > 180 || !location.name || !location.address) return true;
+      }
+      return false;
+    });
+    if (incompleteRuntimeRows.length) {
+      openResultModal("error", "Parameter runtime belum lengkap", "Isi nilai header, tombol, atau lokasi melalui input manual/CSV sebelum mengirim.");
       return;
     }
 
@@ -1616,6 +1699,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
           mediaUrl: "",
           fileName: "",
           contactName: "",
+          headerValue: "",
+          buttonValues: Array.from({ length: runtimeRequirements?.buttonRequirements?.length || 0 }, () => ""),
+          latitude: "", longitude: "", locationName: "", locationAddress: "",
         },
       ]);
 
@@ -1905,6 +1991,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                         </div>
                       </div>
                     )}
+                    {Boolean(runtimeRequirements?.headerTextVariableCount) && <div><Label>Nilai Header {`{{1}}`}</Label><Input className="mt-2" placeholder="INV-2026-001" value={row.headerValue} onChange={(e) => updateManualRow(rowIndex, { headerValue: e.target.value })} /></div>}
+                    {(runtimeRequirements?.buttonRequirements || []).length > 0 && <div className="grid grid-cols-1 gap-4 md:grid-cols-2">{runtimeRequirements?.buttonRequirements.map((requirement, valueIndex) => <div key={`${requirement.type}-${requirement.index}`}><Label>{requirement.type === "COPY_CODE" ? "Kode promo" : "Suffix URL"}</Label><Input className="mt-2" value={row.buttonValues[valueIndex] || ""} onChange={(e) => updateManualButtonValue(rowIndex, valueIndex, e.target.value)} /></div>)}</div>}
+                    {runtimeRequirements?.requiresLocation && <div className="grid grid-cols-1 gap-4 md:grid-cols-2"><div><Label>Latitude</Label><Input className="mt-2" type="number" min={-90} max={90} step="any" value={row.latitude} onChange={(e) => updateManualRow(rowIndex, { latitude: e.target.value })} /></div><div><Label>Longitude</Label><Input className="mt-2" type="number" min={-180} max={180} step="any" value={row.longitude} onChange={(e) => updateManualRow(rowIndex, { longitude: e.target.value })} /></div><div><Label>Nama Lokasi</Label><Input className="mt-2" value={row.locationName} onChange={(e) => updateManualRow(rowIndex, { locationName: e.target.value })} /></div><div><Label>Alamat Lokasi</Label><Input className="mt-2" value={row.locationAddress} onChange={(e) => updateManualRow(rowIndex, { locationAddress: e.target.value })} /></div></div>}
                   </div>
                 ))}
 

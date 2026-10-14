@@ -229,8 +229,11 @@ export default function App() {
       setSelectedNumber(null);
       setSelectedBroadcast(null);
       setSelectedBroadcastContext(null);
-      setActiveView("dashboard");
-      window.location.hash = "";
+      setActiveView("login");
+      window.location.hash = "#/login";
+      void supabase.auth.signOut().catch((error) => {
+        console.warn("Failed to clear expired Supabase session:", error);
+      });
     };
 
     window.addEventListener("sipesa-unauthorized", handleUnauthorized);

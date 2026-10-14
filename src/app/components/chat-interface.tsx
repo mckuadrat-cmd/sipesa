@@ -402,6 +402,11 @@ export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }:
   const [templatesList, setTemplatesList] = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<any | null>(null);
   const [templateVarValues, setTemplateVarValues] = useState<string[]>([]);
+  const [templateHeaderValues, setTemplateHeaderValues] = useState<string[]>([]);
+  const [templateButtonValues, setTemplateButtonValues] = useState<Array<{ index: number; type: "URL" | "COPY_CODE"; value: string }>>([]);
+  const [templateLocation, setTemplateLocation] = useState({ latitude: "", longitude: "", name: "", address: "" });
+  const [templateRuntimeMedia, setTemplateRuntimeMedia] = useState<{ id: string; type: string; filename: string } | null>(null);
+  const [uploadingTemplateMedia, setUploadingTemplateMedia] = useState(false);
   const [sendingTemplate, setSendingTemplate] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -451,15 +456,8 @@ export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }:
       if (!res.success || !Array.isArray(res.data)) throw new Error(res.success ? "Invalid template response" : res.error);
       const selectedNumber = numbersRes.success ? numbersRes.data.find((number) => number.id === numberId) : null;
       const approvedTemplates = res.data.filter((template: any) => String(template.status || "").toLowerCase() === "approved");
-      setTemplatesList(approvedTemplates.filter((template: any) => {
-        const hasMediaHeader = Array.isArray(template.components) && template.components.some((component: any) =>
-          String(component?.type || "").toUpperCase() === "HEADER"
-          && ["IMAGE", "VIDEO", "DOCUMENT"].includes(String(component?.format || "").toUpperCase()),
-        );
-        return template.runtimeSupport?.supported !== false
-          && Boolean(template.wabaId && selectedNumber?.wabaId && template.wabaId === selectedNumber.wabaId)
-          && !hasMediaHeader;
-      }));
+      setTemplatesList(approvedTemplates.filter((template: any) => template.runtimeSupport?.supported !== false
+        && Boolean(template.wabaId && selectedNumber?.wabaId && template.wabaId === selectedNumber.wabaId)));
       setTemplateLoadState("loaded");
     } catch (err) {
       console.error("Error fetching templates:", err);
@@ -474,6 +472,9 @@ export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }:
     setShowTemplateModal(true);
     setSelectedTemplate(null);
     setTemplateVarValues([]);
+    setTemplateHeaderValues([]);
+    setTemplateButtonValues([]);
+    setTemplateRuntimeMedia(null);
     void loadApprovedTemplates();
   };
 
@@ -484,6 +485,11 @@ export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }:
     const declaredCount = Array.isArray(template?.variables) ? template.variables.length : 0;
     const count = Math.max(variableMatches.length > 0 ? Math.max(...variableMatches) : 0, declaredCount);
     setTemplateVarValues(Array(count).fill(""));
+    const requirements = template?.runtimeRequirements;
+    setTemplateHeaderValues(Array(Number(requirements?.headerTextVariableCount || 0)).fill(""));
+    setTemplateButtonValues((requirements?.buttonRequirements || []).map((item: any) => ({ index: Number(item.index), type: item.type, value: "" })));
+    setTemplateLocation({ latitude: "", longitude: "", name: "", address: "" });
+    setTemplateRuntimeMedia(null);
   };
 
   const selectedTemplateRequiresMedia = Boolean(
@@ -496,7 +502,18 @@ export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }:
   const invalidTemplateVariableIndexes = templateVarValues
     .map((value, index) => value.trim() ? -1 : index)
     .filter((index) => index >= 0);
-  const templatePrerequisitesValid = invalidTemplateVariableIndexes.length === 0 && !selectedTemplateRequiresMedia;
+  const selectedRequirements = selectedTemplate?.runtimeRequirements || {};
+  const locationValid = !selectedRequirements.requiresLocation || (
+    Number.isFinite(Number(templateLocation.latitude)) && Number(templateLocation.latitude) >= -90 && Number(templateLocation.latitude) <= 90
+    && Number.isFinite(Number(templateLocation.longitude)) && Number(templateLocation.longitude) >= -180 && Number(templateLocation.longitude) <= 180
+    && templateLocation.name.trim() && templateLocation.address.trim()
+  );
+  const templatePrerequisitesValid = invalidTemplateVariableIndexes.length === 0
+    && templateHeaderValues.every((value) => value.trim())
+    && templateButtonValues.every((item) => item.value.trim())
+    && (!selectedTemplateRequiresMedia || Boolean(templateRuntimeMedia?.id))
+    && Boolean(locationValid)
+    && !uploadingTemplateMedia;
 
   const buildTemplatePreview = (content: string, vars: string[]) => {
     if (!content) return "";
@@ -526,6 +543,10 @@ export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }:
         contactId: selectedContact,
         templateName: selectedTemplate.name,
         variables: templateVarValues,
+        headerValues: templateHeaderValues,
+        buttonValues: templateButtonValues,
+        location: templateLocation,
+        mediaId: templateRuntimeMedia?.id,
         content: previewText,
       });
       if (templateSendAttemptRef.current?.fingerprint !== fingerprint) {
@@ -537,13 +558,20 @@ export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }:
         templateName: selectedTemplate.name,
         language: selectedTemplate.language || "id",
         bodyVariables: templateVarValues,
+        headerTextVariables: templateHeaderValues,
+        buttonValues: templateButtonValues,
+        location: selectedRequirements.requiresLocation ? {
+          latitude: Number(templateLocation.latitude), longitude: Number(templateLocation.longitude),
+          name: templateLocation.name.trim(), address: templateLocation.address.trim(),
+        } : undefined,
+        headerMedia: templateRuntimeMedia ? { format: templateRuntimeMedia.type.toUpperCase(), id: templateRuntimeMedia.id, filename: templateRuntimeMedia.filename } : undefined,
         content: previewText,
       }, templateSendAttemptRef.current.key);
 
       if ("error" in result) {
         if (!result.retryable) templateSendAttemptRef.current = null;
         console.error("Template send failed:", result.error);
-        toast.error("Template belum dapat dikirim. Silakan coba lagi.");
+        toast.error(result.error || "Template belum dapat dikirim. Silakan coba lagi.");
         return;
       }
 
@@ -1856,9 +1884,44 @@ export function ChatInterface({ numberId, numberName, onBack, onViewTemplates }:
                     </div>
                   )}
 
+                  {templateHeaderValues.length > 0 && (
+                    <div className="space-y-2 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                      <span className="block text-xs font-bold text-blue-950">Nilai Header</span>
+                      {templateHeaderValues.map((value, index) => <Input key={index} placeholder={`Nilai header {{${index + 1}}}`} value={value} onChange={(e) => setTemplateHeaderValues((items) => items.map((item, i) => i === index ? e.target.value : item))} />)}
+                    </div>
+                  )}
+
+                  {templateButtonValues.length > 0 && (
+                    <div className="space-y-2 rounded-xl border border-violet-200 bg-violet-50 p-4">
+                      <span className="block text-xs font-bold text-violet-950">Parameter Tombol</span>
+                      {templateButtonValues.map((item, index) => <Input key={`${item.type}-${item.index}`} placeholder={item.type === "COPY_CODE" ? "Kode promo" : "Suffix URL"} value={item.value} onChange={(e) => setTemplateButtonValues((items) => items.map((entry, i) => i === index ? { ...entry, value: e.target.value } : entry))} />)}
+                    </div>
+                  )}
+
+                  {selectedRequirements.requiresLocation && (
+                    <div className="grid grid-cols-1 gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 sm:grid-cols-2">
+                      <span className="col-span-full block text-xs font-bold text-amber-950">Lokasi</span>
+                      <Input type="number" min={-90} max={90} step="any" placeholder="Latitude" value={templateLocation.latitude} onChange={(e) => setTemplateLocation((value) => ({ ...value, latitude: e.target.value }))} />
+                      <Input type="number" min={-180} max={180} step="any" placeholder="Longitude" value={templateLocation.longitude} onChange={(e) => setTemplateLocation((value) => ({ ...value, longitude: e.target.value }))} />
+                      <Input placeholder="Nama lokasi" value={templateLocation.name} onChange={(e) => setTemplateLocation((value) => ({ ...value, name: e.target.value }))} />
+                      <Input placeholder="Alamat" value={templateLocation.address} onChange={(e) => setTemplateLocation((value) => ({ ...value, address: e.target.value }))} />
+                    </div>
+                  )}
+
                   {selectedTemplateRequiresMedia && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800" role="alert">
-                      Template ini memerlukan media header. Pengiriman template media belum tersedia dari Chat.
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                      <label className="font-semibold" htmlFor="chat-template-media">Media {selectedRequirements.mediaType} wajib dipilih</label>
+                      <Input id="chat-template-media" className="mt-2 bg-white" type="file" disabled={uploadingTemplateMedia} accept={selectedRequirements.mediaType === "image" ? ".jpg,.jpeg,.png,image/jpeg,image/png" : selectedRequirements.mediaType === "video" ? ".mp4,.3gp,video/mp4,video/3gpp" : ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"} onChange={async (event) => {
+                        const file = event.target.files?.[0];
+                        setTemplateRuntimeMedia(null);
+                        if (!file || !selectedTemplate) return;
+                        setUploadingTemplateMedia(true);
+                        const result = await api.uploadTemplateRuntimeMedia(numberId, selectedTemplate.id, file);
+                        setUploadingTemplateMedia(false);
+                        if (!result.success) return toast.error(result.error);
+                        setTemplateRuntimeMedia(result.data);
+                      }} />
+                      <p className="mt-1">{uploadingTemplateMedia ? "Mengunggah media..." : templateRuntimeMedia ? `${templateRuntimeMedia.filename} siap dikirim` : "Media review template berbeda dari media runtime ini."}</p>
                     </div>
                   )}
 

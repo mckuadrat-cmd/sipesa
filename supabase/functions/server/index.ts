@@ -44,6 +44,7 @@ type Env = {
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   META_GRAPH_VERSION?: string;
+  META_APP_ID?: string;
   META_APP_SECRET?: string;
   BROADCAST_SCHEDULER_SECRET?: string;
   SUPERADMIN_USER_ID?: string;
@@ -261,18 +262,72 @@ function getTemplateSendRequirements(template: any) {
   const bodyVariableCount = indexes.length > 0 ? Math.max(...indexes) : 0;
   const header = components.find((item: any) => String(item?.type || "").toUpperCase() === "HEADER");
   const headerFormat = String(header?.format || "").toUpperCase();
+  const headerText = String(header?.text || "");
+  const headerIndexes = [...headerText.matchAll(/\{\{(\d+)\}\}/g)].map((match) => Number(match[1]));
+  const buttons = components.find((item: any) => String(item?.type || "").toUpperCase() === "BUTTONS");
+  const buttonRequirements = (Array.isArray(buttons?.buttons) ? buttons.buttons : []).flatMap((button: any, index: number) => {
+    const type = String(button?.type || "").toUpperCase();
+    if (type === "URL" && /\{\{1\}\}$/.test(String(button?.url || ""))) return [{ index, type: "URL" }];
+    if (type === "COPY_CODE") return [{ index, type: "COPY_CODE" }];
+    return [];
+  });
+  const carousel = components.find((item: any) => String(item?.type || "").toUpperCase() === "CAROUSEL");
+  const carouselCards = (Array.isArray(carousel?.cards) ? carousel.cards : []).map((card: any, cardIndex: number) => {
+    const cardComponents = Array.isArray(card?.components) ? card.components : [];
+    const cardHeader = cardComponents.find((item: any) => String(item?.type || "").toUpperCase() === "HEADER");
+    const cardBody = cardComponents.find((item: any) => String(item?.type || "").toUpperCase() === "BODY");
+    const cardButtons = cardComponents.find((item: any) => String(item?.type || "").toUpperCase() === "BUTTONS");
+    const cardIndexes = [...String(cardBody?.text || "").matchAll(/\{\{(\d+)\}\}/g)].map((match) => Number(match[1]));
+    return {
+      cardIndex,
+      mediaType: String(cardHeader?.format || "").toLowerCase() || null,
+      bodyVariableCount: cardIndexes.length ? Math.max(...cardIndexes) : 0,
+      buttonRequirements: (Array.isArray(cardButtons?.buttons) ? cardButtons.buttons : []).flatMap((button: any, index: number) =>
+        String(button?.type || "").toUpperCase() === "URL" && /\{\{1\}\}$/.test(String(button?.url || "")) ? [{ index, type: "URL" }] : []),
+    };
+  });
   return {
     bodyVariableCount,
+    headerTextVariableCount: headerIndexes.length ? Math.max(...headerIndexes) : 0,
     requiresMedia: ["IMAGE", "VIDEO", "DOCUMENT"].includes(headerFormat),
+    mediaType: ["IMAGE", "VIDEO", "DOCUMENT"].includes(headerFormat) ? headerFormat.toLowerCase() : null,
+    requiresLocation: headerFormat === "LOCATION",
+    buttonRequirements,
+    carousel: carouselCards.length ? { cardCount: carouselCards.length, cards: carouselCards } : null,
   };
 }
 
 const TEMPLATE_SENDABLE_STATUSES = new Set(["approved"]);
 const TEMPLATE_EDITABLE_META_STATUSES = new Set(["approved", "rejected", "paused"]);
-const TEMPLATE_CATEGORIES = new Set(["marketing", "utility"]);
-const TEMPLATE_COMPONENT_TYPES = new Set(["HEADER", "BODY", "FOOTER", "BUTTONS"]);
-const TEMPLATE_HEADER_FORMATS = new Set(["TEXT", "IMAGE", "VIDEO", "DOCUMENT"]);
-const TEMPLATE_BUTTON_TYPES = new Set(["QUICK_REPLY", "URL", "PHONE_NUMBER"]);
+const TEMPLATE_CATEGORIES = new Set(["marketing", "utility", "authentication"]);
+const TEMPLATE_COMPONENT_TYPES = new Set(["HEADER", "BODY", "FOOTER", "BUTTONS", "CAROUSEL"]);
+const TEMPLATE_HEADER_FORMATS = new Set(["TEXT", "IMAGE", "VIDEO", "DOCUMENT", "LOCATION"]);
+const TEMPLATE_BUTTON_TYPES = new Set(["QUICK_REPLY", "URL", "PHONE_NUMBER", "COPY_CODE", "FLOW", "CATALOG", "MPM"]);
+const TEMPLATE_MEDIA_SAMPLE_RULES: Record<string, { mimeTypes: Set<string>; extensions: Set<string>; maxBytes: number; label: string }> = {
+  image: {
+    mimeTypes: new Set(["image/jpeg", "image/png"]),
+    extensions: new Set(["jpg", "jpeg", "png"]),
+    maxBytes: 5 * 1024 * 1024,
+    label: "gambar",
+  },
+  video: {
+    mimeTypes: new Set(["video/mp4", "video/3gpp"]),
+    extensions: new Set(["mp4", "3gp"]),
+    maxBytes: 16 * 1024 * 1024,
+    label: "video",
+  },
+  document: {
+    mimeTypes: new Set([
+      "application/pdf", "text/plain", "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ]),
+    extensions: new Set(["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt"]),
+    maxBytes: 100 * 1024 * 1024,
+    label: "dokumen",
+  },
+};
 const META_TEMPLATE_LANGUAGE_CODES = new Set([
   "af", "sq", "ar", "ar_EG", "ar_AE", "ar_LB", "ar_MA", "ar_QA", "az", "be_BY", "bn", "bg", "ca",
   "zh_CN", "zh_HK", "zh_TW", "hr", "cs", "da", "nl", "en", "en_GB", "en_US", "et", "fil", "fi", "fr",
@@ -285,7 +340,7 @@ function inspectTemplateRuntime(template: any) {
   const reasons: string[] = [];
   const components = Array.isArray(template?.components) ? template.components : [];
   const category = String(template?.category ?? "").toLowerCase();
-  if (category === "authentication") reasons.push("Template Authentication belum didukung di SIPESA");
+  if (category === "authentication") reasons.push("Template Authentication memerlukan workflow OTP khusus");
 
   for (const component of components) {
     const type = String(component?.type ?? "").toUpperCase();
@@ -296,30 +351,459 @@ function inspectTemplateRuntime(template: any) {
     if (type === "HEADER") {
       const format = String(component?.format ?? "").toUpperCase();
       if (!TEMPLATE_HEADER_FORMATS.has(format)) reasons.push(`Header ${format || "UNKNOWN"} belum didukung`);
-      if (format === "TEXT" && /\{\{\d+\}\}/.test(String(component?.text ?? ""))) {
-        reasons.push("Variabel header text belum didukung");
-      }
     }
     if (type === "BUTTONS") {
       const componentButtons = Array.isArray(component?.buttons) ? component.buttons : [];
+      if (componentButtons.some((button: any) => String(button?.type ?? "").toUpperCase() === "FLOW")) {
+        reasons.push("Template Flow memerlukan lifecycle flow_token per penerima yang belum didukung SIPESA");
+      }
+      if (componentButtons.some((button: any) => String(button?.type ?? "").toUpperCase() === "CATALOG")) {
+        reasons.push("Template Catalog memerlukan validasi katalog dan produk thumbnail saat pengiriman yang belum didukung SIPESA");
+      }
+      if (componentButtons.some((button: any) => String(button?.type ?? "").toUpperCase() === "MPM")) {
+        reasons.push("Template Multi-product memerlukan pemilihan produk saat pengiriman yang belum didukung SIPESA");
+      }
       const quickCount = componentButtons.filter((button: any) => String(button?.type ?? "").toUpperCase() === "QUICK_REPLY").length;
-      const actionCount = componentButtons.filter((button: any) => ["URL", "PHONE_NUMBER"].includes(String(button?.type ?? "").toUpperCase())).length;
-      if (quickCount && actionCount) reasons.push("Kombinasi Quick Reply dan tombol tindakan belum didukung");
-      if (quickCount > 3 || actionCount > 2) reasons.push("Jumlah tombol melampaui subset runtime SIPESA");
+      const actionCount = componentButtons.filter((button: any) => ["URL", "PHONE_NUMBER", "COPY_CODE"].includes(String(button?.type ?? "").toUpperCase())).length;
+      if (componentButtons.length > 10 || quickCount > 10 || actionCount > 4) reasons.push("Jumlah tombol melampaui batas Meta");
       for (const button of componentButtons) {
         const buttonType = String(button?.type ?? "").toUpperCase();
         if (!TEMPLATE_BUTTON_TYPES.has(buttonType)) reasons.push(`Tombol ${buttonType || "UNKNOWN"} belum didukung`);
-        if (buttonType === "URL" && /\{\{\d+\}\}/.test(String(button?.url ?? ""))) {
-          reasons.push("URL dinamis belum didukung");
-        }
       }
+    }
+    if (type === "CAROUSEL") {
+      reasons.push("Template Carousel memerlukan parameter runtime per kartu yang belum didukung SIPESA");
     }
   }
 
   return { supported: reasons.length === 0, reasons: [...new Set(reasons)] };
 }
 
+const CAROUSEL_MIN_CARDS = 2;
+const CAROUSEL_MAX_CARDS = 10;
+const CAROUSEL_CARD_BODY_MAX = 160;
+const CAROUSEL_BUTTON_TYPES = new Set(["QUICK_REPLY", "URL", "PHONE_NUMBER"]);
+
+function isCarouselTemplate(componentsInput: any) {
+  return Array.isArray(componentsInput) && componentsInput.some((component: any) =>
+    String(component?.type ?? "").toUpperCase() === "CAROUSEL");
+}
+
+function parseDeferredAdvancedComponents(componentsInput: any) {
+  const components = Array.isArray(componentsInput) ? componentsInput : [];
+  const types = components.map((component: any) => String(component?.type ?? "").toUpperCase());
+  const limitedTimeOffer = types.includes("LIMITED_TIME_OFFER");
+  const callingPermissions = types.some((type: string) => ["CALL_PERMISSION_REQUEST", "CALLING_PERMISSION_REQUEST"].includes(type));
+  if (!limitedTimeOffer && !callingPermissions) return null;
+  return {
+    type: limitedTimeOffer ? "limited_time_offer" : "calling_permission",
+    supported: false,
+    readOnly: true,
+    reasons: [limitedTimeOffer
+      ? "Template Penawaran Berbatas Waktu diimpor read-only sampai eligibility dan runtime expiry dapat diverifikasi"
+      : "Calling Permissions bukan schema template yang didukung SIPESA"],
+  };
+}
+
+function carouselButtonSignature(button: any) {
+  const type = String(button?.type ?? "").toUpperCase();
+  return `${type}:${type === "URL" && /\{\{1\}\}$/.test(String(button?.url ?? button?.value ?? "")) ? "DYNAMIC" : "STATIC"}`;
+}
+
+function parseCarouselComponents(componentsInput: any) {
+  const components = Array.isArray(componentsInput) ? componentsInput : [];
+  const body = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "BODY");
+  const carousel = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "CAROUSEL");
+  const rawCards = Array.isArray(carousel?.cards) ? carousel.cards : [];
+  const reasons: string[] = [];
+  const cards = rawCards.map((card: any, cardIndex: number) => {
+    if (!card || typeof card !== "object" || Object.keys(card).some((key) => !new Set(["header", "body", "buttons"]).has(key))) errors.push(`Field Card ${cardIndex + 1} tidak dikenal`);
+    if (card?.header && Object.keys(card.header).some((key) => !new Set(["type", "mediaHandle", "fileName"]).has(key))) errors.push(`Field header Card ${cardIndex + 1} tidak dikenal`);
+    if (card?.body && Object.keys(card.body).some((key) => !new Set(["text", "examples"]).has(key))) errors.push(`Field body Card ${cardIndex + 1} tidak dikenal`);
+    const cardComponents = Array.isArray(card?.components) ? card.components : [];
+    const header = cardComponents.find((component: any) => String(component?.type ?? "").toUpperCase() === "HEADER");
+    const cardBody = cardComponents.find((component: any) => String(component?.type ?? "").toUpperCase() === "BODY");
+    const buttons = cardComponents.find((component: any) => String(component?.type ?? "").toUpperCase() === "BUTTONS");
+    const format = String(header?.format ?? "").toUpperCase();
+    const buttonItems = Array.isArray(buttons?.buttons) ? buttons.buttons : [];
+    const knownTypes = new Set(["HEADER", "BODY", "BUTTONS"]);
+    if (cardComponents.some((component: any) => !knownTypes.has(String(component?.type ?? "").toUpperCase()))) reasons.push(`Card ${cardIndex + 1} memiliki komponen yang belum didukung`);
+    if (!["IMAGE", "VIDEO"].includes(format)) reasons.push(`Header Card ${cardIndex + 1} harus IMAGE atau VIDEO`);
+    if (!String(header?.example?.header_handle?.[0] ?? "").trim()) reasons.push(`Contoh media Card ${cardIndex + 1} belum tersedia`);
+    if (!String(cardBody?.text ?? "").trim()) reasons.push(`Body Card ${cardIndex + 1} tidak tersedia`);
+    if (buttonItems.length < 1 || buttonItems.length > 2 || buttonItems.some((button: any) => !CAROUSEL_BUTTON_TYPES.has(String(button?.type ?? "").toUpperCase()))) reasons.push(`Button Card ${cardIndex + 1} tidak didukung`);
+    return {
+      header: { type: format.toLowerCase(), mediaHandle: String(header?.example?.header_handle?.[0] ?? ""), fileName: String(header?.example?.file_name ?? "") },
+      body: { text: String(cardBody?.text ?? ""), examples: cardBody?.example_values ?? {} },
+      buttons: buttonItems.map((button: any) => ({
+        type: String(button?.type ?? "").toUpperCase(), text: String(button?.text ?? ""),
+        value: String(button?.url ?? button?.phone_number ?? ""),
+        example: Array.isArray(button?.example) ? String(button.example[0] ?? "") : "",
+      })),
+    };
+  });
+  if (!body?.text) reasons.push("Body utama Carousel tidak tersedia");
+  if (cards.length < CAROUSEL_MIN_CARDS || cards.length > CAROUSEL_MAX_CARDS) reasons.push(`Carousel harus memiliki ${CAROUSEL_MIN_CARDS}-${CAROUSEL_MAX_CARDS} kartu`);
+  if (cards.length > 1) {
+    const signatureFor = (card: any) => `${card.header.type}|BODY_VARS:${[...String(card.body.text ?? "").matchAll(/\{\{(\d+)\}\}/g)].length}|${card.buttons.map(carouselButtonSignature).join("|")}`;
+    const signature = signatureFor(cards[0]);
+    if (cards.slice(1).some((card: any) => signatureFor(card) !== signature)) reasons.push("Struktur semua kartu harus konsisten");
+  }
+  return { supported: reasons.length === 0, readOnly: reasons.length > 0, reasons: [...new Set(reasons)], body: String(body?.text ?? ""), cards };
+}
+
+function validateCarouselTemplatePayload(body: any) {
+  const errors: string[] = [];
+  const nameRaw = String(body?.name ?? "").trim();
+  const name = nameRaw.toLowerCase();
+  const category = String(body?.category ?? "").trim().toLowerCase();
+  const language = String(body?.language ?? "").trim();
+  const model = body?.normalizedModel && typeof body.normalizedModel === "object" ? body.normalizedModel : null;
+  const mainBody = String(model?.body?.text ?? "").trim();
+  const rawCards = Array.isArray(model?.cards) ? model.cards : [];
+  if (!nameRaw) errors.push("Nama template wajib");
+  if (nameRaw !== name || (name && !/^[a-z0-9_]+$/.test(name)) || name.length > 512) errors.push("Nama template Carousel tidak valid");
+  if (category !== "marketing") errors.push("Carousel hanya tersedia untuk kategori Marketing");
+  if (!META_TEMPLATE_LANGUAGE_CODES.has(language)) errors.push("Kode bahasa template tidak didukung Meta");
+  if (String(model?.templateType ?? "").toLowerCase() !== "carousel") errors.push("Tipe template Carousel tidak valid");
+  if (!mainBody || mainBody.length > 1024) errors.push("Body utama Carousel wajib dan maksimal 1024 karakter");
+  if (/\{\{.*?\}\}/.test(mainBody)) errors.push("Variabel body utama Carousel belum didukung SIPESA");
+  if (rawCards.length < CAROUSEL_MIN_CARDS) errors.push(`Carousel membutuhkan minimal ${CAROUSEL_MIN_CARDS} kartu`);
+  if (rawCards.length > CAROUSEL_MAX_CARDS) errors.push(`Maksimal ${CAROUSEL_MAX_CARDS} kartu`);
+  const allowedModelKeys = new Set(["templateType", "body", "cards"]);
+  if (model && Object.keys(model).some((key) => !allowedModelKeys.has(key))) errors.push("Field template Carousel tidak dikenal");
+
+  const cards = rawCards.map((card: any, cardIndex: number) => {
+    const headerType = String(card?.header?.type ?? "").toLowerCase();
+    const mediaHandle = String(card?.header?.mediaHandle ?? "").trim();
+    const fileName = String(card?.header?.fileName ?? "").trim();
+    const cardBody = String(card?.body?.text ?? "");
+    const examples = card?.body?.examples && typeof card.body.examples === "object" ? card.body.examples : {};
+    const rawButtons = Array.isArray(card?.buttons) ? card.buttons : [];
+    if (!new Set(["image", "video"]).has(headerType)) errors.push(`Header Card ${cardIndex + 1} harus Image atau Video`);
+    if (!mediaHandle) errors.push(`Contoh media Card ${cardIndex + 1} belum diunggah`);
+    if (!cardBody.trim() || cardBody.length > CAROUSEL_CARD_BODY_MAX) errors.push(`Body Card ${cardIndex + 1} wajib dan maksimal ${CAROUSEL_CARD_BODY_MAX} karakter`);
+    const indexes = [...cardBody.matchAll(/\{\{(\d+)\}\}/g)].map((match) => Number(match[1]));
+    const unique = [...new Set(indexes)].sort((a, b) => a - b);
+    if (/\{\{[^}]*$|\{\{[^\d]|\{\{\d+[^}]|\{\{\d+\}(?!\})/.test(cardBody) || unique.some((value, index) => value !== index + 1)) errors.push(`Placeholder body Card ${cardIndex + 1} tidak valid`);
+    if (unique.some((index) => !String(examples[index] ?? examples[String(index)] ?? "").trim())) errors.push(`Contoh variabel Card ${cardIndex + 1} belum lengkap`);
+    if (rawButtons.length < 1 || rawButtons.length > 2) errors.push(`Card ${cardIndex + 1} wajib memiliki 1-2 tombol`);
+    const buttons = rawButtons.map((button: any) => {
+      if (!button || typeof button !== "object" || Object.keys(button).some((key) => !new Set(["type", "text", "value", "example"]).has(key))) errors.push(`Field button Card ${cardIndex + 1} tidak dikenal`);
+      const type = String(button?.type ?? "").toUpperCase();
+      const text = String(button?.text ?? "").trim();
+      const value = String(button?.value ?? "").trim();
+      const example = String(button?.example ?? "").trim();
+      if (!CAROUSEL_BUTTON_TYPES.has(type)) errors.push(`Button pada Card ${cardIndex + 1} tidak sesuai aturan Meta`);
+      if (!text || text.length > 25) errors.push(`Teks tombol Card ${cardIndex + 1} wajib dan maksimal 25 karakter`);
+      if (type === "PHONE_NUMBER" && !/^\+[1-9]\d{7,14}$/.test(value)) errors.push(`Nomor telepon Card ${cardIndex + 1} wajib format E.164`);
+      if (type === "URL") {
+        const dynamic = /\{\{1\}\}$/.test(value);
+        try { if (new URL(value.replace(/\{\{1\}\}$/, "contoh")).protocol !== "https:") throw new Error(); } catch { errors.push(`URL Card ${cardIndex + 1} wajib HTTPS`); }
+        if ((value.includes("{{") && !dynamic) || (dynamic && !example)) errors.push(`URL dinamis Card ${cardIndex + 1} memerlukan suffix {{1}} dan contoh`);
+      }
+      return { type, ...(type !== "QUICK_REPLY" ? {} : {}), text, ...(type === "URL" ? { url: value, ...(example ? { example: [example] } : {}) } : {}), ...(type === "PHONE_NUMBER" ? { phone_number: value } : {}) };
+    });
+    return { components: [
+      { type: "HEADER", format: headerType.toUpperCase(), example: { header_handle: [mediaHandle], ...(fileName ? { file_name: fileName } : {}) } },
+      { type: "BODY", text: cardBody.trim(), example_values: examples },
+      { type: "BUTTONS", buttons },
+    ] };
+  });
+  if (cards.length > 1) {
+    const signatureFor = (card: any) => {
+      const header = card.components[0]; const buttons = card.components[2].buttons;
+      const cardBody = card.components[1];
+      const variableCount = [...String(cardBody?.text ?? "").matchAll(/\{\{(\d+)\}\}/g)].length;
+      return `${header.format}|BODY_VARS:${variableCount}|${buttons.map(carouselButtonSignature).join("|")}`;
+    };
+    const expected = signatureFor(cards[0]);
+    if (cards.slice(1).some((card: any) => signatureFor(card) !== expected)) errors.push("Struktur semua kartu harus konsisten");
+  }
+  return { name, category, language, templateType: "carousel", components: [{ type: "BODY", text: mainBody }, { type: "CAROUSEL", cards }], errors: [...new Set(errors)] };
+}
+
+function parseCommerceComponents(componentsInput: any) {
+  const components = Array.isArray(componentsInput) ? componentsInput : [];
+  const body = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "BODY");
+  const footer = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "FOOTER");
+  const buttons = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "BUTTONS");
+  const buttonItems = Array.isArray(buttons?.buttons) ? buttons.buttons : [];
+  const commerceButtons = buttonItems.filter((button: any) => ["CATALOG", "MPM"].includes(String(button?.type ?? "").toUpperCase()));
+  const commerceButton = commerceButtons.length === 1 && buttonItems.length === 1 ? commerceButtons[0] : null;
+  const type = String(commerceButton?.type ?? "").toUpperCase();
+  const catalogId = String(commerceButton?.catalog_id ?? "").trim();
+  const rawSections = Array.isArray(commerceButton?.sections) ? commerceButton.sections : [];
+  const sections = rawSections.map((section: any) => ({
+    title: String(section?.title ?? "").trim(),
+    products: (Array.isArray(section?.product_items) ? section.product_items : []).map((item: any) => ({
+      id: String(item?.id ?? "").trim(),
+      retailerId: String(item?.product_retailer_id ?? "").trim(),
+      name: String(item?.name ?? "").trim(),
+      imageUrl: String(item?.image_url ?? "").trim(),
+    })),
+  }));
+  const reasons: string[] = [];
+  if (!body?.text || !commerceButton || !["CATALOG", "MPM"].includes(type)) reasons.push("Struktur template Commerce Meta tidak dikenali");
+  if (!catalogId) reasons.push("Referensi katalog lokal tidak tersedia; pilih ulang katalog sebelum mengedit");
+  if (type === "MPM") {
+    const productCount = sections.reduce((total: number, section: any) => total + section.products.length, 0);
+    if (sections.length > 0 && (productCount < 2 || productCount > 30)) reasons.push("Multi-product memerlukan 2-30 produk runtime");
+  }
+  return {
+    supported: reasons.length === 0,
+    readOnly: reasons.length > 0,
+    reasons,
+    type: type === "MPM" ? "multi_product" : "catalog",
+    catalogId,
+    buttonText: String(commerceButton?.text ?? "").trim(),
+    body: String(body?.text ?? ""),
+    footer: String(footer?.text ?? ""),
+    sections,
+  };
+}
+
+function validateCommerceTemplatePayload(body: any) {
+  const errors: string[] = [];
+  const nameRaw = String(body?.name ?? "").trim();
+  const name = nameRaw.toLowerCase();
+  const category = String(body?.category ?? "").trim().toLowerCase();
+  const language = String(body?.language ?? "").trim();
+  const model = body?.normalizedModel && typeof body.normalizedModel === "object" ? body.normalizedModel : null;
+  const templateType = String(model?.templateType ?? "").trim().toLowerCase();
+  const commerce = model?.commerce && typeof model.commerce === "object" ? model.commerce : null;
+  const catalogId = String(commerce?.catalogId ?? "").trim();
+  const bodyText = String(model?.body?.text ?? "");
+  const footerText = String(model?.footer?.text ?? "");
+  const buttonText = String(commerce?.buttonText ?? "").trim();
+  const rawSections = Array.isArray(commerce?.sections) ? commerce.sections : [];
+  const sections = rawSections.map((section: any) => ({
+    title: String(section?.title ?? "").trim(),
+    product_items: (Array.isArray(section?.products) ? section.products : []).map((product: any) => ({
+      id: String(product?.id ?? "").trim(),
+      product_retailer_id: String(product?.retailerId ?? "").trim(),
+      name: String(product?.name ?? "").trim().slice(0, 200),
+      image_url: String(product?.imageUrl ?? "").trim().slice(0, 1000),
+    })),
+  }));
+
+  if (!nameRaw) errors.push("Nama template wajib");
+  if (nameRaw !== name) errors.push("Nama template wajib lowercase");
+  if (name.length > 512 || (name && !/^[a-z0-9_]+$/.test(name))) errors.push("Nama template Commerce tidak valid");
+  if (category !== "marketing") errors.push("Template Catalog dan Multi-product hanya tersedia untuk Marketing");
+  if (!META_TEMPLATE_LANGUAGE_CODES.has(language)) errors.push("Kode bahasa template tidak didukung Meta");
+  if (!["catalog", "multi_product"].includes(templateType)) errors.push("Tipe template Commerce tidak valid");
+  if (!bodyText.trim() || bodyText.length > 1024) errors.push("Body template Commerce wajib dan maksimal 1024 karakter");
+  if (/\{\{.*?\}\}/.test(bodyText)) errors.push("Variabel body pada template Commerce belum didukung SIPESA");
+  if (footerText.length > 60 || /\{\{.*?\}\}/.test(footerText)) errors.push("Footer Commerce maksimal 60 karakter dan tidak boleh memiliki variabel");
+  if (!/^\d+$/.test(catalogId)) errors.push("Katalog wajib dipilih dari akun WhatsApp Business");
+  if (!buttonText || buttonText.length > 25) errors.push("Label tombol Commerce wajib dan maksimal 25 karakter");
+  const allowedModelKeys = new Set(["templateType", "body", "footer", "commerce"]);
+  if (model && Object.keys(model).some((key) => !allowedModelKeys.has(key))) errors.push("Field template Commerce tidak dikenal");
+  const allowedCommerceKeys = new Set(["catalogId", "buttonText", "sections"]);
+  if (commerce && Object.keys(commerce).some((key) => !allowedCommerceKeys.has(key))) errors.push("Field konfigurasi Commerce tidak dikenal");
+
+  if (templateType === "catalog" && sections.length > 0) errors.push("Catalog template tidak menerima daftar produk pada tahap pembuatan");
+  if (templateType === "multi_product") {
+    if (sections.length < 1 || sections.length > 10) errors.push("Multi-product mendukung 1-10 section");
+    const totalProducts = sections.reduce((total: number, section: any) => total + section.product_items.length, 0);
+    if (totalProducts < 2 || totalProducts > 30) errors.push("Multi-product memerlukan 2-30 produk");
+    if (sections.length > 1 && sections.some((section: any) => !section.title)) errors.push("Judul section wajib jika memakai lebih dari satu section");
+    if (sections.some((section: any) => section.title.length > 24)) errors.push("Judul section maksimal 24 karakter");
+    if (sections.some((section: any) => section.product_items.length < 1)) errors.push("Setiap section wajib memiliki minimal satu produk");
+    const products = sections.flatMap((section: any) => section.product_items);
+    if (products.some((product: any) => !/^\d+$/.test(product.id) || !product.product_retailer_id)) errors.push("Produk wajib dipilih dari katalog Meta");
+    const uniqueIds = new Set(products.map((product: any) => product.id));
+    const uniqueRetailerIds = new Set(products.map((product: any) => product.product_retailer_id));
+    if (uniqueIds.size !== products.length || uniqueRetailerIds.size !== products.length) errors.push("Produk Multi-product tidak boleh duplikat");
+  }
+
+  const commerceButton: any = {
+    type: templateType === "multi_product" ? "MPM" : "CATALOG",
+    text: buttonText,
+    catalog_id: catalogId,
+  };
+  if (templateType === "multi_product") commerceButton.sections = sections;
+  return {
+    name,
+    category,
+    language,
+    templateType,
+    commerceConfig: { catalogId, sections },
+    components: [
+      { type: "BODY", text: bodyText.trim() },
+      ...(footerText.trim() ? [{ type: "FOOTER", text: footerText.trim() }] : []),
+      { type: "BUTTONS", buttons: [commerceButton] },
+    ],
+    errors: [...new Set(errors)],
+  };
+}
+
+function parseAuthenticationComponents(componentsInput: any) {
+  const components = Array.isArray(componentsInput) ? componentsInput : [];
+  const body = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "BODY");
+  const footer = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "FOOTER");
+  const buttons = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "BUTTONS");
+  const buttonItems = Array.isArray(buttons?.buttons) ? buttons.buttons : [];
+  const otpButton = buttonItems.length === 1 && String(buttonItems[0]?.type ?? "").toUpperCase() === "OTP" ? buttonItems[0] : null;
+  const otpType = String(otpButton?.otp_type ?? "").toUpperCase();
+  const supported = Boolean(body && footer && otpButton && ["COPY_CODE", "ONE_TAP"].includes(otpType));
+  const reasons: string[] = [];
+  if (!body || !footer || !otpButton) reasons.push("Struktur Authentication Meta tidak dikenali");
+  if (otpButton && !["COPY_CODE", "ONE_TAP"].includes(otpType)) reasons.push(`Metode OTP ${otpType || "UNKNOWN"} belum didukung`);
+  return {
+    supported,
+    readOnly: !supported,
+    reasons,
+    otpButtonType: otpType.toLowerCase(),
+    securityRecommendation: body?.add_security_recommendation === true,
+    codeExpirationMinutes: Number(footer?.code_expiration_minutes ?? 10),
+    packageName: otpType === "ONE_TAP" ? String(otpButton?.package_name ?? "") : "",
+    signatureHash: otpType === "ONE_TAP" ? String(otpButton?.signature_hash ?? "") : "",
+  };
+}
+
+function parseFlowComponents(componentsInput: any) {
+  const components = Array.isArray(componentsInput) ? componentsInput : [];
+  const body = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "BODY");
+  const footer = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "FOOTER");
+  const buttons = components.find((component: any) => String(component?.type ?? "").toUpperCase() === "BUTTONS");
+  const buttonItems = Array.isArray(buttons?.buttons) ? buttons.buttons : [];
+  const flowButtons = buttonItems.filter((button: any) => String(button?.type ?? "").toUpperCase() === "FLOW");
+  const flowButton = flowButtons.length === 1 && buttonItems.length === 1 ? flowButtons[0] : null;
+  const action = String(flowButton?.flow_action ?? "").toUpperCase();
+  const flowId = String(flowButton?.flow_id ?? "").trim();
+  const screen = String(flowButton?.navigate_screen ?? "").trim();
+  const reasons: string[] = [];
+  if (!body?.text || !flowButton) reasons.push("Struktur template Flow Meta tidak dikenali");
+  if (!/^\d+$/.test(flowId)) reasons.push("Flow ID tidak valid");
+  if (action !== "NAVIGATE") reasons.push(`Flow action ${action || "UNKNOWN"} belum didukung`);
+  if (!screen) reasons.push("Destination screen Flow tidak tersedia");
+  return {
+    supported: reasons.length === 0,
+    readOnly: reasons.length > 0,
+    reasons,
+    flowId,
+    buttonText: String(flowButton?.text ?? "").trim(),
+    action: action.toLowerCase(),
+    screen,
+    body: String(body?.text ?? ""),
+    footer: String(footer?.text ?? ""),
+  };
+}
+
+function validateFlowTemplatePayload(body: any) {
+  const errors: string[] = [];
+  const nameRaw = String(body?.name ?? "").trim();
+  const name = nameRaw.toLowerCase();
+  const category = String(body?.category ?? "").trim().toLowerCase();
+  const language = String(body?.language ?? "").trim();
+  const model = body?.normalizedModel && typeof body.normalizedModel === "object" ? body.normalizedModel : null;
+  const flow = model?.flow && typeof model.flow === "object" ? model.flow : null;
+  const bodyText = String(model?.body?.text ?? "");
+  const footerText = String(model?.footer?.text ?? "");
+  const flowId = String(flow?.id ?? "").trim();
+  const buttonText = String(flow?.buttonText ?? "").trim();
+  const action = String(flow?.action ?? "").trim().toUpperCase();
+  const screen = String(flow?.screen ?? "").trim();
+
+  if (!nameRaw) errors.push("Nama template wajib");
+  if (nameRaw !== name) errors.push("Nama template wajib lowercase");
+  if (name.length > 512 || (name && !/^[a-z0-9_]+$/.test(name))) errors.push("Nama template Flow tidak valid");
+  if (!["marketing", "utility"].includes(category)) errors.push("Template Flow hanya tersedia untuk Marketing atau Utility");
+  if (!META_TEMPLATE_LANGUAGE_CODES.has(language)) errors.push("Kode bahasa template tidak didukung Meta");
+  if (!bodyText.trim() || bodyText.length > 1024) errors.push("Body template Flow wajib dan maksimal 1024 karakter");
+  if (/\{\{.*?\}\}/.test(bodyText)) errors.push("Variabel body pada template Flow belum didukung SIPESA");
+  if (footerText.length > 60 || /\{\{.*?\}\}/.test(footerText)) errors.push("Footer Flow maksimal 60 karakter dan tidak boleh memiliki variabel");
+  if (!/^\d+$/.test(flowId)) errors.push("Flow wajib dipilih dari akun WhatsApp Business");
+  if (!buttonText || buttonText.length > 25) errors.push("Label tombol Flow wajib dan maksimal 25 karakter");
+  if (action !== "NAVIGATE") errors.push("Flow action yang didukung hanya NAVIGATE");
+  if (!/^[A-Za-z][A-Za-z0-9_]{0,199}$/.test(screen)) errors.push("Destination screen Flow tidak valid");
+
+  return {
+    name,
+    category,
+    language,
+    templateType: "flow",
+    flowConfig: { flowId, buttonText, action, screen },
+    components: [
+      { type: "BODY", text: bodyText.trim() },
+      ...(footerText.trim() ? [{ type: "FOOTER", text: footerText.trim() }] : []),
+      { type: "BUTTONS", buttons: [{ type: "FLOW", text: buttonText, flow_id: flowId, flow_action: action, navigate_screen: screen }] },
+    ],
+    errors: [...new Set(errors)],
+  };
+}
+
+function validateAuthenticationTemplatePayload(body: any) {
+  const errors: string[] = [];
+  const nameRaw = String(body?.name ?? "").trim();
+  const name = nameRaw.toLowerCase();
+  const language = String(body?.language ?? "").trim();
+  const model = body?.normalizedModel && typeof body.normalizedModel === "object" ? body.normalizedModel : null;
+  const templateType = String(model?.templateType ?? "").toLowerCase();
+  const otpButtonType = String(model?.otpButtonType ?? "").toLowerCase();
+  const securityRecommendation = model?.securityRecommendation === true;
+  const codeExpirationMinutes = Number(model?.codeExpirationMinutes);
+  const packageName = String(model?.packageName ?? "").trim();
+  const signatureHash = String(model?.signatureHash ?? "").trim();
+
+  if (!nameRaw) errors.push("Nama template wajib");
+  if (nameRaw !== name) errors.push("Nama template wajib lowercase");
+  if (name.length > 512 || (name && !/^[a-z0-9_]+$/.test(name))) errors.push("Nama template Authentication tidak valid");
+  if (!META_TEMPLATE_LANGUAGE_CODES.has(language)) errors.push("Kode bahasa template tidak didukung Meta");
+  if (templateType !== "authentication_otp") errors.push("Tipe Authentication tidak didukung");
+  if (!["copy_code", "one_tap"].includes(otpButtonType)) {
+    errors.push(otpButtonType === "zero_tap" ? "Zero Tap belum didukung di SIPESA" : "Metode OTP tidak didukung");
+  }
+  if (!Number.isInteger(codeExpirationMinutes) || codeExpirationMinutes < 1 || codeExpirationMinutes > 90) {
+    errors.push("Masa berlaku kode wajib 1-90 menit");
+  }
+  if (otpButtonType === "one_tap") {
+    if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(packageName) || packageName.length > 224) {
+      errors.push("Android package name tidak valid");
+    }
+    if (!/^[A-Za-z0-9+/]{11}$/.test(signatureHash)) errors.push("App signature hash wajib 11 karakter Base64");
+  }
+
+  const otpButton: any = { type: "OTP", otp_type: otpButtonType.toUpperCase() };
+  if (otpButtonType === "one_tap") {
+    Object.assign(otpButton, {
+      text: "Copy Code",
+      autofill_text: "Autofill",
+      package_name: packageName,
+      signature_hash: signatureHash,
+    });
+  }
+  return {
+    name,
+    category: "authentication",
+    language,
+    components: [
+      { type: "BODY", add_security_recommendation: securityRecommendation },
+      { type: "FOOTER", code_expiration_minutes: codeExpirationMinutes },
+      { type: "BUTTONS", buttons: [otpButton] },
+    ],
+    errors: [...new Set(errors)],
+  };
+}
+
 function validateTemplatePayload(body: any) {
+  if (String(body?.category ?? "").trim().toLowerCase() === "marketing"
+    && String(body?.normalizedModel?.templateType ?? "").trim().toLowerCase() === "carousel") {
+    return validateCarouselTemplatePayload(body);
+  }
+  if (String(body?.category ?? "").trim().toLowerCase() === "marketing"
+    && ["catalog", "multi_product"].includes(String(body?.normalizedModel?.templateType ?? "").trim().toLowerCase())) {
+    return validateCommerceTemplatePayload(body);
+  }
+  if (["marketing", "utility"].includes(String(body?.category ?? "").trim().toLowerCase())
+    && String(body?.normalizedModel?.templateType ?? "").trim().toLowerCase() === "flow") {
+    return validateFlowTemplatePayload(body);
+  }
+  if (String(body?.category ?? "").trim().toLowerCase() === "authentication") {
+    return validateAuthenticationTemplatePayload(body);
+  }
   const errors: string[] = [];
   if (!body?.normalizedModel || typeof body.normalizedModel !== "object") {
     errors.push("Model template terstruktur wajib digunakan");
@@ -339,9 +823,7 @@ function validateTemplatePayload(body: any) {
   if (nameRaw !== name) errors.push("Nama template wajib lowercase");
   if (name.length > 512) errors.push("Nama template maksimal 512 karakter");
   if (name && !/^[a-z0-9_]+$/.test(name)) errors.push("Nama template hanya boleh huruf kecil, angka, dan underscore");
-  if (!TEMPLATE_CATEGORIES.has(category)) {
-    errors.push(category === "authentication" ? "Authentication belum didukung di SIPESA" : "Kategori template tidak valid");
-  }
+  if (!TEMPLATE_CATEGORIES.has(category) || category === "authentication") errors.push("Kategori template tidak valid");
   if (!META_TEMPLATE_LANGUAGE_CODES.has(language)) errors.push("Kode bahasa template tidak didukung Meta");
   if (body?.normalizedModel) {
     const templateType = String(body.normalizedModel.templateType ?? "").toLowerCase();
@@ -371,10 +853,16 @@ function validateTemplatePayload(body: any) {
     const format = String(header?.format ?? "").toUpperCase();
     if (!TEMPLATE_HEADER_FORMATS.has(format)) errors.push(`Header ${format || "UNKNOWN"} belum didukung`);
     if (format === "TEXT" && String(header?.text ?? "").length > 60) errors.push("Header text maksimal 60 karakter");
-    if (format === "TEXT" && /\{\{\d+\}\}/.test(String(header?.text ?? ""))) errors.push("Variabel header text belum didukung");
+    if (format === "TEXT") {
+      const headerText = String(header?.text ?? "");
+      const headerVars = [...headerText.matchAll(/\{\{(\d+)\}\}/g)].map((match) => Number(match[1]));
+      if (headerVars.length > 1 || (headerVars.length === 1 && headerVars[0] !== 1)) errors.push("Header text hanya mendukung satu variabel {{1}}");
+      if (/\{\{[^}]*$|\{\{[^\d]|\{\{\d+[^}]|\{\{\d+\}(?!\})/.test(headerText)) errors.push("Placeholder header malformed");
+      if (headerVars.length === 1 && !String(header?.example?.header_text?.[0] ?? "").trim()) errors.push("Contoh variabel header wajib diisi");
+    }
     if (["IMAGE", "VIDEO", "DOCUMENT"].includes(format)) {
       const handle = header?.example?.header_handle?.[0];
-      if (!String(handle ?? "").startsWith("4::")) errors.push("Media header memerlukan sample handle Meta yang valid");
+      if (!String(handle ?? "").trim()) errors.push("Media header memerlukan sample handle Meta yang valid");
     }
   }
   if (footer) {
@@ -385,27 +873,45 @@ function validateTemplatePayload(body: any) {
   if (buttons) {
     const items = Array.isArray(buttons?.buttons) ? buttons.buttons : [];
     const quickReplies = items.filter((button: any) => String(button?.type ?? "").toUpperCase() === "QUICK_REPLY");
-    const actions = items.filter((button: any) => ["URL", "PHONE_NUMBER"].includes(String(button?.type ?? "").toUpperCase()));
-    if (quickReplies.length && actions.length) errors.push("Quick Reply dan tombol tindakan belum dapat digabung di SIPESA");
-    if (quickReplies.length > 3) errors.push("Maksimal 3 tombol Quick Reply di SIPESA");
-    if (actions.length > 2) errors.push("Maksimal 2 tombol tindakan di SIPESA");
-    if (items.filter((button: any) => String(button?.type ?? "").toUpperCase() === "URL").length > 1) errors.push("Maksimal satu tombol website");
+    const actions = items.filter((button: any) => ["URL", "PHONE_NUMBER", "COPY_CODE"].includes(String(button?.type ?? "").toUpperCase()));
+    if (items.length > 10) errors.push("Maksimal 10 tombol per template");
+    if (quickReplies.length > 10) errors.push("Maksimal 10 tombol Quick Reply");
+    if (actions.length > 4) errors.push("Maksimal 4 tombol tindakan yang didukung (2 URL, 1 telepon, 1 Salin Kode)");
+    if (items.filter((button: any) => String(button?.type ?? "").toUpperCase() === "URL").length > 2) errors.push("Maksimal dua tombol website");
     if (items.filter((button: any) => String(button?.type ?? "").toUpperCase() === "PHONE_NUMBER").length > 1) errors.push("Maksimal satu tombol telepon");
+    if (items.filter((button: any) => String(button?.type ?? "").toUpperCase() === "COPY_CODE").length > 1) errors.push("Maksimal satu tombol Salin Kode");
+    const groups = items.map((button: any) => String(button?.type ?? "").toUpperCase() === "QUICK_REPLY" ? "QR" : "ACTION");
+    if (groups.some((group: string, index: number) => index > 1 && group !== groups[index - 1] && groups[index - 1] !== groups[index - 2])) {
+      errors.push("Tombol Quick Reply dan tindakan harus dikelompokkan, tidak boleh berselang-seling");
+    }
     for (const button of items) {
       const type = String(button?.type ?? "").toUpperCase();
       if (!TEMPLATE_BUTTON_TYPES.has(type)) errors.push(`Tombol ${type || "UNKNOWN"} belum didukung`);
-      if (!String(button?.text ?? "").trim() || String(button?.text ?? "").length > 25) errors.push("Teks tombol wajib dan maksimal 25 karakter");
+      if (type !== "COPY_CODE" && (!String(button?.text ?? "").trim() || String(button?.text ?? "").length > 25)) errors.push("Teks tombol wajib dan maksimal 25 karakter");
       if (type === "URL") {
         const url = String(button?.url ?? "").trim();
-        if (/\{\{\d+\}\}/.test(url)) errors.push("URL dinamis belum didukung");
+        const matches = [...url.matchAll(/\{\{(\d+)\}\}/g)];
+        if (matches.length && (matches.length !== 1 || matches[0][1] !== "1" || !url.endsWith("{{1}}"))) errors.push("URL dinamis hanya mendukung {{1}} sebagai suffix");
+        const urlExample = String(button?.example?.[0] ?? "").trim();
+        if (matches.length && !urlExample) errors.push("Contoh URL dinamis lengkap wajib diisi");
+        if (matches.length && urlExample) {
+          try {
+            const parsedExample = new URL(urlExample);
+            if (parsedExample.protocol !== "https:" || !urlExample.startsWith(url.slice(0, -5))) errors.push("Contoh URL dinamis harus berupa URL HTTPS lengkap dengan base yang sama");
+          } catch { errors.push("Contoh URL dinamis tidak valid"); }
+        }
         try {
-          if (new URL(url).protocol !== "https:") errors.push("URL website wajib menggunakan HTTPS");
+          if (new URL(url.replace(/\{\{1\}\}$/, "contoh")).protocol !== "https:") errors.push("URL website wajib menggunakan HTTPS");
         } catch {
           errors.push("URL website tidak valid");
         }
       }
       if (type === "PHONE_NUMBER" && !/^\+[1-9]\d{7,14}$/.test(String(button?.phone_number ?? ""))) {
         errors.push("Nomor tombol telepon wajib format E.164");
+      }
+      if (type === "COPY_CODE") {
+        if (category !== "marketing") errors.push("Tombol Salin Kode hanya tersedia untuk template Marketing");
+        if (!String(button?.example?.[0] ?? "").trim()) errors.push("Contoh kode promo wajib diisi");
       }
     }
   }
@@ -427,6 +933,64 @@ function getTemplateSendability(template: any, numberRow: any) {
   }
   reasons.push(...inspectTemplateRuntime(template).reasons);
   return { sendable: reasons.length === 0, reasons: [...new Set(reasons)] };
+}
+
+function validateTemplateRuntimeInput(template: any, input: any) {
+  const requirements = getTemplateSendRequirements(template);
+  const bodyVariables = Array.isArray(input?.bodyVariables) ? input.bodyVariables.map((value: any) => String(value ?? "").trim()) : [];
+  const headerTextVariables = Array.isArray(input?.headerTextVariables) ? input.headerTextVariables.map((value: any) => String(value ?? "").trim()) : [];
+  const buttonValues = Array.isArray(input?.buttonValues) ? input.buttonValues : [];
+  const errors: string[] = [];
+  if (bodyVariables.length !== requirements.bodyVariableCount || bodyVariables.some((value: string) => !value)) {
+    errors.push(`Template memerlukan ${requirements.bodyVariableCount} parameter body yang lengkap`);
+  }
+  if (headerTextVariables.length !== requirements.headerTextVariableCount || headerTextVariables.some((value: string) => !value)) {
+    errors.push("Nilai variabel header belum diisi.");
+  }
+
+  let header: any = null;
+  if (requirements.requiresMedia) {
+    const media = input?.headerMedia && typeof input.headerMedia === "object" ? input.headerMedia : input?.header;
+    const actualType = String(media?.format ?? media?.type ?? "").toLowerCase();
+    const id = String(media?.id ?? "").trim();
+    const link = String(media?.link ?? media?.url ?? input?.mediaUrl ?? "").trim();
+    if (actualType && actualType !== requirements.mediaType) errors.push("Jenis media tidak sesuai dengan header template.");
+    if (!id && !link) errors.push(`Media ${requirements.mediaType} wajib dipilih.`);
+    if (id || link) header = {
+      format: String(requirements.mediaType).toUpperCase(),
+      ...(id ? { id } : { link }),
+      ...(requirements.mediaType === "document" && String(media?.filename ?? input?.fileName ?? "").trim()
+        ? { filename: String(media?.filename ?? input?.fileName).trim().slice(0, 240) }
+        : {}),
+    };
+  }
+  if (requirements.requiresLocation) {
+    const location = input?.location && typeof input.location === "object" ? input.location : null;
+    const latitude = Number(location?.latitude);
+    const longitude = Number(location?.longitude);
+    const name = String(location?.name ?? "").trim();
+    const address = String(location?.address ?? "").trim();
+    if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180 || !name || !address) {
+      errors.push("Lokasi belum lengkap.");
+    } else {
+      header = { format: "LOCATION", latitude, longitude, name: name.slice(0, 256), address: address.slice(0, 512) };
+    }
+  }
+
+  const normalizedButtonValues = requirements.buttonRequirements.map((requirement: any) => {
+    const supplied = buttonValues.find((item: any) => Number(item?.index) === requirement.index && String(item?.type ?? "").toUpperCase() === requirement.type);
+    const value = String(supplied?.value ?? "").trim();
+    if (!value) errors.push(requirement.type === "COPY_CODE" ? "Kode promo wajib diisi." : "Parameter URL tombol belum diisi.");
+    return { index: requirement.index, type: requirement.type, value };
+  });
+  if (buttonValues.length !== requirements.buttonRequirements.length) errors.push("Parameter tombol tidak sesuai template.");
+
+  return {
+    valid: errors.length === 0,
+    errors: [...new Set(errors)],
+    values: { bodyVariables, headerTextVariables, header, buttonValues: normalizedButtonValues },
+    requirements,
+  };
 }
 
 function logContactsRouteFailure(
@@ -557,6 +1121,9 @@ function parseTemplateRecipientPayload(raw: unknown) {
       kind?: string;
       vars?: Record<string, string>;
       bodyVariables?: string[];
+      headerTextVariables?: string[];
+      buttonValues?: Array<{ index: number; type: "URL" | "COPY_CODE"; value: string }>;
+      location?: { latitude: number; longitude: number; name: string; address: string };
       mediaUrl?: string;
       fileName?: string;
       rowNumber?: number;
@@ -572,6 +1139,214 @@ function nowIso() {
 
 function graphVersion() {
   return Deno.env.get("META_GRAPH_VERSION") || "v25.0";
+}
+
+async function readMetaJson(res: Response, fallback: string) {
+  const text = await res.text();
+  let json: any = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* controlled below */ }
+  if (!res.ok) throw new Error(String(json?.error?.message || fallback));
+  if (!json || typeof json !== "object") throw new Error(fallback);
+  return json;
+}
+
+async function getMetaFlowScreens(flowId: string, accessToken: string) {
+  const assetUrl = new URL(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(flowId)}/assets`);
+  const assetsRes = await fetch(assetUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const assets = await readMetaJson(assetsRes, "Meta gagal membaca asset Flow");
+  const asset = (Array.isArray(assets?.data) ? assets.data : []).find((item: any) =>
+    String(item?.asset_type ?? "").toUpperCase() === "FLOW_JSON" && String(item?.download_url ?? "").startsWith("https://")
+  );
+  if (!asset) return [];
+  const downloadUrl = new URL(String(asset.download_url));
+  const trustedMetaHost = downloadUrl.hostname === "facebook.com"
+    || downloadUrl.hostname.endsWith(".facebook.com")
+    || downloadUrl.hostname.endsWith(".fbcdn.net")
+    || downloadUrl.hostname.endsWith(".fbsbx.com");
+  if (!trustedMetaHost) throw new Error("Meta mengembalikan lokasi asset Flow yang tidak tepercaya");
+  const flowJsonRes = await fetch(downloadUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const flowJson = await readMetaJson(flowJsonRes, "Meta gagal membaca definisi Flow");
+  return (Array.isArray(flowJson?.screens) ? flowJson.screens : [])
+    .map((screen: any) => String(screen?.id ?? "").trim())
+    .filter((screen: string) => /^[A-Za-z][A-Za-z0-9_]{0,199}$/.test(screen));
+}
+
+async function getOwnedMetaFlow(flowId: string, wabaId: string, accessToken: string, includeScreens = false) {
+  const url = new URL(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(flowId)}`);
+  url.searchParams.set("fields", "id,name,categories,status,health_status,data_channel_uri,whatsapp_business_account");
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const flow = await readMetaJson(res, "Flow tidak ditemukan pada akun WhatsApp Business ini.");
+  const ownerId = String(flow?.whatsapp_business_account?.id ?? "").trim();
+  if (!ownerId || ownerId !== wabaId) throw new Error("Flow tidak ditemukan pada akun WhatsApp Business ini.");
+  const status = String(flow?.status ?? "UNKNOWN").toUpperCase();
+  const health = String(flow?.health_status?.can_send_message ?? "UNKNOWN").toUpperCase();
+  const screens = includeScreens ? await getMetaFlowScreens(flowId, accessToken) : [];
+  return {
+    id: String(flow.id), name: String(flow.name ?? flow.id), categories: Array.isArray(flow.categories) ? flow.categories.map(String) : [],
+    status, health, eligible: status === "PUBLISHED" && health !== "BLOCKED", screens,
+  };
+}
+
+async function assertOwnedEligibleFlow(flowConfig: any, wabaId: string, accessToken: string) {
+  const flow = await getOwnedMetaFlow(String(flowConfig?.flowId ?? ""), wabaId, accessToken, true);
+  if (flow.status !== "PUBLISHED") throw new Error("Flow ini belum dipublikasikan.");
+  if (flow.health === "BLOCKED") throw new Error("Flow tidak lagi tersedia.");
+  if (!flow.screens.includes(String(flowConfig?.screen ?? ""))) throw new Error("Destination screen tidak ditemukan pada Flow ini.");
+  return flow;
+}
+
+type MetaCommerceCatalog = { id: string; name: string; eligible: boolean };
+
+async function listOwnedCommerceCatalogs(wabaId: string, accessToken: string) {
+  const catalogs: MetaCommerceCatalog[] = [];
+  let nextUrl: string | null = `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(wabaId)}/product_catalogs?fields=id,name&limit=25`;
+  for (let page = 0; nextUrl && page < 10; page += 1) {
+    const response = await fetch(nextUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const json = await readMetaJson(response, "Meta gagal mengambil katalog Commerce");
+    for (const item of Array.isArray(json?.data) ? json.data : []) {
+      const id = String(item?.id ?? "").trim();
+      if (/^\d+$/.test(id)) catalogs.push({ id, name: String(item?.name ?? `Catalog ${id}`), eligible: true });
+    }
+    const candidate = String(json?.paging?.next ?? "");
+    nextUrl = candidate.startsWith("https://graph.facebook.com/") ? candidate : null;
+  }
+  return catalogs;
+}
+
+async function assertOwnedCommerceCatalog(catalogId: string, wabaId: string, accessToken: string) {
+  if (!/^\d+$/.test(catalogId)) throw new Error("Katalog tidak valid");
+  const catalogs = await listOwnedCommerceCatalogs(wabaId, accessToken);
+  const catalog = catalogs.find((item) => item.id === catalogId);
+  if (!catalog) throw new Error("Katalog ini tidak tersedia untuk akun WhatsApp Business ini.");
+  return catalog;
+}
+
+function mapMetaCommerceProduct(item: any) {
+  return {
+    id: String(item?.id ?? "").trim(),
+    retailerId: String(item?.retailer_id ?? "").trim(),
+    name: String(item?.name ?? item?.retailer_id ?? item?.id ?? "Produk"),
+    imageUrl: String(item?.image_url ?? ""),
+    price: String(item?.price ?? ""),
+    currency: String(item?.currency ?? ""),
+    availability: String(item?.availability ?? "UNKNOWN").toUpperCase(),
+  };
+}
+
+async function assertProductsBelongToCatalog(productsInput: any[], catalogId: string, accessToken: string) {
+  const expected = new Map(productsInput.map((product: any) => [String(product?.id ?? ""), String(product?.product_retailer_id ?? product?.retailerId ?? "")]));
+  if (expected.size === 0) return [];
+  const found = new Map<string, any>();
+  let nextUrl: string | null = `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(catalogId)}/products?fields=id,name,retailer_id,image_url,price,currency,availability&limit=100`;
+  for (let page = 0; nextUrl && page < 20 && found.size < expected.size; page += 1) {
+    const response = await fetch(nextUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const json = await readMetaJson(response, "Meta gagal memvalidasi produk katalog");
+    for (const raw of Array.isArray(json?.data) ? json.data : []) {
+      const product = mapMetaCommerceProduct(raw);
+      if (expected.has(product.id) && expected.get(product.id) === product.retailerId) found.set(product.id, product);
+    }
+    const candidate = String(json?.paging?.next ?? "");
+    nextUrl = candidate.startsWith("https://graph.facebook.com/") ? candidate : null;
+  }
+  if (found.size !== expected.size) throw new Error("Satu atau lebih produk tidak ditemukan di katalog atau sudah tidak tersedia.");
+  const unavailable = [...found.values()].find((product: any) => ["OUT OF STOCK", "OUT_OF_STOCK", "DISCONTINUED", "RETIRED"].includes(product.availability));
+  if (unavailable) throw new Error(`Produk ${unavailable.name} sudah tidak tersedia.`);
+  return [...found.values()];
+}
+
+async function assertOwnedCommerceConfiguration(commerceConfig: any, templateType: string, wabaId: string, accessToken: string) {
+  const catalogId = String(commerceConfig?.catalogId ?? "");
+  const catalog = await assertOwnedCommerceCatalog(catalogId, wabaId, accessToken);
+  if (templateType === "multi_product") {
+    const products = (Array.isArray(commerceConfig?.sections) ? commerceConfig.sections : [])
+      .flatMap((section: any) => Array.isArray(section?.product_items) ? section.product_items : []);
+    await assertProductsBelongToCatalog(products, catalogId, accessToken);
+  }
+  return catalog;
+}
+
+function isCommerceTemplate(componentsInput: any) {
+  return Array.isArray(componentsInput) && componentsInput.some((component: any) =>
+    String(component?.type ?? "").toUpperCase() === "BUTTONS"
+    && (Array.isArray(component?.buttons) ? component.buttons : []).some((button: any) =>
+      ["CATALOG", "MPM"].includes(String(button?.type ?? "").toUpperCase())));
+}
+
+function formatComponentsForMeta(componentsInput: any) {
+  return (Array.isArray(componentsInput) ? componentsInput : []).map((comp: any) => {
+    const newComp = { ...comp };
+    newComp.type = String(newComp.type).toUpperCase();
+    if ("example_values" in newComp) delete newComp.example_values;
+    if (newComp.type === "BODY") {
+      const bodyText = String(newComp.text || "");
+      const matches = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map((match) => Number(match[1]));
+      if (matches.length > 0) {
+        const sourceExamples = comp.example_values || comp.examples || {};
+        newComp.example = { body_text: [[...Array(Math.max(...matches))].map((_, index) => String(sourceExamples[index + 1] || sourceExamples[String(index + 1)] || `Sample ${index + 1}`))] };
+      } else delete newComp.example;
+    }
+    if (newComp.type === "HEADER" && newComp.example) {
+      const example = { ...newComp.example };
+      newComp.example = example.header_handle ? { header_handle: example.header_handle } : example.header_text ? { header_text: example.header_text } : undefined;
+    }
+    if (newComp.type === "BUTTONS") {
+      newComp.buttons = (Array.isArray(newComp.buttons) ? newComp.buttons : []).map((button: any) => {
+        const clean = { ...button };
+        if (["CATALOG", "MPM"].includes(String(clean.type ?? "").toUpperCase())) {
+          delete clean.catalog_id;
+          delete clean.sections;
+        }
+        return clean;
+      });
+    }
+    if (newComp.type === "CAROUSEL") {
+      newComp.cards = (Array.isArray(newComp.cards) ? newComp.cards : []).map((card: any) => ({
+        components: formatComponentsForMeta(card?.components),
+      }));
+    }
+    return newComp;
+  });
+}
+
+async function parseMetaGraphResponse(response: Response) {
+  const raw = await response.text();
+  if (!raw.trim()) return { data: null as any, malformed: false };
+  try {
+    return { data: JSON.parse(raw), malformed: false };
+  } catch {
+    return { data: null as any, malformed: true };
+  }
+}
+
+function logMetaUploadFailure(step: string, response: Response, data: any, malformed = false) {
+  const graphError = data?.error && typeof data.error === "object" ? data.error : {};
+  console.error("Meta media sample upload failed", {
+    uploadStep: step,
+    graphStatus: response.status,
+    graphErrorType: typeof graphError.type === "string" ? graphError.type : null,
+    graphErrorCode: Number.isFinite(Number(graphError.code)) ? Number(graphError.code) : null,
+    graphErrorSubcode: Number.isFinite(Number(graphError.error_subcode)) ? Number(graphError.error_subcode) : null,
+    graphMessage: typeof graphError.message === "string" ? graphError.message.slice(0, 500) : null,
+    fbtraceId: typeof graphError.fbtrace_id === "string" ? graphError.fbtrace_id : null,
+    malformedResponse: malformed,
+  });
+}
+
+function safeMetaErrorMessage(data: any) {
+  const message = data?.error?.message;
+  return typeof message === "string" && message.trim() ? message.trim().slice(0, 300) : null;
+}
+
+function normalizeMetaRejectionReason(value: unknown) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const sentinel = normalized.toLowerCase();
+  if (new Set([
+    "none", "null", "undefined", "n/a", "na", "not available", "not_available",
+    "not applicable", "not_applicable", "no reason", "no_reason", "-",
+  ]).has(sentinel)) return null;
+  return normalized;
 }
 
 function sleep(ms: number) {
@@ -641,25 +1416,31 @@ async function sendMetaTemplateMessage(opts: {
   templateName: string;
   language: string;
   bodyVariables: string[];
+  headerTextVariables?: string[];
   header?:
-    | { format: "IMAGE"; link: string }
-    | { format: "VIDEO"; link: string }
-    | { format: "DOCUMENT"; link: string; filename?: string }
+    | { format: "IMAGE" | "VIDEO"; link?: string; id?: string }
+    | { format: "DOCUMENT"; link?: string; id?: string; filename?: string }
+    | { format: "LOCATION"; latitude: number; longitude: number; name: string; address: string }
     | null;
+  buttonValues?: Array<{ index: number; type: "URL" | "COPY_CODE"; value: string }>;
 }) {
   const components: any[] = [];
 
-  if (opts.header?.link) {
+  if (opts.headerTextVariables?.length) {
+    components.push({ type: "header", parameters: opts.headerTextVariables.map((text) => ({ type: "text", text })) });
+  }
+
+  if (opts.header && opts.header.format !== "LOCATION" && (opts.header.link || opts.header.id)) {
     if (opts.header.format === "IMAGE") {
       components.push({
         type: "header",
-        parameters: [{ type: "image", image: { link: opts.header.link } }],
+        parameters: [{ type: "image", image: opts.header.id ? { id: opts.header.id } : { link: opts.header.link } }],
       });
     }
     if (opts.header.format === "VIDEO") {
       components.push({
         type: "header",
-        parameters: [{ type: "video", video: { link: opts.header.link } }],
+        parameters: [{ type: "video", video: opts.header.id ? { id: opts.header.id } : { link: opts.header.link } }],
       });
     }
     if (opts.header.format === "DOCUMENT") {
@@ -668,12 +1449,23 @@ async function sendMetaTemplateMessage(opts: {
         parameters: [{
           type: "document",
           document: {
-            link: opts.header.link,
+            ...(opts.header.id ? { id: opts.header.id } : { link: opts.header.link }),
             ...(opts.header.filename ? { filename: opts.header.filename } : {}),
           },
         }],
       });
     }
+  }
+  if (opts.header?.format === "LOCATION") {
+    components.push({
+      type: "header",
+      parameters: [{ type: "location", location: {
+        latitude: opts.header.latitude,
+        longitude: opts.header.longitude,
+        name: opts.header.name,
+        address: opts.header.address,
+      } }],
+    });
   }
 
   if (opts.bodyVariables.length) {
@@ -683,6 +1475,17 @@ async function sendMetaTemplateMessage(opts: {
         type: "text",
         text,
       })),
+    });
+  }
+
+  for (const button of opts.buttonValues ?? []) {
+    components.push({
+      type: "button",
+      sub_type: button.type === "COPY_CODE" ? "copy_code" : "url",
+      index: String(button.index),
+      parameters: [button.type === "COPY_CODE"
+        ? { type: "coupon_code", coupon_code: button.value }
+        : { type: "text", text: button.value }],
     });
   }
 
@@ -879,11 +1682,30 @@ async function syncMetaTemplatesForNumber(params: {
 
   const syncedAt = nowIso();
   const seenMetaIds = new Set<string>();
+  let inferredCommerceCatalogId = "";
+  if (items.some((item: any) => isCommerceTemplate(item?.components))) {
+    try {
+      const catalogs = await listOwnedCommerceCatalogs(params.wabaId, params.accessToken);
+      if (catalogs.length === 1) inferredCommerceCatalogId = catalogs[0].id;
+    } catch {
+      // Template sync remains available; commerce imports fail closed as read-only without an authoritative catalog match.
+    }
+  }
 
   for (const tpl of items) {
     const rawStatus = String(tpl.status ?? "UNKNOWN");
     const metaTemplateId = String(tpl.id ?? "").trim() || null;
     if (metaTemplateId) seenMetaIds.add(metaTemplateId);
+    const syncedComponents = (Array.isArray(tpl.components) ? tpl.components : []).map((component: any) => {
+      if (!inferredCommerceCatalogId || String(component?.type ?? "").toUpperCase() !== "BUTTONS") return component;
+      return {
+        ...component,
+        buttons: (Array.isArray(component?.buttons) ? component.buttons : []).map((button: any) =>
+          ["CATALOG", "MPM"].includes(String(button?.type ?? "").toUpperCase())
+            ? { ...button, catalog_id: inferredCommerceCatalogId }
+            : button),
+      };
+    });
     const values = {
       org_id: params.orgId,
       waba_id: params.wabaId,
@@ -891,9 +1713,11 @@ async function syncMetaTemplatesForNumber(params: {
       category: String(tpl.category ?? "marketing").toLowerCase(),
       language: String(tpl.language ?? "id"),
       status: normalizeTemplateStatus(rawStatus),
-      components: tpl.components ?? [],
+      components: syncedComponents,
       meta_template_id: metaTemplateId,
-      rejection_reason: tpl.rejected_reason ?? tpl.reason ?? null,
+      rejection_reason: normalizeTemplateStatus(rawStatus) === "rejected"
+        ? normalizeMetaRejectionReason(tpl.rejected_reason ?? tpl.reason)
+        : null,
       quality_rating: tpl.quality_score?.score ?? tpl.quality_score ?? null,
       previous_category: tpl.previous_category ?? null,
       meta_status_raw: rawStatus,
@@ -1625,7 +2449,7 @@ app.get(`${API_PREFIX}/media/:mediaId`, requireAuth, async (c) => {
     // requested media belongs to a message in this tenant and WABA number.
     const { data: ownedMessage, error: messageError } = await supa
       .from("wa_messages")
-      .select("id")
+      .select("id, access_token")
       .eq("org_id", user.org_id)
       .eq("number_id", numberId)
       .or([
@@ -2264,6 +3088,55 @@ app.post(`${API_PREFIX}/numbers/:numberId/delete-conversations`, requireAuth, re
   }
 });
 
+app.post(`${API_PREFIX}/numbers/:numberId/templates/upload-runtime-media`, requireAuth, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const numberId = c.req.param("numberId");
+    const form = await c.req.formData();
+    const file = form.get("file");
+    const templateId = String(form.get("templateId") ?? "").trim();
+    if (!(file instanceof File) || !templateId) return c.json(jsonFail("File dan templateId wajib diisi"), 400);
+    const supa = sb();
+    const [{ data: numberRow }, { data: template }] = await Promise.all([
+      supa.from("wa_numbers").select("*").eq("id", numberId).eq("org_id", user.org_id).maybeSingle(),
+      supa.from("wa_templates").select("*").eq("id", templateId).eq("org_id", user.org_id).maybeSingle(),
+    ]);
+    if (!numberRow || !template) return c.json(jsonFail("Nomor atau template tidak ditemukan"), 404);
+    const sendability = getTemplateSendability(template, numberRow);
+    if (!sendability.sendable) return c.json(jsonFail(sendability.reasons[0]), 409);
+    const requirements = getTemplateSendRequirements(template);
+    if (!requirements.requiresMedia || !requirements.mediaType) return c.json(jsonFail("Template tidak memerlukan media header"), 400);
+    const rule = TEMPLATE_MEDIA_SAMPLE_RULES[requirements.mediaType];
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    if (!rule || !rule.mimeTypes.has(file.type) || !rule.extensions.has(extension) || file.size <= 0 || file.size > rule.maxBytes) {
+      return c.json(jsonFail(`File ${requirements.mediaType} tidak valid atau melebihi batas ukuran`), 400);
+    }
+    const upstream = new FormData();
+    upstream.append("messaging_product", "whatsapp");
+    upstream.append("type", file.type);
+    upstream.append("file", file, file.name);
+    const response = await fetch(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(numberRow.phone_number_id)}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${numberRow.access_token}` },
+      body: upstream,
+    });
+    const parsed = await parseMetaGraphResponse(response);
+    if (!response.ok || !String(parsed.data?.id ?? "").trim()) {
+      console.error("Meta runtime media upload failed", {
+        graphStatus: response.status,
+        graphErrorCode: parsed.data?.error?.code ?? null,
+        graphErrorSubcode: parsed.data?.error?.error_subcode ?? null,
+        graphMessage: String(parsed.data?.error?.message ?? "").slice(0, 300),
+        fbtraceId: parsed.data?.error?.fbtrace_id ?? null,
+      });
+      return c.json(jsonFail("Meta menolak upload media runtime"), 502);
+    }
+    return c.json(jsonOk({ id: String(parsed.data.id), type: requirements.mediaType, filename: file.name }));
+  } catch (error) {
+    return c.json(jsonFail(error), 500);
+  }
+});
+
 app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, requireAuth, async (c) => {
   try {
     const user = c.get("authUser");
@@ -2315,11 +3188,8 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
       if (!template) return c.json(jsonFail("Template tidak ditemukan"), 404);
       const sendability = getTemplateSendability(template, numberRow);
       if (!sendability.sendable) return c.json(jsonFail(sendability.reasons[0]), 409);
-      const requirements = getTemplateSendRequirements(template);
-      if (requirements.requiresMedia) return c.json(jsonFail("Chat belum mendukung template dengan media header"), 409);
-      if (bodyVariables.length !== requirements.bodyVariableCount || bodyVariables.some((value: string) => !value.trim())) {
-        return c.json(jsonFail(`Template memerlukan ${requirements.bodyVariableCount} parameter body yang lengkap`), 400);
-      }
+      const runtime = validateTemplateRuntimeInput(template, { ...body, bodyVariables });
+      if (!runtime.valid) return c.json(jsonFail(runtime.errors[0]), 400);
       authoritativeTemplate = template;
       templateName = String(template.name);
       language = String(template.language);
@@ -2493,6 +3363,12 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
           templateId: authoritativeTemplate?.id ?? null,
           templateName,
           bodyVariables,
+          runtime: isTemplate ? {
+            headerTextVariables: body.headerTextVariables,
+            headerMedia: body.headerMedia,
+            location: body.location,
+            buttonValues: body.buttonValues,
+          } : null,
           manual_send_reference: manualSendReference,
           free_window: isWithin24Hours,
         },
@@ -2624,15 +3500,21 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
     let metaRes: any;
     try {
       metaRes = isTemplate && templateName
-        ? await sendMetaTemplateMessage({
+        ? await (() => {
+            const runtime = validateTemplateRuntimeInput(authoritativeTemplate, body);
+            if (!runtime.valid) throw new Error(runtime.errors[0]);
+            return sendMetaTemplateMessage({
             phoneNumberId: numberRow.phone_number_id,
             accessToken: numberRow.access_token,
             to: contact.phone_e164,
             templateName,
             language,
-            bodyVariables,
-            header: body.header || null,
-          })
+            bodyVariables: runtime.values.bodyVariables,
+            headerTextVariables: runtime.values.headerTextVariables,
+            header: runtime.values.header,
+            buttonValues: runtime.values.buttonValues,
+          });
+          })()
         : await sendMetaTextMessage({
             phoneNumberId: numberRow.phone_number_id,
             accessToken: numberRow.access_token,
@@ -2769,7 +3651,14 @@ function buildTemplateComponentsFromPayload(body: any) {
     const header = model.header && typeof model.header === "object" ? model.header : {};
     const headerType = String(header.type ?? "none").toUpperCase();
     if (headerType === "TEXT" && String(header.text ?? "").trim()) {
-      components.push({ type: "HEADER", format: "TEXT", text: String(header.text).trim() });
+      const text = String(header.text).trim();
+      const sample = String(header.example ?? "").trim();
+      components.push({
+        type: "HEADER",
+        format: "TEXT",
+        text,
+        ...(/\{\{1\}\}/.test(text) ? { example: { header_text: [sample] } } : {}),
+      });
     } else if (["IMAGE", "VIDEO", "DOCUMENT"].includes(headerType)) {
       components.push({
         type: "HEADER",
@@ -2800,9 +3689,12 @@ function buildTemplateComponentsFromPayload(body: any) {
           const type = String(button?.type ?? "").toUpperCase();
           return {
             type,
-            text: String(button?.text ?? "").trim(),
+            ...(type !== "COPY_CODE" ? { text: String(button?.text ?? "").trim() } : {}),
             ...(type === "URL" ? { url: String(button?.url ?? "").trim() } : {}),
             ...(type === "PHONE_NUMBER" ? { phone_number: String(button?.phone ?? button?.phone_number ?? "").trim() } : {}),
+            ...(["URL", "COPY_CODE"].includes(type) && String(button?.example ?? "").trim()
+              ? { example: [String(button.example).trim()] }
+              : {}),
           };
         }),
       });
@@ -2916,9 +3808,10 @@ function extractTemplateMeta(components: any) {
     if (Array.isArray(btns?.buttons)) {
       buttons = btns.buttons.map((b: any) => ({
         type: String(b?.type ?? "").toUpperCase(),
-        text: String(b?.text ?? ""),
+        text: String(b?.text ?? (String(b?.type ?? "").toUpperCase() === "COPY_CODE" ? "Salin kode promo" : "")),
         ...(b?.url ? { url: String(b.url) } : {}),
         ...(b?.phone_number ? { phone: String(b.phone_number) } : {}),
+        ...(Array.isArray(b?.example) && b.example[0] ? { example: String(b.example[0]) } : {}),
       }));
     }
   }
@@ -2937,6 +3830,174 @@ function extractTemplateMeta(components: any) {
 }
 
 // ===== TEMPLATE HELPERS =====
+async function getOrgWabaCredential(orgId: string, wabaId: string) {
+  const { data, error } = await sb().from("wa_numbers")
+    .select("waba_id, access_token")
+    .eq("org_id", orgId)
+    .eq("waba_id", wabaId)
+    .not("access_token", "is", null)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data?.access_token) throw new Error("WABA tidak dimiliki organisasi ini");
+  return { wabaId: String(data.waba_id), accessToken: String(data.access_token) };
+}
+
+app.get(`${API_PREFIX}/templates/capabilities`, requireAuth, requireOrgAdmin, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const wabaId = String(c.req.query("wabaId") ?? "").trim();
+    if (!wabaId) return c.json(jsonFail("wabaId wajib"), 400);
+    let credential;
+    try { credential = await getOrgWabaCredential(user.org_id, wabaId); }
+    catch (error) { return c.json(jsonFail(error), 403); }
+
+    const flowRequest = metaFetch(`${encodeURIComponent(wabaId)}/flows?fields=id,status,health_status&limit=100`, credential.accessToken);
+    const catalogRequest = listOwnedCommerceCatalogs(wabaId, credential.accessToken);
+    const [flowResult, catalogResult] = await Promise.allSettled([flowRequest, catalogRequest]);
+    const flows = flowResult.status === "fulfilled" && Array.isArray(flowResult.value?.data) ? flowResult.value.data : [];
+    const eligibleFlows = flows.filter((flow: any) => String(flow?.status ?? "").toUpperCase() === "PUBLISHED"
+      && String(flow?.health_status?.can_send_message ?? "").toUpperCase() !== "BLOCKED").length;
+    const catalogs = catalogResult.status === "fulfilled" ? catalogResult.value : [];
+    const degraded = flowResult.status === "rejected" || catalogResult.status === "rejected";
+
+    return c.json(jsonOk({
+      wabaId,
+      degraded,
+      checkedAt: nowIso(),
+      capabilities: {
+        marketingDefault: { state: "supported", create: true, runtime: "supported" },
+        utilityDefault: { state: "supported", create: true, runtime: "supported" },
+        authentication: {
+          copyCode: { state: "supported", create: true, runtime: "dedicated_workflow" },
+          oneTap: { state: "conditional", create: true, runtime: "dedicated_workflow" },
+          zeroTap: { state: "unsupported", create: false, runtime: "unsupported" },
+        },
+        flow: { state: flowResult.status === "rejected" ? "eligibility_unknown" : eligibleFlows > 0 ? "supported" : "no_resource", create: eligibleFlows > 0, eligibleResourceCount: eligibleFlows, runtime: "runtime_deferred" },
+        catalog: { state: catalogResult.status === "rejected" ? "eligibility_unknown" : catalogs.length > 0 ? "supported" : "no_resource", create: catalogs.length > 0, eligibleResourceCount: catalogs.length, runtime: "runtime_deferred" },
+        multiProduct: { state: catalogResult.status === "rejected" ? "eligibility_unknown" : catalogs.length > 0 ? "supported" : "no_resource", create: catalogs.length > 0, eligibleResourceCount: catalogs.length, runtime: "runtime_deferred" },
+        carousel: { state: "conditional", create: true, eligibility: "meta_validates_on_submit", runtime: "runtime_deferred" },
+        callingPermissions: { state: "unsupported", create: false, reason: "Tidak ada kontrak message-template resmi yang dapat diverifikasi; calling permission adalah capability terpisah", runtime: "dedicated_workflow" },
+        limitedTimeOffer: { state: "eligibility_unknown", create: false, reason: "Kontrak/eligibility akun belum dapat diverifikasi melalui capability Graph API", runtime: "runtime_deferred" },
+      },
+    }));
+  } catch (error) {
+    console.error("Template capability discovery failed", error instanceof Error ? error.message : "unknown");
+    return c.json(jsonFail("Status ketersediaan belum dapat diperiksa."), 502);
+  }
+});
+
+app.get(`${API_PREFIX}/templates/commerce/catalogs`, requireAuth, requireOrgAdmin, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const wabaId = String(c.req.query("wabaId") ?? "").trim();
+    if (!wabaId) return c.json(jsonFail("wabaId wajib"), 400);
+    let credential;
+    try { credential = await getOrgWabaCredential(user.org_id, wabaId); }
+    catch (error) { return c.json(jsonFail(error), 403); }
+    const catalogs = await listOwnedCommerceCatalogs(wabaId, credential.accessToken);
+    return c.json(jsonOk({
+      capability: {
+        catalogAvailable: catalogs.length > 0,
+        catalogEligible: catalogs.some((catalog) => catalog.eligible),
+        catalogCount: catalogs.length,
+        productDiscoveryAvailable: catalogs.length > 0,
+        catalogTemplateSupported: true,
+        multiProductSupported: true,
+        runtimeSupport: { broadcast: false, chat: false },
+      },
+      catalogs,
+    }));
+  } catch (error) {
+    console.error("Commerce catalog discovery failed", error instanceof Error ? error.message : "unknown");
+    return c.json(jsonFail("Meta gagal mengambil katalog Commerce"), 502);
+  }
+});
+
+app.get(`${API_PREFIX}/templates/commerce/products`, requireAuth, requireOrgAdmin, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const wabaId = String(c.req.query("wabaId") ?? "").trim();
+    const catalogId = String(c.req.query("catalogId") ?? "").trim();
+    const query = String(c.req.query("q") ?? "").trim().toLowerCase().slice(0, 100);
+    const after = String(c.req.query("after") ?? "").trim();
+    const requestedLimit = Number(c.req.query("limit") ?? 25);
+    const limit = Number.isInteger(requestedLimit) ? Math.min(50, Math.max(1, requestedLimit)) : 25;
+    if (!wabaId || !catalogId) return c.json(jsonFail("wabaId dan catalogId wajib"), 400);
+    let credential;
+    try { credential = await getOrgWabaCredential(user.org_id, wabaId); }
+    catch (error) { return c.json(jsonFail(error), 403); }
+    try { await assertOwnedCommerceCatalog(catalogId, wabaId, credential.accessToken); }
+    catch (error) { return c.json(jsonFail(error), 403); }
+
+    const products: any[] = [];
+    let nextUrl: string | null = `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(catalogId)}/products?fields=id,name,retailer_id,image_url,price,currency,availability&limit=${limit}`;
+    if (after) nextUrl += `&after=${encodeURIComponent(after)}`;
+    let nextCursor: string | null = null;
+    let hasMore = false;
+    // Search remains bounded: at most three Meta pages, never the complete catalog.
+    for (let page = 0; nextUrl && page < (query ? 3 : 1); page += 1) {
+      const response = await fetch(nextUrl, { headers: { Authorization: `Bearer ${credential.accessToken}` } });
+      const json = await readMetaJson(response, "Meta gagal mengambil produk katalog");
+      const pageProducts = (Array.isArray(json?.data) ? json.data : []).map(mapMetaCommerceProduct);
+      products.push(...pageProducts.filter((product: any) => !query
+        || product.name.toLowerCase().includes(query)
+        || product.retailerId.toLowerCase().includes(query)));
+      nextCursor = String(json?.paging?.cursors?.after ?? "").trim() || null;
+      const candidate = String(json?.paging?.next ?? "");
+      hasMore = candidate.startsWith("https://graph.facebook.com/");
+      nextUrl = candidate.startsWith("https://graph.facebook.com/") && products.length < limit ? candidate : null;
+    }
+    return c.json(jsonOk({ products: products.slice(0, limit), nextCursor: hasMore ? nextCursor : null, pageSize: limit, searchBounded: true }));
+  } catch (error) {
+    console.error("Commerce product discovery failed", error instanceof Error ? error.message : "unknown");
+    return c.json(jsonFail("Meta gagal mengambil produk katalog"), 502);
+  }
+});
+
+app.get(`${API_PREFIX}/templates/flows`, requireAuth, requireOrgAdmin, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const wabaId = String(c.req.query("wabaId") ?? "").trim();
+    if (!wabaId) return c.json(jsonFail("wabaId wajib"), 400);
+    const supa = sb();
+    const { data: numberRow, error } = await supa.from("wa_numbers")
+      .select("waba_id, access_token")
+      .eq("org_id", user.org_id)
+      .eq("waba_id", wabaId)
+      .not("access_token", "is", null)
+      .limit(1)
+      .maybeSingle();
+    if (error) return c.json(jsonFail(error.message), 500);
+    if (!numberRow?.access_token) return c.json(jsonFail("WABA tidak dimiliki organisasi ini"), 403);
+
+    const flows: any[] = [];
+    let nextUrl: string | null = `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(wabaId)}/flows?fields=id,name,categories,status,health_status,whatsapp_business_account&limit=100`;
+    for (let page = 0; nextUrl && page < 20; page += 1) {
+      const res = await fetch(nextUrl, { headers: { Authorization: `Bearer ${numberRow.access_token}` } });
+      const json = await readMetaJson(res, "Meta gagal mengambil daftar Flow");
+      for (const item of Array.isArray(json?.data) ? json.data : []) {
+        const ownerId = String(item?.whatsapp_business_account?.id ?? wabaId);
+        if (ownerId !== wabaId) continue;
+        const status = String(item?.status ?? "UNKNOWN").toUpperCase();
+        const health = String(item?.health_status?.can_send_message ?? "UNKNOWN").toUpperCase();
+        const eligible = status === "PUBLISHED" && health !== "BLOCKED";
+        let screens: string[] = [];
+        if (eligible) {
+          try { screens = await getMetaFlowScreens(String(item.id), String(numberRow.access_token)); } catch { screens = []; }
+        }
+        flows.push({ id: String(item.id), name: String(item.name ?? item.id), categories: Array.isArray(item.categories) ? item.categories.map(String) : [], status, health, eligible: eligible && screens.length > 0, screens });
+      }
+      const candidate = String(json?.paging?.next ?? "");
+      nextUrl = candidate.startsWith("https://graph.facebook.com/") ? candidate : null;
+    }
+    return c.json(jsonOk({ flows }));
+  } catch (error) {
+    console.error("Flow discovery failed", error instanceof Error ? error.message : "unknown");
+    return c.json(jsonFail("Meta gagal mengambil daftar Flow"), 502);
+  }
+});
+
 app.get(`${API_PREFIX}/templates`, requireAuth, async (c) => {
   try {
     const user = c.get("authUser");
@@ -2953,6 +4014,17 @@ app.get(`${API_PREFIX}/templates`, requireAuth, async (c) => {
 
     const mapped = (data ?? []).map((row: any) => {
       const meta = extractTemplateMeta(row.components);
+      const authenticationConfig = String(row.category ?? "").toLowerCase() === "authentication"
+        ? parseAuthenticationComponents(row.components)
+        : null;
+      const flowConfig = Array.isArray(row.components) && row.components.some((component: any) =>
+        String(component?.type ?? "").toUpperCase() === "BUTTONS"
+        && (Array.isArray(component?.buttons) ? component.buttons : []).some((button: any) => String(button?.type ?? "").toUpperCase() === "FLOW"))
+        ? parseFlowComponents(row.components)
+        : null;
+      const commerceConfig = isCommerceTemplate(row.components) ? parseCommerceComponents(row.components) : null;
+      const carouselConfig = isCarouselTemplate(row.components) ? parseCarouselComponents(row.components) : null;
+      const advancedConfig = parseDeferredAdvancedComponents(row.components);
 
       return {
         id: row.id,
@@ -2963,7 +4035,7 @@ app.get(`${API_PREFIX}/templates`, requireAuth, async (c) => {
         components: row.components ?? [],
         wabaId: row.waba_id ?? null,
         metaTemplateId: row.meta_template_id ?? null,
-        rejectionReason: row.rejection_reason ?? null,
+        rejectionReason: normalizeMetaRejectionReason(row.rejection_reason),
         qualityRating: row.quality_rating ?? null,
         previousCategory: row.previous_category ?? null,
         metaStatusRaw: row.meta_status_raw ?? null,
@@ -2971,6 +4043,12 @@ app.get(`${API_PREFIX}/templates`, requireAuth, async (c) => {
         deletedAt: row.deleted_at ?? null,
         missingFromMetaAt: row.missing_from_meta_at ?? null,
         runtimeSupport: inspectTemplateRuntime(row),
+        runtimeRequirements: getTemplateSendRequirements(row),
+        authenticationConfig,
+        flowConfig,
+        commerceConfig,
+        carouselConfig,
+        advancedConfig,
         createdAt: row.created_at,
         updatedAt: row.updated_at ?? row.created_at,
         content: meta.content,
@@ -2994,13 +4072,21 @@ app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, requireOrgAdmin, 
     const body = await c.req.parseBody();
     const file = body.file;
     const wabaId = String(body.wabaId ?? "").trim();
+    const headerType = String(body.headerType ?? "").trim().toLowerCase();
 
     if (!file || !(file instanceof File)) {
       return c.json(jsonFail("File wajib diunggah"), 400);
     }
 
-    if (file.size > 5 * 1024 * 1024) {
-      return c.json(jsonFail("Ukuran file contoh maksimal 5MB"), 400);
+    const mediaRule = TEMPLATE_MEDIA_SAMPLE_RULES[headerType];
+    if (!mediaRule) return c.json(jsonFail("Jenis header media tidak valid"), 400);
+    const extension = String(file.name ?? "").split(".").pop()?.toLowerCase() ?? "";
+    if (!mediaRule.mimeTypes.has(String(file.type ?? "")) || !mediaRule.extensions.has(extension)) {
+      return c.json(jsonFail(`Format ${mediaRule.label} tidak didukung untuk header ${headerType}`), 400);
+    }
+    if (file.size <= 0) return c.json(jsonFail("File contoh kosong"), 400);
+    if (file.size > mediaRule.maxBytes) {
+      return c.json(jsonFail(`Ukuran contoh ${mediaRule.label} maksimal ${Math.round(mediaRule.maxBytes / 1024 / 1024)}MB`), 400);
     }
     if (!wabaId) return c.json(jsonFail("WABA wajib dipilih untuk upload sample"), 400);
 
@@ -3020,52 +4106,71 @@ app.post(`${API_PREFIX}/templates/upload-sample`, requireAuth, requireOrgAdmin, 
       .maybeSingle();
 
     if (numErr) return c.json(jsonFail(numErr.message), 500);
-    if (!numberRow) return c.json(jsonFail("Belum ada nomor WABA aktif untuk mengunggah media contoh ke Meta"), 400);
+    if (!numberRow) return c.json(jsonFail("WABA tidak dimiliki organisasi atau kredensial tidak tersedia"), 403);
 
-    const accessToken = numberRow.access_token;
+    const accessToken = String(numberRow.access_token ?? "").trim();
+    if (!accessToken) return c.json(jsonFail("Kredensial Meta untuk WABA tidak tersedia"), 403);
 
-    // 1. Dapatkan App ID dari Meta
-    const appRes = await fetch(`https://graph.facebook.com/${graphVersion()}/app`, {
+    // Resumable uploads are scoped to the Meta App, never the WABA or phone-number ID.
+    let appId = String(Deno.env.get("META_APP_ID") ?? "").trim();
+    if (!appId) {
+      const appRes = await fetch(`https://graph.facebook.com/${graphVersion()}/app`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const parsedApp = await parseMetaGraphResponse(appRes);
+      if (!appRes.ok || parsedApp.malformed) {
+        logMetaUploadFailure("resolve_app", appRes, parsedApp.data, parsedApp.malformed);
+        return c.json(jsonFail(`Meta gagal mengidentifikasi aplikasi integrasi${safeMetaErrorMessage(parsedApp.data) ? `: ${safeMetaErrorMessage(parsedApp.data)}` : ""}`), 502);
+      }
+      appId = String(parsedApp.data?.id ?? "").trim();
+      if (!appId) {
+        logMetaUploadFailure("resolve_app_missing_id", appRes, parsedApp.data);
+        return c.json(jsonFail("Meta tidak mengembalikan App ID untuk upload media"), 502);
+      }
+    }
+
+    const uploadSessionUrl = new URL(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(appId)}/uploads`);
+    uploadSessionUrl.searchParams.set("file_length", String(fileLength));
+    uploadSessionUrl.searchParams.set("file_type", fileType);
+    uploadSessionUrl.searchParams.set("file_name", fileName);
+    const uploadInitRes = await fetch(uploadSessionUrl, {
+      method: "POST",
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (!appRes.ok) {
-      const err = await appRes.json();
-      return c.json(jsonFail(err?.error?.message || "Gagal mendapatkan App ID dari Meta"), 400);
+    const parsedInit = await parseMetaGraphResponse(uploadInitRes);
+    if (!uploadInitRes.ok || parsedInit.malformed) {
+      logMetaUploadFailure("create_session", uploadInitRes, parsedInit.data, parsedInit.malformed);
+      return c.json(jsonFail(`Meta gagal membuat upload session${safeMetaErrorMessage(parsedInit.data) ? `: ${safeMetaErrorMessage(parsedInit.data)}` : ""}`), 502);
     }
-    const appData = await appRes.json();
-    const appId = appData.id;
-
-    // 2. Buat sesi upload
-    const uploadInitRes = await fetch(
-      `https://graph.facebook.com/${graphVersion()}/${appId}/uploads?file_name=${encodeURIComponent(fileName)}&file_length=${fileLength}&file_type=${encodeURIComponent(fileType)}`,
-      { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (!uploadInitRes.ok) {
-      const err = await uploadInitRes.json();
-      return c.json(jsonFail(err?.error?.message || "Gagal membuat sesi upload di Meta"), 400);
+    const sessionId = String(parsedInit.data?.id ?? "").trim();
+    if (!sessionId) {
+      logMetaUploadFailure("create_session_missing_id", uploadInitRes, parsedInit.data);
+      return c.json(jsonFail("Meta tidak mengembalikan upload session ID"), 502);
     }
-    const uploadInitData = await uploadInitRes.json();
-    const sessionId = uploadInitData.id;
 
-    // 3. Upload file binary
     const uploadRes = await fetch(
       `https://graph.facebook.com/${graphVersion()}/${sessionId}`,
       {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "file_offset": "0",
-          "Content-Type": "application/octet-stream",
+          Authorization: `Bearer ${accessToken}`,
+          file_offset: "0",
+          "Content-Type": fileType,
         },
         body: fileBytes,
-      }
+      },
     );
-    if (!uploadRes.ok) {
-      const err = await uploadRes.json();
-      return c.json(jsonFail(err?.error?.message || "Gagal mengunggah file ke Meta"), 400);
+    const parsedUpload = await parseMetaGraphResponse(uploadRes);
+    if (!uploadRes.ok || parsedUpload.malformed) {
+      logMetaUploadFailure("upload_binary", uploadRes, parsedUpload.data, parsedUpload.malformed);
+      return c.json(jsonFail(`Meta menolak upload file contoh${safeMetaErrorMessage(parsedUpload.data) ? `: ${safeMetaErrorMessage(parsedUpload.data)}` : ""}`), 502);
     }
-    const uploadData = await uploadRes.json();
-    const handle = uploadData.h;
+    const handle = String(parsedUpload.data?.h ?? "").trim();
+    if (!handle) {
+      logMetaUploadFailure("upload_binary_missing_handle", uploadRes, parsedUpload.data);
+      return c.json(jsonFail("Meta tidak mengembalikan handle media"), 502);
+    }
 
     return c.json(jsonOk({ handle, fileName }));
   } catch (e) {
@@ -3086,13 +4191,23 @@ app.post(`${API_PREFIX}/templates`, requireAuth, requireOrgAdmin, async (c) => {
     if (!wabaId) return c.json(jsonFail("WABA wajib dipilih"), 400);
     const { data: ownerNumber, error: ownerError } = await supa
       .from("wa_numbers")
-      .select("id")
+      .select("id, access_token")
       .eq("org_id", user.org_id)
       .eq("waba_id", wabaId)
       .limit(1)
       .maybeSingle();
     if (ownerError) return c.json(jsonFail(ownerError.message), 500);
     if (!ownerNumber) return c.json(jsonFail("WABA tidak dimiliki organisasi ini"), 403);
+    if (validated.templateType === "flow") {
+      if (!ownerNumber.access_token) return c.json(jsonFail("Access Token WABA tidak tersedia"), 400);
+      try { await assertOwnedEligibleFlow(validated.flowConfig, wabaId, String(ownerNumber.access_token)); }
+      catch (error) { return c.json(jsonFail(error), 400); }
+    }
+    if (["catalog", "multi_product"].includes(validated.templateType)) {
+      if (!ownerNumber.access_token) return c.json(jsonFail("Access Token WABA tidak tersedia"), 400);
+      try { await assertOwnedCommerceConfiguration(validated.commerceConfig, validated.templateType, wabaId, String(ownerNumber.access_token)); }
+      catch (error) { return c.json(jsonFail(error), 400); }
+    }
 
     const { data, error } = await supa
       .from("wa_templates")
@@ -3165,6 +4280,28 @@ app.put(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c) =
 
     if (exErr) return c.json(jsonFail(exErr.message), 500);
     if (!existing) return c.json(jsonFail("Template tidak ditemukan"), 404);
+    if (existing.meta_template_id && String(existing.category ?? "").toLowerCase() === "authentication") {
+      return c.json(jsonFail("Template Authentication yang sudah dikirim ke Meta bersifat read-only di SIPESA"), 409);
+    }
+    if (existing.meta_template_id && validated.templateType === "carousel") {
+      return c.json(jsonFail("Template Carousel yang sudah dikirim ke Meta bersifat read-only di SIPESA"), 409);
+    }
+    if (validated.templateType === "flow") {
+      if (existing.meta_template_id) return c.json(jsonFail("Template Flow yang sudah dikirim ke Meta bersifat read-only di SIPESA"), 409);
+      const { data: flowNumber } = await supa.from("wa_numbers").select("access_token")
+        .eq("org_id", user.org_id).eq("waba_id", existing.waba_id).not("access_token", "is", null).limit(1).maybeSingle();
+      if (!flowNumber?.access_token) return c.json(jsonFail("Access Token WABA tidak tersedia"), 400);
+      try { await assertOwnedEligibleFlow(validated.flowConfig, String(existing.waba_id), String(flowNumber.access_token)); }
+      catch (error) { return c.json(jsonFail(error), 400); }
+    }
+    if (["catalog", "multi_product"].includes(validated.templateType)) {
+      if (existing.meta_template_id) return c.json(jsonFail("Template Commerce yang sudah dikirim ke Meta bersifat read-only di SIPESA"), 409);
+      const { data: commerceNumber } = await supa.from("wa_numbers").select("access_token")
+        .eq("org_id", user.org_id).eq("waba_id", existing.waba_id).not("access_token", "is", null).limit(1).maybeSingle();
+      if (!commerceNumber?.access_token) return c.json(jsonFail("Access Token WABA tidak tersedia"), 400);
+      try { await assertOwnedCommerceConfiguration(validated.commerceConfig, validated.templateType, String(existing.waba_id), String(commerceNumber.access_token)); }
+      catch (error) { return c.json(jsonFail(error), 400); }
+    }
 
     const components = validated.components;
 
@@ -3172,7 +4309,7 @@ app.put(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c) =
       return c.json(jsonFail("Nama dan bahasa template Meta tidak dapat diubah dari SIPESA"), 409);
     }
     const existingRuntime = inspectTemplateRuntime(existing);
-    if (!existingRuntime.supported) {
+    if (!["flow", "catalog", "multi_product", "carousel"].includes(validated.templateType) && !existingRuntime.supported) {
       return c.json(jsonFail("Template ini memiliki komponen Meta yang belum dapat diedit di SIPESA."), 409);
     }
     if (existing.meta_template_id && !TEMPLATE_EDITABLE_META_STATUSES.has(normalizeTemplateStatus(existing.status))) {
@@ -3432,7 +4569,11 @@ app.post(`${API_PREFIX}/templates/:id/push-meta`, requireAuth, requireOrgAdmin, 
     if (tpl.meta_template_id) return c.json(jsonFail("Template sudah terdaftar di Meta"), 409);
     if (!tpl.waba_id) return c.json(jsonFail("WABA template belum dipilih"), 409);
     const runtime = inspectTemplateRuntime(tpl);
-    if (!runtime.supported) return c.json(jsonFail(runtime.reasons[0]), 409);
+    const specializedManagementTemplate = String(tpl.category ?? "").toLowerCase() === "authentication"
+      || isCommerceTemplate(tpl.components)
+      || isCarouselTemplate(tpl.components)
+      || parseFlowComponents(tpl.components).flowId.length > 0;
+    if (!runtime.supported && !specializedManagementTemplate) return c.json(jsonFail(runtime.reasons[0]), 409);
 
     const { data: numberRow, error: numErr } = await supa
       .from("wa_numbers")
@@ -3453,48 +4594,30 @@ app.post(`${API_PREFIX}/templates/:id/push-meta`, requireAuth, requireOrgAdmin, 
     if (!accessToken) return c.json(jsonFail("Access Token kosong"), 400);
 
     const rawComponents = Array.isArray(tpl.components) ? tpl.components : [];
-    const formattedComponents = rawComponents.map((comp: any) => {
-      const newComp = { ...comp };
-      newComp.type = String(newComp.type).toUpperCase();
-      
-      if ("example_values" in newComp) {
-        delete newComp.example_values;
-      }
-      
-      if (newComp.type === "BODY") {
-        const bodyText = String(newComp.text || "");
-        const matches = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map(m => Number(m[1]));
-        if (matches.length > 0) {
-          const maxIndex = Math.max(...matches);
-          const bodyTextExamples: string[] = [];
-          const sourceExamples = comp.example_values || comp.examples || {};
-          
-          for (let idx = 1; idx <= maxIndex; idx++) {
-            const val = sourceExamples[idx] || sourceExamples[String(idx)] || `Sample ${idx}`;
-            bodyTextExamples.push(String(val));
-          }
-          
-          newComp.example = {
-            body_text: [bodyTextExamples]
-          };
-        } else {
-          delete newComp.example;
-        }
-      }
-      
-      if (newComp.type === "HEADER" && newComp.example) {
-        const example = { ...newComp.example };
-        const cleanExample: any = {};
-        if (example.header_handle) {
-          cleanExample.header_handle = example.header_handle;
-        } else if (example.header_text) {
-          cleanExample.header_text = example.header_text;
-        }
-        newComp.example = cleanExample;
-      }
-      
-      return newComp;
-    });
+    const storedFlow = parseFlowComponents(rawComponents);
+    if (rawComponents.some((component: any) => String(component?.type ?? "").toUpperCase() === "BUTTONS"
+      && (Array.isArray(component?.buttons) ? component.buttons : []).some((button: any) => String(button?.type ?? "").toUpperCase() === "FLOW"))) {
+      if (!storedFlow.supported) return c.json(jsonFail("Struktur template Flow tidak didukung"), 400);
+      try { await assertOwnedEligibleFlow({ flowId: storedFlow.flowId, screen: storedFlow.screen }, wabaId, accessToken); }
+      catch (error) { return c.json(jsonFail(error), 400); }
+    }
+    if (isCommerceTemplate(rawComponents)) {
+      const storedCommerce = parseCommerceComponents(rawComponents);
+      if (!storedCommerce.supported) return c.json(jsonFail(storedCommerce.reasons[0] || "Struktur template Commerce tidak didukung"), 400);
+      try {
+        await assertOwnedCommerceConfiguration(
+          { catalogId: storedCommerce.catalogId, sections: storedCommerce.sections.map((section: any) => ({ product_items: section.products.map((product: any) => ({ id: product.id, product_retailer_id: product.retailerId })) })) },
+          storedCommerce.type,
+          wabaId,
+          accessToken,
+        );
+      } catch (error) { return c.json(jsonFail(error), 400); }
+    }
+    if (isCarouselTemplate(rawComponents)) {
+      const storedCarousel = parseCarouselComponents(rawComponents);
+      if (!storedCarousel.supported) return c.json(jsonFail(storedCarousel.reasons[0] || "Struktur template Carousel tidak didukung"), 400);
+    }
+    const formattedComponents = formatComponentsForMeta(rawComponents);
 
     const payload = {
       name: tpl.name,
@@ -4087,6 +5210,9 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
       );
       const mediaUrl = String(recipient.mediaUrl ?? "").trim();
       const fileName = String(recipient.fileName ?? "").trim();
+      const headerTextVariables = Array.isArray(recipient.headerTextVariables) ? recipient.headerTextVariables.map((value: any) => String(value ?? "")) : [];
+      const buttonValues = Array.isArray(recipient.buttonValues) ? recipient.buttonValues : [];
+      const location = recipient.location;
       const contactId = String(recipient.contactId ?? "").trim();
       const rejectionReasons: string[] = [];
 
@@ -4106,9 +5232,11 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
             rejectionReasons.push(`Variable template {{${index + 1}}} kosong`);
           }
         }
-        if (templateRequirements.requiresMedia && !mediaUrl) {
-          rejectionReasons.push("Media header template wajib diisi");
-        }
+        const runtime = validateTemplateRuntimeInput(templateRow, {
+          bodyVariables, headerTextVariables, buttonValues, location, mediaUrl, fileName,
+          headerMedia: mediaUrl ? { type: templateRequirements.mediaType, link: mediaUrl, filename: fileName } : null,
+        });
+        rejectionReasons.push(...runtime.errors);
       }
 
       const finalMessage = mode === "text"
@@ -4117,6 +5245,9 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
             kind: "template_payload",
             vars,
             bodyVariables,
+            headerTextVariables,
+            buttonValues,
+            location,
             mediaUrl,
             fileName,
             rowNumber: recipient.rowNumber ?? null,
@@ -5067,29 +6198,18 @@ async function runBroadcastWorker(
             ? broadcast.template_variables.body.map((x: any) => String(x ?? ""))
             : [];
 
-          const bodyComp = Array.isArray(tpl.components)
-            ? tpl.components.find((x: any) => String(x?.type || "").toUpperCase() === "BODY")
-            : null;
-          const bodyText = String(bodyComp?.text || "");
-          const variableMatches = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map((m) => Number(m[1]));
-          const bodyVariablesCount = variableMatches.length > 0 ? Math.max(...variableMatches) : 0;
-          const slicedVars = Array.from({ length: bodyVariablesCount }, (_, i) => vars[i] ?? "");
-
-          const headerComp = Array.isArray(tpl.components)
-            ? tpl.components.find((x: any) => String(x?.type || "").toUpperCase() === "HEADER")
-            : null;
-          const headerFormat = String(headerComp?.format || "").toUpperCase();
           const mediaUrl = String(recipientPayload?.mediaUrl || "").trim();
           const fileName = String(recipientPayload?.fileName || "").trim();
-
-          let header: any = null;
-          if (headerFormat === "IMAGE" && mediaUrl) header = { format: "IMAGE", link: mediaUrl };
-          if (headerFormat === "VIDEO" && mediaUrl) header = { format: "VIDEO", link: mediaUrl };
-          if (headerFormat === "DOCUMENT" && mediaUrl) header = { format: "DOCUMENT", link: mediaUrl, filename: fileName || undefined };
-
-          if (["IMAGE", "VIDEO", "DOCUMENT"].includes(headerFormat) && !mediaUrl) {
-            throw new Error(`Media header wajib untuk template ${tpl.name} di nomor ${rec.phone_e164}`);
-          }
+          const runtime = validateTemplateRuntimeInput(tpl, {
+            bodyVariables: vars,
+            headerTextVariables: recipientPayload?.headerTextVariables,
+            buttonValues: recipientPayload?.buttonValues,
+            location: recipientPayload?.location,
+            mediaUrl,
+            fileName,
+            headerMedia: mediaUrl ? { type: getTemplateSendRequirements(tpl).mediaType, link: mediaUrl, filename: fileName } : null,
+          });
+          if (!runtime.valid) throw new Error(runtime.errors[0]);
 
           sendAttemptStartedAt = Date.now();
           metaRes = await sendMetaTemplateMessage({
@@ -5098,8 +6218,10 @@ async function runBroadcastWorker(
             to: rec.phone_e164,
             templateName: tpl.name,
             language: tpl.language || "id",
-            bodyVariables: slicedVars,
-            header,
+            bodyVariables: runtime.values.bodyVariables,
+            headerTextVariables: runtime.values.headerTextVariables,
+            header: runtime.values.header,
+            buttonValues: runtime.values.buttonValues,
           });
         } else {
           sendAttemptStartedAt = Date.now();
@@ -5797,7 +6919,9 @@ const handleWebhookPost = async (c: any) => {
               .update({
                 status: event,
                 meta_status_raw: eventRaw,
-                rejection_reason: value?.reason ?? value?.rejection_reason ?? null,
+                rejection_reason: event === "rejected"
+                  ? normalizeMetaRejectionReason(value?.reason ?? value?.rejection_reason)
+                  : null,
                 quality_rating: value?.quality_score?.score ?? value?.quality_score ?? value?.quality_rating ?? null,
                 previous_category: value?.previous_category ?? null,
                 synced_at: nowIso(),
@@ -6055,7 +7179,19 @@ const handleWebhookPost = async (c: any) => {
             }
 
             const messageType = String(incoming?.type ?? "text");
-            const textBody =
+            const isFlowResponse = messageType === "interactive" && Boolean(incoming?.interactive?.nfm_reply);
+            const safeInboundPayload = isFlowResponse ? {
+              id: inboundMessageId,
+              type: "interactive",
+              interactive: {
+                type: "nfm_reply",
+                nfm_reply: {
+                  name: String(incoming?.interactive?.nfm_reply?.name ?? "flow_response"),
+                  has_response: Boolean(incoming?.interactive?.nfm_reply?.response_json),
+                },
+              },
+            } : incoming;
+            const textBody = isFlowResponse ? "[Respons WhatsApp Flow diterima]" :
               incoming?.text?.body ??
               incoming?.button?.text ??
               incoming?.interactive?.button_reply?.title ??
@@ -6071,10 +7207,10 @@ const handleWebhookPost = async (c: any) => {
                 direction: "in",
                 status: "delivered",
                 meta_message_id: inboundMessageId,
-                meta_status_payload: incoming,
+                meta_status_payload: safeInboundPayload,
                 message_type: messageType,
                 text_body: textBody,
-                payload: incoming,
+                payload: safeInboundPayload,
                 delivered_at: nowIso(),
               })
               .select("id")

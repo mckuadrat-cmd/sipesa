@@ -7,6 +7,7 @@ import {
   isApiFail,
 } from "./apiClient";
 import { supabase } from "./supabaseClient";
+import { normalizeRejectionReason } from "./template-rejection";
 
 const API_PREFIX = "";
 
@@ -160,6 +161,64 @@ export type TemplateItem = {
   deletedAt?: string | null;
   missingFromMetaAt?: string | null;
   runtimeSupport?: { supported: boolean; reasons: string[] };
+  runtimeRequirements?: {
+    bodyVariableCount: number;
+    headerTextVariableCount: number;
+    requiresMedia: boolean;
+    mediaType: "image" | "video" | "document" | null;
+    requiresLocation: boolean;
+    buttonRequirements: Array<{ index: number; type: "URL" | "COPY_CODE" }>;
+    carousel?: null | { cardCount: number; cards: Array<{ cardIndex: number; mediaType: string | null; bodyVariableCount: number; buttonRequirements: Array<{ index: number; type: "URL" }> }> };
+  };
+  authenticationConfig?: {
+    supported: boolean;
+    readOnly: boolean;
+    reasons: string[];
+    otpButtonType: "copy_code" | "one_tap" | "zero_tap" | string;
+    securityRecommendation: boolean;
+    codeExpirationMinutes: number;
+    packageName: string;
+    signatureHash: string;
+  } | null;
+  flowConfig?: {
+    supported: boolean;
+    readOnly: boolean;
+    reasons: string[];
+    flowId: string;
+    buttonText: string;
+    action: string;
+    screen: string;
+    body: string;
+    footer: string;
+  } | null;
+  commerceConfig?: {
+    supported: boolean;
+    readOnly: boolean;
+    reasons: string[];
+    type: "catalog" | "multi_product" | string;
+    catalogId: string;
+    buttonText: string;
+    body: string;
+    footer: string;
+    sections: Array<{ title: string; products: Array<{ id: string; retailerId: string; name: string; imageUrl: string }> }>;
+  } | null;
+  carouselConfig?: {
+    supported: boolean;
+    readOnly: boolean;
+    reasons: string[];
+    body: string;
+    cards: Array<{
+      header: { type: "image" | "video" | string; mediaHandle: string; fileName: string };
+      body: { text: string; examples: Record<number, string> };
+      buttons: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER" | string; text: string; value: string; example: string }>;
+    }>;
+  } | null;
+  advancedConfig?: {
+    type: "calling_permission" | "limited_time_offer" | string;
+    supported: boolean;
+    readOnly: boolean;
+    reasons: string[];
+  } | null;
   content: string;
   variables: string[];
   createdAt?: string;
@@ -173,6 +232,9 @@ export type BroadcastRecipientInput = {
   vars?: Record<string, string>;
   mediaUrl?: string;
   fileName?: string;
+  headerTextVariables?: string[];
+  buttonValues?: Array<{ index: number; type: "URL" | "COPY_CODE"; value: string }>;
+  location?: { latitude: number; longitude: number; name: string; address: string };
   rowNumber?: number;
 };
 
@@ -648,7 +710,10 @@ export const api = {
       templateName?: string;
       language?: string;
       bodyVariables?: string[];
-      header?: any;
+      headerMedia?: any;
+      headerTextVariables?: string[];
+      buttonValues?: Array<{ index: number; type: "URL" | "COPY_CODE"; value: string }>;
+      location?: { latitude: number; longitude: number; name: string; address: string };
     },
     idempotencyKey?: string,
   ): Promise<SendMessageResult> {
@@ -941,16 +1006,29 @@ export const api = {
     return ok(res.data ?? []);
   },
 
-  async uploadTemplateSample(file: File, wabaId: string): Promise<AppResult<{ handle: string; fileName: string }>> {
+  async uploadTemplateSample(file: File, wabaId: string, headerType: "image" | "video" | "document"): Promise<AppResult<{ handle: string; fileName: string }>> {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("wabaId", wabaId);
+    formData.append("headerType", headerType);
 
     const res = await apiFetch<any>(`${API_PREFIX}/templates/upload-sample`, {
       method: "POST",
       body: formData,
     });
 
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async uploadTemplateRuntimeMedia(numberId: string, templateId: string, file: File): Promise<AppResult<{ id: string; type: string; filename: string }>> {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("templateId", templateId);
+    const res = await apiFetch<any>(`${API_PREFIX}/numbers/${numberId}/templates/upload-runtime-media`, {
+      method: "POST",
+      body: formData,
+    });
     if (isApiFail(res)) return fail(res.error);
     return ok(res.data);
   },
@@ -980,7 +1058,7 @@ export const api = {
         components: t.components ?? null,
         metaTemplateId: t.metaTemplateId ?? t.meta_template_id ?? null,
         wabaId: t.wabaId ?? t.waba_id ?? null,
-        rejectionReason: t.rejectionReason ?? t.rejection_reason ?? null,
+        rejectionReason: normalizeRejectionReason(t.rejectionReason ?? t.rejection_reason),
         qualityRating: t.qualityRating ?? t.quality_rating ?? null,
         previousCategory: t.previousCategory ?? t.previous_category ?? null,
         metaStatusRaw: t.metaStatusRaw ?? t.meta_status_raw ?? null,
@@ -988,6 +1066,10 @@ export const api = {
         deletedAt: t.deletedAt ?? t.deleted_at ?? null,
         missingFromMetaAt: t.missingFromMetaAt ?? t.missing_from_meta_at ?? null,
         runtimeSupport: t.runtimeSupport,
+        runtimeRequirements: t.runtimeRequirements,
+        authenticationConfig: t.authenticationConfig ?? null,
+        flowConfig: t.flowConfig ?? null,
+        commerceConfig: t.commerceConfig ?? null,
         content,
         variables: t.variables ?? extractTemplateVariablesFromContent(content),
         createdAt: t.createdAt ?? t.created_at ?? new Date().toISOString(),
@@ -1004,7 +1086,6 @@ export const api = {
     language: string;
     content: string;
     variables?: string[];
-    components?: any[];
     normalizedModel?: any;
     wabaId: string;
   }): Promise<AppResult<any>> {
@@ -1017,6 +1098,64 @@ export const api = {
     return ok(res.data);
   },
 
+  async getMetaFlows(wabaId: string): Promise<AppResult<{ flows: Array<{
+    id: string;
+    name: string;
+    categories: string[];
+    status: string;
+    health: string;
+    eligible: boolean;
+    screens: string[];
+  }> }>> {
+    const params = new URLSearchParams({ wabaId });
+    const res = await apiFetch<any>(`${API_PREFIX}/templates/flows?${params.toString()}`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok({ flows: Array.isArray(res.data?.flows) ? res.data.flows : [] });
+  },
+
+  async getCommerceCatalogs(wabaId: string): Promise<AppResult<{
+    capability: {
+      catalogAvailable: boolean;
+      catalogEligible: boolean;
+      catalogCount: number;
+      productDiscoveryAvailable: boolean;
+      catalogTemplateSupported: boolean;
+      multiProductSupported: boolean;
+      runtimeSupport: { broadcast: boolean; chat: boolean };
+    };
+    catalogs: Array<{ id: string; name: string; eligible: boolean }>;
+  }>> {
+    const params = new URLSearchParams({ wabaId });
+    const res = await apiFetch<any>(`${API_PREFIX}/templates/commerce/catalogs?${params.toString()}`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok({ capability: res.data?.capability, catalogs: Array.isArray(res.data?.catalogs) ? res.data.catalogs : [] });
+  },
+
+  async getTemplateCapabilities(wabaId: string): Promise<AppResult<{
+    wabaId: string;
+    degraded: boolean;
+    checkedAt: string;
+    capabilities: Record<string, any>;
+  }>> {
+    const params = new URLSearchParams({ wabaId });
+    const res = await apiFetch<any>(`${API_PREFIX}/templates/capabilities?${params.toString()}`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok({ wabaId: String(res.data?.wabaId ?? wabaId), degraded: res.data?.degraded === true, checkedAt: String(res.data?.checkedAt ?? ""), capabilities: res.data?.capabilities ?? {} });
+  },
+
+  async getCommerceProducts(input: { wabaId: string; catalogId: string; q?: string; after?: string; limit?: number }): Promise<AppResult<{
+    products: Array<{ id: string; retailerId: string; name: string; imageUrl: string; price: string; currency: string; availability: string }>;
+    nextCursor: string | null;
+    pageSize: number;
+  }>> {
+    const params = new URLSearchParams({ wabaId: input.wabaId, catalogId: input.catalogId, limit: String(input.limit ?? 25) });
+    if (input.q?.trim()) params.set("q", input.q.trim());
+    if (input.after) params.set("after", input.after);
+    const res = await apiFetch<any>(`${API_PREFIX}/templates/commerce/products?${params.toString()}`, { method: "GET" });
+    if (isApiFail(res)) return fail(res.error);
+    return ok({ products: Array.isArray(res.data?.products) ? res.data.products : [], nextCursor: res.data?.nextCursor ?? null, pageSize: Number(res.data?.pageSize ?? 25) });
+  },
+
   async updateBroadcastTemplate(
     id: string,
     payload: {
@@ -1025,7 +1164,6 @@ export const api = {
       language: string;
       content: string;
       variables?: string[];
-      components?: any[];
       normalizedModel?: any;
       wabaId?: string;
     },
@@ -1057,6 +1195,9 @@ export const api = {
       variables?: string[];
       mediaUrl?: string;
       fileName?: string;
+      headerTextVariables?: string[];
+      buttonValues?: Array<{ index: number; type: "URL" | "COPY_CODE"; value: string }>;
+      location?: { latitude: number; longitude: number; name: string; address: string };
       rowNumber?: number;
     }>;
     scheduled?: string | null;
@@ -1080,6 +1221,9 @@ export const api = {
         vars,
         mediaUrl: c.mediaUrl || "",
         fileName: c.fileName || "",
+        headerTextVariables: c.headerTextVariables || [],
+        buttonValues: c.buttonValues || [],
+        location: c.location,
         rowNumber: c.rowNumber,
       };
     });

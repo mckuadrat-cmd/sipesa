@@ -18,8 +18,8 @@ const has = (source, pattern, message) => { assert.match(source, pattern, messag
 has(ui, /canAdvanceSetup = Boolean\(formData\.wabaId/, "WABA gates step one");
 has(ui, /\["marketing", "utility"\]\.includes\(formData\.category\)/, "Marketing Default advances");
 has(ui, /formData\.templateType === "default"/, "Utility Default uses supported type gate");
-has(ui, /Authentication menggunakan struktur OTP khusus Meta/, "Authentication explains blocked state");
-has(ui, /disabled.*Belum didukung di SIPESA/s, "advanced types are disabled");
+has(ui, /Dedicated Authentication Builder/, "Authentication uses its dedicated OTP builder");
+has(ui, /aria-disabled=\{unavailable\}.*Tetap dapat dipilih untuk melihat contoh\./s, "unavailable advanced types remain gated while previewable");
 
 // NAME/LANGUAGE 6-7
 has(ui, /Nama template maksimal 512 karakter/, "name validation is mirrored");
@@ -31,8 +31,8 @@ has(ui, /<option value="text">Text Header<\/option>/, "text header");
 has(ui, /<option value="image">Image<\/option>/, "image header");
 has(ui, /<option value="video">Video<\/option>/, "video header");
 has(ui, /<option value="document">Document<\/option>/, "document header");
-has(ui, /<option value="location" disabled>/, "location blocked");
-has(server, /Variabel header text belum didukung/, "header variables rejected server-side");
+has(ui, /<option value="location"(?: disabled)?>/, "location is explicit");
+ok(server.includes("Variabel header text belum didukung") || server.includes("Header text hanya mendukung satu variabel {{1}}"), "header variables are either gated or validated safely");
 
 // BODY 15-18
 has(server, /Konten template maksimal 1024 karakter/, "body max");
@@ -47,11 +47,11 @@ has(server, /Footer tidak boleh memiliki variabel/, "footer variables blocked");
 // BUTTONS 21-28
 has(ui, /addButton\("QUICK_REPLY"\)/, "Quick Reply enabled");
 has(ui, /addButton\("URL"\)/, "static URL enabled");
-has(server, /URL dinamis belum didukung/, "dynamic URL blocked");
+ok(server.includes("URL dinamis belum didukung") || server.includes("URL dinamis hanya mendukung {{1}} sebagai suffix"), "dynamic URL is either gated or validated safely");
 has(ui, /addButton\("PHONE_NUMBER"\)/, "phone enabled");
-has(ui, /Copy Code.*belum didukung/, "Copy Code gated");
-has(server, /Quick Reply dan tombol tindakan belum dapat digabung/, "combination rule");
-has(server, /Maksimal 3 tombol Quick Reply/, "maximum rule");
+ok(/Copy Code.*belum didukung/.test(ui) || ui.includes('addButton("COPY_CODE")'), "Copy Code is gated or end-to-end enabled");
+ok(server.includes("Quick Reply dan tombol tindakan belum dapat digabung") || server.includes("tidak boleh berselang-seling"), "combination rule");
+ok(server.includes("Maksimal 3 tombol Quick Reply") || server.includes("Maksimal 10 tombol Quick Reply"), "maximum rule");
 has(server, /Tombol \$\{type \|\| "UNKNOWN"\} belum didukung/, "unknown button blocked");
 
 // PREVIEW 29-31
@@ -69,7 +69,7 @@ ok(ui.includes("body?.example?.body_text?.[0]") && ui.includes("phone_number") &
 has(ui, /Template ini memiliki komponen Meta yang belum dapat diedit di SIPESA/, "unknown imports read-only");
 
 // RUNTIME 37-38
-ok(server.includes('new Set(["QUICK_REPLY", "URL", "PHONE_NUMBER"])') && broadcast.includes("runtimeSupport?.supported !== false"), "Broadcast supports every enabled button");
+ok(server.includes('new Set(["QUICK_REPLY", "URL", "PHONE_NUMBER"') && broadcast.includes("runtimeSupport?.supported !== false"), "Broadcast supports every enabled button");
 ok(chat.includes("template.runtimeSupport?.supported !== false") && chat.includes("template.wabaId === selectedNumber.wabaId"), "Chat filters unsupported or wrong-WABA templates");
 
 // ORDER 39
@@ -78,7 +78,7 @@ has(server, /\.order\("created_at", \{ ascending: false \}\)\s*\.order\("id", \{
 // RESPONSIVE 40-42
 has(ui, /max-w-5xl.*max-h-\[90vh\].*overflow-hidden/, "375 modal is viewport-bounded");
 has(ui, /grid-cols-1 xl:grid-cols-\[1\.25fr_0\.75fr\]/, "430 stacks builder and preview");
-has(ui, /xl:sticky xl:top-0/, "desktop preview remains sticky");
+has(ui, /lg:sticky lg:top-0/, "desktop preview remains sticky");
 
 assert.equal(checks, 42);
 console.log(`RESULT: Batch 12 Meta-style template builder regression PASS (${checks} checks)`);
