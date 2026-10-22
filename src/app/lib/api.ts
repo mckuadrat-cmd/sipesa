@@ -245,6 +245,11 @@ export type BroadcastHistoryItem = {
   totalRecipients: number;
   totalSent: number;
   totalFailed: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  cancelled: number;
   createdAt: string;
   scheduledAt?: string | null;
   startedAt?: string | null;

@@ -33,7 +33,8 @@ assert.match(helper, /inFlightRef\.current/);
 assert.match(helper, /trailingRefreshRef\.current/);
 assert.match(contacts, /await refreshContacts\(\)/);
 assert.match(templates, /await refreshTemplates\(\)/);
-assert.match(billing, /refreshManualRequests\(\)/);
+assert.match(billing, /const refreshRequests = useVisibilityRefresh/);
+assert.match(billing, /await refreshRequests\(\)/);
 assert.match(superadmin, /refreshSuperadminData\(\)/);
 
 // Batch 6B supersedes the temporary Batch 6A exception for Chat/Inbox.

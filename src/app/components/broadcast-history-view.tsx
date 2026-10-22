@@ -3,7 +3,7 @@ import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { ArrowLeft, Eye, Users, CheckCircle, Clock, XCircle, MessageSquare } from "lucide-react";
-import { api } from "../lib/api";
+import { api, type BroadcastHistoryItem } from "../lib/api";
 
 interface Broadcast {
   id: string;
@@ -50,23 +50,21 @@ export function BroadcastHistoryView({ onBack, onViewDetail }: BroadcastHistoryV
         return;
       }
 
-      const normalized: Broadcast[] = (result.data ?? []).map((b: any) => {
-        const totalSentCount = Number(b.totalSent ?? (Number(b.sent ?? 0) + Number(b.delivered ?? 0) + Number(b.read ?? 0)));
-        return {
-          id: b.id,
-          numberId: b.numberId ?? "",
-          numberName: b.numberName ?? "Nomor WA",
-          message: b.message ?? "",
-          totalRecipients: Number(b.totalRecipients ?? 0),
-          sent: totalSentCount,
-          delivered: Number(b.delivered ?? 0),
-          read: Number(b.read ?? 0),
-          failed: Number(b.failed ?? b.totalFailed ?? 0),
-          cancelled: Number(b.cancelled ?? b.totalCancelled ?? 0),
-          createdAt: b.createdAt ?? "-",
-          status: b.status ?? "completed",
-        };
-      });
+      const normalized: Broadcast[] = result.data.items.map(
+        (broadcast: BroadcastHistoryItem) => ({
+          id: broadcast.id,
+          numberId: broadcast.numberId ?? "",
+          numberName: broadcast.numberName ?? "Nomor WA",
+          message: broadcast.message ?? "",
+          totalRecipients: broadcast.totalRecipients,
+          sent: broadcast.sent,
+          delivered: broadcast.delivered,
+          read: broadcast.read,
+          failed: broadcast.failed,
+          createdAt: broadcast.createdAt,
+          status: broadcast.status,
+        }),
+      );
 
       setError("");
       setBroadcasts(normalized);

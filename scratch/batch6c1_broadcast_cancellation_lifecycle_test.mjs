@@ -46,9 +46,9 @@ function check(name, callback) {
   console.log(`PASS ${name}`);
 }
 
-check("future scheduled rows render Scheduled as type and Pending as process status", () => {
+check("future scheduled rows render Scheduled as type and Menunggu as process status", () => {
   assert.match(history, /const whenLabel = log\.scheduledAt \? "Scheduled" : "Direct"/);
-  assert.match(history, /s === "queued"[\s\S]*Pending/);
+  assert.match(history, /s === "queued"[\s\S]*Menunggu/);
 });
 
 check("scheduled queued rows are not presented as Sending", () => {
