@@ -43,12 +43,13 @@ assert.match(progress, /RECIPIENT_PAGE_SIZE = 100/);
 assert.match(progress, /pageSize: RECIPIENT_PAGE_SIZE/);
 assert.doesNotMatch(progress, /while\s*\([^)]*\)[\s\S]{0,400}getBroadcastRecipients/);
 assert.match(progress, /FALLBACK_REFRESH_MS = 5_000/);
-assert.match(progress, /SUBSCRIBED_REFRESH_TICKS = 12/);
+assert.match(progress, /SUBSCRIBED_REFRESH_TICKS = 3/);
 assert.match(progress, /const refreshTicks = isSubscribed \? SUBSCRIBED_REFRESH_TICKS : 1/);
 assert.doesNotMatch(progress, /setInterval\([\s\S]{0,1000},\s*1000\s*\)/);
-assert.match(progress, /Status broadcast belum dapat diperbarui[\s\S]*Coba Lagi/);
+assert.match(progress, /Laporan sementara belum diperbarui[\s\S]*status akan diperbarui otomatis/);
+assert.doesNotMatch(progress, /Coba Lagi/);
 assert.match(progress, /const canClose = isDone \|\| Boolean\(error\)/);
-console.log("PASS P0.2 - missed Realtime recovers through bounded 5s/60s authoritative refresh with close/retry recovery");
+console.log("PASS P0.2 - missed Realtime recovers through bounded automatic refresh without manual retry");
 
 // GET endpoints used by progress are read-only.
 const statsGet = section(

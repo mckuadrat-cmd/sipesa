@@ -19,9 +19,6 @@ function translateError(err?: string | null) {
   if (lower.includes("capability mismatch") || lower.includes("not register") || lower.includes("not on whatsapp")) {
     return "Nomor tidak terdaftar di WhatsApp";
   }
-  if (lower.includes("structure unavailable") || lower.includes("format") || lower.includes("template")) {
-    return "Struktur template tidak cocok atau tidak tersedia";
-  }
   if (lower.includes("rate limit") || lower.includes("throttled") || lower.includes("spam")) {
     return "Pengiriman dibatasi / diblokir oleh Meta (Spam/Limit)";
   }
@@ -33,6 +30,9 @@ function translateError(err?: string | null) {
   }
   if (lower.includes("media") || lower.includes("header")) {
     return "File media header wajib diunggah";
+  }
+  if (lower.includes("structure unavailable") || lower.includes("format") || lower.includes("template")) {
+    return "Struktur template tidak cocok atau tidak tersedia";
   }
   return err;
 }
@@ -112,8 +112,9 @@ interface BroadcastProgressModalProps {
 
 const RECIPIENT_PAGE_SIZE = 100;
 const FALLBACK_REFRESH_MS = 5_000;
-const SUBSCRIBED_REFRESH_TICKS = 12;
+const SUBSCRIBED_REFRESH_TICKS = 3;
 const RECOVERY_TRIGGER_TICKS = 6;
+const REALTIME_VISUAL_STEP_MS = 140;
 const TERMINAL_CAMPAIGN_STATUSES = new Set(["completed", "cancelled", "failed"]);
 
 function normalizeRecipientStatus(status?: string | null) {
@@ -167,6 +168,15 @@ function renderStatusBadge(status?: string | null) {
     );
   }
 
+  if (s === "pending") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
+        <Clock3 className="w-3 h-3" />
+        Menunggu
+      </span>
+    );
+  }
+
   if (s === "failed") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-1 text-xs font-medium text-red-700">
@@ -202,13 +212,49 @@ export function BroadcastProgressModal({
   const [stats, setStats] = useState<any | null>(null);
   const [rows, setRows] = useState<RecipientRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [startError, setStartError] = useState("");
+  const [realtimeState, setRealtimeState] = useState("CONNECTING");
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [recipientPage, setRecipientPage] = useState({ page: 1, totalPages: 1, total: 0 });
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const hasTriggeredComplete = useRef(false);
   
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
   const lastScrolledRecipientIdRef = useRef<string | null>(null);
   const channelStatusRef = useRef<string>("INITIAL");
+  const consecutiveRefreshFailuresRef = useRef(0);
+  const startRequestedRef = useRef(false);
+  const loadingMoreRef = useRef(false);
+  const statusByRecipientRef = useRef<Map<string, string>>(new Map());
+  const realtimeQueueRef = useRef<RecipientRow[]>([]);
+
+  const applyRealtimeRow = (updated: RecipientRow) => {
+    const previousStatus = normalizeRecipientStatus(statusByRecipientRef.current.get(updated.id));
+    const nextStatus = normalizeRecipientStatus(updated.status);
+    statusByRecipientRef.current.set(updated.id, nextStatus);
+    setRows((current) => mergeRecipientRows(current, [updated]));
+    setStats((current: any) => {
+      if (!current || previousStatus === nextStatus) return current;
+      const wasSent = ["sent", "delivered", "read"].includes(previousStatus);
+      const isSent = ["sent", "delivered", "read"].includes(nextStatus);
+      const totalSent = Math.max(0, Number(current.totalSent ?? 0) + (isSent ? 1 : 0) - (wasSent ? 1 : 0));
+      const totalFailed = Math.max(0, Number(current.totalFailed ?? 0) + (nextStatus === "failed" ? 1 : 0) - (previousStatus === "failed" ? 1 : 0));
+      const delivered = Math.max(0, Number(current.delivered ?? 0) + (nextStatus === "delivered" ? 1 : 0) - (previousStatus === "delivered" ? 1 : 0));
+      const read = Math.max(0, Number(current.read ?? 0) + (nextStatus === "read" ? 1 : 0) - (previousStatus === "read" ? 1 : 0));
+      const totalRecipients = Math.max(0, Number(current.totalRecipients ?? 0));
+      return {
+        ...current,
+        totalSent,
+        totalFailed,
+        delivered,
+        read,
+        progress: totalRecipients > 0 ? Math.round(((totalSent + totalFailed) / totalRecipients) * 100) : 0,
+      };
+    });
+    setLastUpdatedAt(new Date());
+  };
 
   const fetchBroadcastData = async () => {
     if (!broadcastId) return;
@@ -220,28 +266,58 @@ export function BroadcastProgressModal({
 
     if ("error" in statsRes) {
       console.error("Failed to refresh authoritative broadcast stats:", statsRes.error);
-      setError("Status broadcast belum dapat diperbarui. Coba lagi atau tutup modal dan periksa Riwayat.");
+      consecutiveRefreshFailuresRef.current += 1;
+      if (consecutiveRefreshFailuresRef.current >= 3) {
+        setError("Laporan sementara belum diperbarui. Pengiriman tetap berjalan dan status akan diperbarui otomatis.");
+      }
     } else {
       setStats(statsRes.data);
+      consecutiveRefreshFailuresRef.current = 0;
       setError("");
+      setLastUpdatedAt(new Date());
     }
 
     if (!("error" in rowsRes)) {
-      setRows((current) => mergeRecipientRows(current, rowsRes.data?.items || []));
+      // Do not let a periodic snapshot jump ahead of queued realtime events.
+      // Once the visual queue is drained, the snapshot becomes the final
+      // authoritative reconciliation.
+      if (realtimeQueueRef.current.length === 0) {
+        (rowsRes.data?.items || []).forEach((row: RecipientRow) => {
+          if (row?.id) statusByRecipientRef.current.set(row.id, normalizeRecipientStatus(row.status));
+        });
+        setRows((current) => mergeRecipientRows(current, rowsRes.data?.items || []));
+      }
+      setRecipientPage({
+        page: Number(rowsRes.data?.page ?? 1),
+        totalPages: Number(rowsRes.data?.totalPages ?? 1),
+        total: Number(rowsRes.data?.total ?? 0),
+      });
     } else {
       console.error("Failed to refresh bounded broadcast recipients page:", rowsRes.error);
     }
   };
 
-  const retryRefresh = async () => {
-    setRefreshing(true);
+  const loadMoreRecipients = async () => {
+    if (!broadcastId || loadingMoreRef.current || recipientPage.page >= recipientPage.totalPages) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
     try {
-      await fetchBroadcastData();
-    } catch (err) {
-      console.error("Failed to retry broadcast progress refresh:", err);
-      setError("Status broadcast belum dapat diperbarui. Coba lagi atau tutup modal dan periksa Riwayat.");
+      const nextPage = recipientPage.page + 1;
+      const result = await api.getBroadcastRecipients(broadcastId, { page: nextPage, pageSize: RECIPIENT_PAGE_SIZE });
+      if (!("error" in result)) {
+        (result.data?.items || []).forEach((row: RecipientRow) => {
+          if (row?.id) statusByRecipientRef.current.set(row.id, normalizeRecipientStatus(row.status));
+        });
+        setRows((current) => mergeRecipientRows(current, result.data?.items || []));
+        setRecipientPage({
+          page: Number(result.data?.page ?? nextPage),
+          totalPages: Number(result.data?.totalPages ?? recipientPage.totalPages),
+          total: Number(result.data?.total ?? recipientPage.total),
+        });
+      }
     } finally {
-      setRefreshing(false);
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
     }
   };
 
@@ -252,6 +328,15 @@ export function BroadcastProgressModal({
     setRows([]);
     setStats(null);
     setError("");
+    setStartError("");
+    setRealtimeState("CONNECTING");
+    setRecipientPage({ page: 1, totalPages: 1, total: 0 });
+    setLastUpdatedAt(null);
+    consecutiveRefreshFailuresRef.current = 0;
+    startRequestedRef.current = false;
+    loadingMoreRef.current = false;
+    statusByRecipientRef.current.clear();
+    realtimeQueueRef.current = [];
     channelStatusRef.current = "INITIAL";
 
     const fetchData = async () => {
@@ -261,7 +346,10 @@ export function BroadcastProgressModal({
       } catch (err) {
         if (!active) return;
         console.error(err);
-        setError("Gagal mengambil status broadcast.");
+        consecutiveRefreshFailuresRef.current += 1;
+        if (consecutiveRefreshFailuresRef.current >= 3) {
+          setError("Laporan sementara belum diperbarui. Pengiriman tetap berjalan dan status akan diperbarui otomatis.");
+        }
       }
     };
 
@@ -289,15 +377,6 @@ export function BroadcastProgressModal({
           api.getBroadcastStats(broadcastId).then((res) => {
             if (active && !("error" in res)) {
               setStats(res.data);
-
-              const campaignStatus = String(res.data?.status || "").toLowerCase();
-              if (TERMINAL_CAMPAIGN_STATUSES.has(campaignStatus)) {
-                api.getBroadcastRecipients(broadcastId, { page: 1, pageSize: RECIPIENT_PAGE_SIZE }).then((rowsRes) => {
-                  if (active && !("error" in rowsRes)) {
-                    setRows((current) => mergeRecipientRows(current, rowsRes.data?.items || []));
-                  }
-                });
-              }
             }
           });
         }
@@ -315,19 +394,44 @@ export function BroadcastProgressModal({
           if (payload.eventType === "UPDATE" || payload.eventType === "INSERT") {
             const updated = payload.new as RecipientRow;
             if (updated && updated.id) {
-              setRows((current) => mergeRecipientRows(current, [updated]));
+              realtimeQueueRef.current.push(updated);
             }
           }
         }
       );
 
+    const requestStart = () => {
+      if (startRequestedRef.current) return;
+      startRequestedRef.current = true;
+      api.startBroadcast(broadcastId).then((result) => {
+        if (!active) return;
+        if ("error" in result) {
+          setStartError(`Broadcast belum dapat dimulai: ${result.error}`);
+        } else {
+          setStartError("");
+          fetchBroadcastData();
+        }
+      });
+    };
+
     channel.subscribe((status) => {
       if (!active) return;
       channelStatusRef.current = status;
+      setRealtimeState(status);
       if (status === "SUBSCRIBED") {
         fetchBroadcastData();
+        requestStart();
       }
     });
+
+    // Do not leave a broadcast queued if realtime cannot subscribe promptly.
+    const startFallbackTimeout = window.setTimeout(requestStart, 2_000);
+
+    const visualInterval = window.setInterval(() => {
+      if (!active) return;
+      const nextUpdate = realtimeQueueRef.current.shift();
+      if (nextUpdate) applyRealtimeRow(nextUpdate);
+    }, REALTIME_VISUAL_STEP_MS);
 
     let tickCount = 0;
     const interval = setInterval(() => {
@@ -362,6 +466,8 @@ export function BroadcastProgressModal({
     return () => {
       active = false;
       clearInterval(interval);
+      clearInterval(visualInterval);
+      clearTimeout(startFallbackTimeout);
       window.removeEventListener("visibilitychange", handleVisibilityOrPageShow);
       window.removeEventListener("pageshow", handleVisibilityOrPageShow);
       supabase.removeChannel(channel);
@@ -418,13 +524,36 @@ export function BroadcastProgressModal({
   const isComplete = campaignStatus === "completed";
   const isDone = TERMINAL_CAMPAIGN_STATUSES.has(campaignStatus);
   const canClose = isDone || Boolean(error);
+  const canCancelActive = campaignStatus === "sending" && Boolean(stats?.startedAt);
+
+  const handleCancelActive = async () => {
+    if (!broadcastId || !canCancelActive || cancelling) return;
+    if (!window.confirm("Hentikan sisa pengiriman broadcast? Penerima yang sedang diproses dapat tetap diselesaikan.")) return;
+    setCancelling(true);
+    try {
+      const result = await api.cancelBroadcast(broadcastId);
+      if ("error" in result) {
+        setStartError(`Broadcast belum dapat dihentikan: ${result.error}`);
+        return;
+      }
+      await fetchBroadcastData();
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   useEffect(() => {
-    if (isComplete && open && broadcastId && !hasTriggeredComplete.current) {
+    if (
+      isComplete
+      && open
+      && broadcastId
+      && realtimeQueueRef.current.length === 0
+      && !hasTriggeredComplete.current
+    ) {
       hasTriggeredComplete.current = true;
       onComplete?.(broadcastId);
     }
-  }, [isComplete, open, broadcastId, onComplete]);
+  }, [isComplete, open, broadcastId, onComplete, rows]);
 
   // Smooth scroll to the currently processing row
   useEffect(() => {
@@ -452,7 +581,14 @@ export function BroadcastProgressModal({
       closeOnContentClick={false}
       maxWidthClassName="max-w-3xl"
       footer={
-        <div className="flex justify-end items-center">
+        <div className="flex justify-between items-center gap-3 w-full">
+          <div>
+            {canCancelActive && (
+              <Button variant="outline" onClick={() => void handleCancelActive()} disabled={cancelling} className="border-amber-200 text-amber-700 hover:bg-amber-50">
+                {cancelling ? "Menghentikan…" : "Hentikan Broadcast"}
+              </Button>
+            )}
+          </div>
           <Button variant="outline" onClick={onClose} disabled={!canClose}>
             Tutup
           </Button>
@@ -483,14 +619,16 @@ export function BroadcastProgressModal({
         </div>
 
         {error && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 mt-[2px]" />
+            <p className="flex-1">{error}</p>
+          </div>
+        )}
+
+        {startError && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 mt-[2px]" />
-            <div className="flex-1 space-y-2">
-              <p>{error}</p>
-              <Button type="button" variant="outline" size="sm" onClick={() => void retryRefresh()} disabled={refreshing}>
-                {refreshing ? "Mencoba lagi…" : "Coba Lagi"}
-              </Button>
-            </div>
+            <p className="flex-1">{startError}</p>
           </div>
         )}
 
@@ -514,6 +652,13 @@ export function BroadcastProgressModal({
           className="overflow-x-auto overflow-y-auto max-h-[450px] rounded-xl border"
           onMouseDown={(e) => {
             e.stopPropagation();
+          }}
+          onScroll={(event) => {
+            const container = event.currentTarget;
+            const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+            if (distanceFromBottom <= 120 && recipientPage.page < recipientPage.totalPages && !loadingMore) {
+              void loadMoreRecipients();
+            }
           }}
         >
           <table className="min-w-full text-xs table-fixed">
@@ -575,10 +720,18 @@ export function BroadcastProgressModal({
               )}
             </tbody>
           </table>
+
+          {loadingMore && (
+            <div className="sticky bottom-0 flex items-center justify-center gap-2 border-t bg-white/95 px-3 py-2 text-xs text-slate-500 backdrop-blur-sm">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Memuat penerima berikutnya…
+            </div>
+          )}
         </div>
 
-        <p className="text-xs text-slate-500">
-          Modal ini terhubung secara realtime untuk menampilkan progres broadcast terbaru.
+        <p className="text-xs text-slate-500 flex flex-wrap justify-between gap-2">
+          <span>{realtimeState === "SUBSCRIBED" ? "Realtime terhubung" : "Menghubungkan realtime…"}</span>
+          <span>{lastUpdatedAt ? `Terakhir diperbarui ${lastUpdatedAt.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "Menyiapkan laporan…"}</span>
         </p>
       </div>
     </AppModal>

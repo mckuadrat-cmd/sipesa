@@ -786,6 +786,14 @@ export const api = {
     return ok(res.data);
   },
 
+  async startBroadcast(broadcastId: string): Promise<AppResult<any>> {
+    const res = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/start`, {
+      method: "POST",
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
   async cancelScheduledBroadcast(broadcastId: string): Promise<AppResult<any>> {
     const res = await apiFetch<any>(`${API_PREFIX}/broadcasts/${broadcastId}/cancel-schedule`, {
       method: "POST",
@@ -1206,6 +1214,7 @@ export const api = {
       rowNumber?: number;
     }>;
     scheduled?: string | null;
+    allowDuplicates?: boolean;
   }): Promise<AppResult<any>> {
     const templateRes = await this.getBroadcastTemplates();
     if (!templateRes.success) return fail(templateRes.error);
@@ -1213,10 +1222,11 @@ export const api = {
     const template = templateRes.data.find((t) => t.id === payload.templateId);
     if (!template) return fail("Template tidak ditemukan");
 
+    const requiredVariableCount = Number(template.runtimeRequirements?.bodyVariableCount ?? template.variables?.length ?? 0);
     const recipients: BroadcastRecipientInput[] = payload.contacts.map((c) => {
       const vars: Record<string, string> = { name: c.name };
 
-      (c.variables ?? []).forEach((val, idx) => {
+      (c.variables ?? []).slice(0, requiredVariableCount).forEach((val, idx) => {
         vars[`var${idx + 1}`] = val;
       });
 
@@ -1243,6 +1253,8 @@ export const api = {
         templateVariables: null,
         recipients,
         scheduledAt: payload.scheduled || null,
+        allowDuplicates: payload.allowDuplicates === true,
+        deferStart: !payload.scheduled,
       }),
     });
 

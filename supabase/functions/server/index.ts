@@ -2449,7 +2449,7 @@ app.get(`${API_PREFIX}/media/:mediaId`, requireAuth, async (c) => {
     // requested media belongs to a message in this tenant and WABA number.
     const { data: ownedMessage, error: messageError } = await supa
       .from("wa_messages")
-      .select("id, access_token")
+      .select("id")
       .eq("org_id", user.org_id)
       .eq("number_id", numberId)
       .or([
@@ -5112,6 +5112,8 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
     const mode = String(body.mode ?? "text").trim();
     const templateId = body.templateId ?? null;
     const templateVariables = body.templateVariables ?? null;
+    const allowDuplicateRecipients = body.allowDuplicates === true;
+    const deferStart = body.deferStart === true;
     const schedule = parseScheduledAt(body.scheduledAt ?? null);
     const scheduledAt = schedule.value;
 
@@ -5199,11 +5201,11 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
         const match = /^var(\d+)$/i.exec(key);
         if (match) indexedVariables.set(Number(match[1]), String(value ?? "").trim());
       }
-      const highestVariableIndex = Math.max(
-        templateRequirements.bodyVariableCount,
-        0,
-        ...indexedVariables.keys(),
-      );
+      // Only materialize variables required by the selected template. CSV and
+      // Google Sheet files often retain unused Var2..VarN headers.
+      const highestVariableIndex = mode === "template"
+        ? templateRequirements.bodyVariableCount
+        : Math.max(0, ...indexedVariables.keys());
       const bodyVariables = Array.from(
         { length: highestVariableIndex },
         (_, index) => indexedVariables.get(index + 1) ?? "",
@@ -5218,7 +5220,9 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
 
       if (!rawRecipient || typeof rawRecipient !== "object") rejectionReasons.push("Baris recipient malformed");
       if (!phoneValidation.valid) rejectionReasons.push(String(phoneValidation.reason));
-      if (phone && seenPhones.has(phone)) rejectionReasons.push("Nomor duplikat dalam broadcast yang sama");
+      if (!allowDuplicateRecipients && phone && seenPhones.has(phone)) {
+        rejectionReasons.push("Nomor duplikat dalam broadcast yang sama");
+      }
       if (phone) seenPhones.add(phone);
       if (contactId && (!uuidPattern.test(contactId) || !ownedContactIds.has(contactId))) {
         rejectionReasons.push("Contact tidak ditemukan pada organisasi ini");
@@ -5293,7 +5297,12 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
         status: validRecipientCount === 0 ? "failed" : "paused",
         mode,
         template_id: templateId,
-        template_variables: templateVariables,
+        template_variables: {
+          ...(templateVariables && typeof templateVariables === "object" && !Array.isArray(templateVariables)
+            ? templateVariables
+            : {}),
+          allowDuplicates: allowDuplicateRecipients,
+        },
         text_body: mode === "text" ? message : null,
         total_recipients: recipients.length,
         total_sent: 0,
@@ -5337,8 +5346,8 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
       broadcast = queuedBroadcast;
     }
 
-    // Auto-trigger background worker if not scheduled
-    if (!scheduledAt && validRecipientCount > 0) {
+    // The UI may defer an immediate start until its realtime subscription is ready.
+    if (!scheduledAt && validRecipientCount > 0 && !deferStart) {
       const baseUrl = new URL(c.req.url).origin;
       const sessionToken = c.get("sessionToken");
       runBroadcastWorkerInBackground(supa, user.org_id, user.id, broadcast.id, sessionToken, baseUrl, c);
@@ -5356,6 +5365,8 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
         rejected_recipients: rejectedRecipientCount,
         scheduled_at: scheduledAt,
         mode,
+        allow_duplicate_recipients: allowDuplicateRecipients,
+        deferred_start: deferStart,
       },
     });
 
@@ -5369,6 +5380,45 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
         rejectedRecipients: rejectedRecipientCount,
       }),
     );
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/broadcasts/:id/start`, requireAuth, requireOrgAdmin, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const id = c.req.param("id");
+    const supa = sb();
+    const { data: broadcast, error } = await supa
+      .from("wa_broadcasts")
+      .select("id, org_id, status, scheduled_at, created_by")
+      .eq("id", id)
+      .eq("org_id", user.org_id)
+      .maybeSingle();
+
+    if (error) return c.json(jsonFail(error.message), 500);
+    if (!broadcast) return c.json(jsonFail("Broadcast tidak ditemukan"), 404);
+    if (broadcast.scheduled_at && new Date(broadcast.scheduled_at).getTime() > Date.now()) {
+      return c.json(jsonFail("Broadcast terjadwal belum dapat dimulai"), 409);
+    }
+    if (!["queued", "sending"].includes(String(broadcast.status || "").toLowerCase())) {
+      return c.json(jsonFail("Broadcast tidak berada dalam antrean pengiriman"), 409);
+    }
+
+    const baseUrl = new URL(c.req.url).origin;
+    const sessionToken = c.get("sessionToken");
+    runBroadcastWorkerInBackground(
+      supa,
+      user.org_id,
+      broadcast.created_by ? String(broadcast.created_by) : user.id,
+      broadcast.id,
+      sessionToken,
+      baseUrl,
+      c,
+    );
+
+    return c.json(jsonOk({ id: broadcast.id, status: broadcast.status, started: true }));
   } catch (e) {
     return c.json(jsonFail(e), 500);
   }
@@ -5990,6 +6040,7 @@ async function runBroadcastWorker(
           p_org_id: orgId,
           p_body_variable_count: requirements.bodyVariableCount,
           p_requires_media: requirements.requiresMedia,
+          p_allow_duplicates: broadcast.template_variables?.allowDuplicates === true,
         },
       );
 

@@ -664,6 +664,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   const [uploadStatus, setUploadStatus] = useState<"idle" | "success" | "error">("idle");
   const [uploadIssues, setUploadIssues] = useState<UploadIssue[]>([]);
   const [duplicateCount, setDuplicateCount] = useState(0);
+  const [allowDuplicateRecipients, setAllowDuplicateRecipients] = useState(false);
   const [manualRecipients, setManualRecipients] = useState<ManualRecipient[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -685,6 +686,11 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   } | null>(null);
   const [metaChecked, setMetaChecked] = useState(false);
   const [metaErrorMsg, setMetaErrorMsg] = useState<string | null>(null);
+  const [duplicateApproval, setDuplicateApproval] = useState<{
+    contacts: Contact[];
+    message: string;
+    duplicateCount: number;
+  } | null>(null);
   const importValidationRequestRef = useRef(0);
 
   const [allOrgContacts, setAllOrgContacts] = useState<any[]>([]);
@@ -900,6 +906,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     dupCount: number,
     importedCsvFile: File | null = null,
   ) => {
+    // A duplicate approval belongs only to the import that requested it.
+    setAllowDuplicateRecipients(false);
+    setDuplicateApproval(null);
     setPendingImport({
       contacts: importedContacts,
       issues,
@@ -933,10 +942,22 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     setValidationSearchQuery("");
     setMetaChecked(false);
     setMetaErrorMsg(null);
+    setDuplicateApproval(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const commitPendingImport = (selectedContacts: Contact[], message: string) => {
+  const countDuplicateRows = (selectedContacts: Contact[]) => {
+    const seen = new Set<string>();
+    let count = 0;
+    selectedContacts.forEach((contact) => {
+      const key = normalizePhoneForImport(contact.phone);
+      if (key && seen.has(key)) count += 1;
+      else if (key) seen.add(key);
+    });
+    return count;
+  };
+
+  const commitPendingImport = (selectedContacts: Contact[], message: string, allowDuplicates = false) => {
     if (!pendingImport) return;
     if (selectedContacts.length > MAX_BROADCAST_RECIPIENTS) {
       toast.error(recipientLimitExceededMessage(selectedContacts.length));
@@ -946,7 +967,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     applyContactsResult({
       contacts: selectedContacts,
       issues: [],
-      duplicateCount: 0,
+      duplicateCount: allowDuplicates ? countDuplicateRows(selectedContacts) : 0,
     });
     setCsvFile(pendingImport.csvFile);
     setValidationModalOpen(false);
@@ -954,12 +975,23 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     setPendingImport(null);
     setSelectedValidationRows([]);
     setMetaErrorMsg(null);
+    setAllowDuplicateRecipients(allowDuplicates);
+    setDuplicateApproval(null);
     toast.success(message);
+  };
+
+  const requestImportWithDuplicateApproval = (selectedContacts: Contact[], message: string) => {
+    const selectedDuplicateCount = countDuplicateRows(selectedContacts);
+    if (selectedDuplicateCount > 0) {
+      setDuplicateApproval({ contacts: selectedContacts, message, duplicateCount: selectedDuplicateCount });
+      return;
+    }
+    commitPendingImport(selectedContacts, message, false);
   };
 
   const handleImportAll = () => {
     if (!pendingImport) return;
-    commitPendingImport(
+    requestImportWithDuplicateApproval(
       pendingImport.contacts,
       `${formatRecipientCount(pendingImport.contacts.length)} nomor berhasil diimpor.`,
     );
@@ -1018,7 +1050,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       return;
     }
 
-    commitPendingImport(selectedContacts, `${formatRecipientCount(selectedContacts.length)} nomor terpilih berhasil diimpor.`);
+    requestImportWithDuplicateApproval(selectedContacts, `${formatRecipientCount(selectedContacts.length)} nomor terpilih berhasil diimpor.`);
   };
 
   const openResultModal = (
@@ -1295,6 +1327,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     setContacts([]);
     setUploadIssues([]);
     setDuplicateCount(0);
+    setAllowDuplicateRecipients(false);
     setUploadStatus("idle");
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -1307,6 +1340,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     setContacts(result.contacts);
     setUploadIssues(result.issues);
     setDuplicateCount(result.duplicateCount);
+    setAllowDuplicateRecipients(false);
     setUploadStatus(result.contacts.length > 0 ? "success" : "error");
     return true;
   };
@@ -1666,6 +1700,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         templateId: selectedTemplate.id,
         contacts,
         scheduled: scheduledAt,
+        allowDuplicates: allowDuplicateRecipients,
       });
 
       if ("error" in result) {
@@ -1837,7 +1872,11 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                         <div className="font-medium text-sm truncate">{csvFile.name}</div>
                         <div className="text-xs text-slate-500 mt-1">
                           {formatRecipientCount(contacts.length)} baris penerima
-                          {duplicateCount > 0 ? ` • ${formatRecipientCount(duplicateCount)} duplikat dilewati` : ""}
+                          {duplicateCount > 0
+                            ? allowDuplicateRecipients
+                              ? ` • ${formatRecipientCount(duplicateCount)} duplikat disetujui`
+                              : ` • ${formatRecipientCount(duplicateCount)} duplikat terdeteksi`
+                            : ""}
                           {uploadIssues.length > 0 ? ` • ${uploadIssues.length} baris bermasalah` : ""}
                         </div>
                       </div>
@@ -2660,6 +2699,37 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
             <Download className="w-3.5 h-3.5" />
             Export CSV
           </Button>
+        </div>
+      </AppModal>
+
+      <AppModal
+        open={!!duplicateApproval}
+        title="Kirim juga ke nomor duplikat?"
+        description="Nomor yang sama akan menerima pesan lebih dari satu kali."
+        onClose={() => setDuplicateApproval(null)}
+        footer={(
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setDuplicateApproval(null)}>Kembali</Button>
+            <Button
+              type="button"
+              onClick={() => {
+                if (!duplicateApproval) return;
+                commitPendingImport(duplicateApproval.contacts, duplicateApproval.message, true);
+              }}
+            >
+              Setujui dan Import Semua
+            </Button>
+          </div>
+        )}
+      >
+        <div className="space-y-3 text-sm text-slate-600">
+          <p>
+            Terdapat <strong>{formatRecipientCount(duplicateApproval?.duplicateCount ?? 0)} baris duplikat</strong>.
+            Setiap baris akan diproses sebagai pengiriman tersendiri.
+          </p>
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-800">
+            Token dan biaya Meta dapat dikenakan untuk setiap pesan yang berhasil dikirim, termasuk pesan ke nomor yang sama.
+          </div>
         </div>
       </AppModal>
 
