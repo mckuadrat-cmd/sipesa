@@ -2,13 +2,14 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { ArrowLeft, CheckCircle, Clock, XCircle, Search, Download, Eye, CheckCircle2, Send, Loader2, Clock3 } from "lucide-react";
+import { ArrowLeft, CheckCircle, Clock, XCircle, Search, Download, Eye, CheckCircle2, Send, Loader2, Clock3, Info } from "lucide-react";
 import { api } from "../lib/api";
 import { AppModal } from "./AppModal";
 import { supabase } from "../lib/supabaseClient";
 import { toast } from "sonner";
 import { formatStoredScheduledAt } from "../lib/scheduled-at";
 import type { BroadcastDetailContext } from "./broadcast-history";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "./ui/hover-card";
 import {
   failureSourceLabel,
   deliveryFailureCsvFields,
@@ -101,14 +102,6 @@ function isCancellableBroadcast(broadcast: BroadcastDetail) {
   const pendingSchedule = status === "queued" && !!broadcast.scheduledAt && !broadcast.startedAt;
   const activeSending = status === "sending" && !!broadcast.startedAt;
   return pendingSchedule || activeSending;
-}
-
-function getCancelUnavailableReason(broadcast: BroadcastDetail) {
-  const status = String(broadcast.status || "").toLowerCase();
-  if (["completed", "cancelled", "failed"].includes(status)) return "Broadcast sudah selesai dan tidak dapat dibatalkan.";
-  if (status === "sending" && !broadcast.startedAt) return "Broadcast masih menunggu proses pengiriman dimulai.";
-  if (status === "queued" && !broadcast.scheduledAt) return "Broadcast Direct yang belum aktif tidak dapat dibatalkan dari detail ini.";
-  return "Broadcast tidak memenuhi syarat pembatalan saat ini.";
 }
 
 export function BroadcastDetailView({ broadcastId, historyContext, onBack }: BroadcastDetailViewProps) {
@@ -462,12 +455,23 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
                 <Download className="w-3.5 h-3.5" />
                 Export
               </Button>
+              {isCancellableBroadcast(broadcast) && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCancelConfirmOpen(true)}
+                  className="h-9 shrink-0 border-amber-200 text-xs font-medium text-amber-700 hover:bg-amber-50"
+                >
+                  {String(broadcast.status).toLowerCase() === "sending" ? "Hentikan" : "Batalkan"}
+                </Button>
+              )}
             </div>
           )}
         </div>
       }
       onClose={onBack}
-      maxWidthClassName="max-w-4xl"
+      maxWidthClassName="max-w-5xl"
     >
       {loading && !hasLoadedRef.current ? (
         <div className="flex justify-center items-center py-20">
@@ -485,31 +489,22 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
           )}
 
           {/* Info Broadcast */}
-          <Card className="p-6">
+          <Card className="p-4 sm:p-5">
             <div className="flex flex-col gap-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-sm bg-slate-50 p-4 rounded-xl border border-slate-100">
-                <div><div className="text-xs text-slate-500">Tipe</div><div className="mt-1 font-semibold text-slate-800">{broadcast.scheduledAt ? "Scheduled" : "Direct"}</div></div>
-                <div><div className="text-xs text-slate-500">Status Proses</div><div className="mt-1 font-semibold text-slate-800">{getProcessStatus(broadcast.status, broadcast.startedAt)}</div></div>
-                <div><div className="text-xs text-slate-500">Pengirim</div><div className="mt-1 font-semibold text-slate-800 break-words">{broadcast.numberName}</div></div>
-                <div><div className="text-xs text-slate-500">Dibuat</div><div className="mt-1 font-medium text-slate-700">{formatDate(broadcast.createdAt)}</div></div>
-                {broadcast.scheduledAt && (
-                  <div className="sm:col-span-2"><div className="text-xs text-slate-500">Jadwal Pengiriman</div><div className="mt-1 font-semibold text-slate-800">{formatStoredScheduledAt(broadcast.scheduledAt) ?? broadcast.scheduledAt}</div></div>
-                )}
-                <div><div className="text-xs text-slate-500">Total Penerima</div><div className="mt-1 font-bold text-slate-800">{broadcast.totalRecipients.toLocaleString("id-ID")}</div></div>
-              </div>
-
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-slate-100 p-4">
-                <div>
-                  <div className="text-xs font-semibold text-slate-700">Pembatalan</div>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {isCancellableBroadcast(broadcast) ? "Broadcast ini masih dapat dibatalkan sesuai status prosesnya." : getCancelUnavailableReason(broadcast)}
-                  </p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm sm:grid-cols-5">
+                <div className="min-w-0">
+                  <div className="text-xs text-slate-500">Tipe</div>
+                  <div
+                    className="mt-1 truncate font-semibold text-slate-800"
+                    title={broadcast.scheduledAt ? `Scheduled · ${formatStoredScheduledAt(broadcast.scheduledAt) ?? broadcast.scheduledAt}` : "Direct"}
+                  >
+                    {broadcast.scheduledAt ? `Scheduled · ${formatStoredScheduledAt(broadcast.scheduledAt) ?? broadcast.scheduledAt}` : "Direct"}
+                  </div>
                 </div>
-                {isCancellableBroadcast(broadcast) && (
-                  <Button type="button" variant="outline" onClick={() => setCancelConfirmOpen(true)} className="border-amber-200 text-amber-700 hover:bg-amber-50 shrink-0">
-                    {String(broadcast.status).toLowerCase() === "sending" ? "Hentikan Broadcast" : "Batalkan Jadwal"}
-                  </Button>
-                )}
+                <div className="min-w-0"><div className="text-xs text-slate-500">Status Proses</div><div className="mt-1 truncate font-semibold text-slate-800">{getProcessStatus(broadcast.status, broadcast.startedAt)}</div></div>
+                <div className="min-w-0"><div className="text-xs text-slate-500">Pengirim</div><div className="mt-1 truncate font-semibold text-slate-800" title={broadcast.numberName}>{broadcast.numberName}</div></div>
+                <div className="min-w-0"><div className="text-xs text-slate-500">Dibuat</div><div className="mt-1 truncate font-medium text-slate-700">{formatDate(broadcast.createdAt)}</div></div>
+                <div className="min-w-0"><div className="text-xs text-slate-500">Total</div><div className="mt-1 truncate font-bold text-slate-800">{broadcast.totalRecipients.toLocaleString("id-ID")}</div></div>
               </div>
 
               {broadcast.message && (
@@ -628,31 +623,40 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
                         <td className="px-6 py-4 font-medium text-slate-900 max-w-[200px] truncate" title={r.contactName}>{r.contactName}</td>
                         <td className="px-6 py-4 font-mono text-slate-600">{r.contactPhone}</td>
                         <td className="px-6 py-4">{renderStatusBadge(r.status)}</td>
-                        <td className="px-6 py-4 text-slate-500 max-w-[320px]">
+                        <td className="w-[340px] max-w-[340px] px-6 py-4 text-slate-500">
                           {r.status === "failed" ? (() => {
                             const failure = r.failure ?? normalizeDeliveryFailure({ error: r.errorMessage });
                             const userSummary = deliveryFailureUserSummary(failure, r.errorMessage);
-                            if (!failure) return <span className="text-sm text-red-700">{userSummary}</span>;
+                            if (!failure) return <span className="block truncate text-sm text-red-700">{userSummary}</span>;
                             return (
-                              <details className="group">
-                                <summary className="cursor-pointer list-none rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-red-200">
-                                  <span className="block text-sm font-medium leading-5 text-red-700 whitespace-normal break-words">{userSummary}</span>
-                                  <span className="mt-1 block text-[11px] font-medium text-slate-500 group-open:text-slate-700">Lihat detail teknis</span>
-                                </summary>
-                                <div className="mt-2 space-y-1 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                              <div className="flex min-w-0 items-center gap-1.5">
+                                <span className="min-w-0 flex-1 truncate text-sm font-medium text-red-700">{userSummary}</span>
+                                <HoverCard openDelay={120} closeDelay={100}>
+                                  <HoverCardTrigger asChild>
+                                    <button
+                                      type="button"
+                                      aria-label="Tampilkan metadata kegagalan"
+                                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-200"
+                                    >
+                                      <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                                    </button>
+                                  </HoverCardTrigger>
+                                  <HoverCardContent side="left" align="center" className="w-80 space-y-1.5 border-slate-200 p-3 text-xs text-slate-700 shadow-xl">
+                                    <div className="mb-2 font-semibold text-slate-900">Metadata kegagalan</div>
                                   {failure.code && <div><strong>Kode Meta:</strong> {failure.code}</div>}
                                   <div><strong>Sumber:</strong> {failureSourceLabel(failure.source)}</div>
                                   <div><strong>Retry:</strong> {retryLabel(failure.retry)}</div>
                                   <div><strong>Diterima Meta:</strong> {failure.acceptedByMeta === true ? "Ya, delivery kemudian gagal" : failure.acceptedByMeta === false ? "Tidak" : "Belum dapat dipastikan"}</div>
                                   <div><strong>Tahap:</strong> {failure.stage}</div>
-                                  {failure.technicalDetails && <div><strong>Detail Meta:</strong> {failure.technicalDetails}</div>}
+                                  {failure.technicalDetails && <div className="break-words"><strong>Detail Meta:</strong> {failure.technicalDetails}</div>}
                                   {failure.subcode && <div><strong>Subcode:</strong> {failure.subcode}</div>}
                                   {failure.type && <div><strong>Tipe:</strong> {failure.type}</div>}
-                                  {failure.fbtraceId && <div><strong>FB Trace ID:</strong> {failure.fbtraceId}</div>}
+                                  {failure.fbtraceId && <div className="break-all"><strong>FB Trace ID:</strong> {failure.fbtraceId}</div>}
                                   {failure.httpStatus && <div><strong>HTTP:</strong> {failure.httpStatus}</div>}
-                                  <div><strong>Tindakan:</strong> {failure.action}</div>
-                                </div>
-                              </details>
+                                    <div className="break-words"><strong>Tindakan:</strong> {failure.action}</div>
+                                  </HoverCardContent>
+                                </HoverCard>
+                              </div>
                             );
                           })() : formatDate(r.timestamp)}
                         </td>
