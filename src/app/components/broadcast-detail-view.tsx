@@ -11,11 +11,9 @@ import { formatStoredScheduledAt } from "../lib/scheduled-at";
 import type { BroadcastDetailContext } from "./broadcast-history";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "./ui/hover-card";
 import {
-  failureSourceLabel,
   deliveryFailureCsvFields,
   deliveryFailureUserSummary,
   normalizeDeliveryFailure,
-  retryLabel,
   type DeliveryFailure,
 } from "../lib/delivery-error";
 
@@ -628,6 +626,9 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
                             const failure = r.failure ?? normalizeDeliveryFailure({ error: r.errorMessage });
                             const userSummary = deliveryFailureUserSummary(failure, r.errorMessage);
                             if (!failure) return <span className="block truncate text-sm text-red-700">{userSummary}</span>;
+                            const metaDetailParts = [userSummary, failure.technicalDetails]
+                              .filter((value): value is string => Boolean(value?.trim()))
+                              .filter((value, index, values) => values.findIndex((candidate) => candidate.trim().toLowerCase() === value.trim().toLowerCase()) === index);
                             return (
                               <div className="flex min-w-0 items-center gap-1.5">
                                 <span className="min-w-0 flex-1 truncate text-sm font-medium text-red-700">{userSummary}</span>
@@ -643,16 +644,13 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
                                   </HoverCardTrigger>
                                   <HoverCardContent side="left" align="center" collisionPadding={16} className="z-[200] w-80 space-y-1.5 border-slate-200 p-3 text-xs text-slate-700 shadow-xl">
                                     <div className="mb-2 font-semibold text-slate-900">Metadata kegagalan</div>
-                                  {failure.code && <div><strong>Kode Meta:</strong> {failure.code}</div>}
-                                  <div><strong>Sumber:</strong> {failureSourceLabel(failure.source)}</div>
-                                  <div><strong>Retry:</strong> {retryLabel(failure.retry)}</div>
-                                  <div><strong>Diterima Meta:</strong> {failure.acceptedByMeta === true ? "Ya, delivery kemudian gagal" : failure.acceptedByMeta === false ? "Tidak" : "Belum dapat dipastikan"}</div>
-                                  <div><strong>Tahap:</strong> {failure.stage}</div>
-                                  {failure.technicalDetails && <div className="break-words"><strong>Detail Meta:</strong> {failure.technicalDetails}</div>}
-                                  {failure.subcode && <div><strong>Subcode:</strong> {failure.subcode}</div>}
-                                  {failure.type && <div><strong>Tipe:</strong> {failure.type}</div>}
-                                  {failure.fbtraceId && <div className="break-all"><strong>FB Trace ID:</strong> {failure.fbtraceId}</div>}
-                                  {failure.httpStatus && <div><strong>HTTP:</strong> {failure.httpStatus}</div>}
+                                    <div><strong>Kode:</strong> {failure.code ?? "-"}</div>
+                                    <div className="break-words">
+                                      <strong>Detail Meta:</strong>
+                                      <div className="mt-1 space-y-1">
+                                        {metaDetailParts.map((detail, index) => <p key={`${detail}-${index}`}>{detail}</p>)}
+                                      </div>
+                                    </div>
                                     <div className="break-words"><strong>Tindakan:</strong> {failure.action}</div>
                                   </HoverCardContent>
                                 </HoverCard>
