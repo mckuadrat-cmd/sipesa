@@ -127,6 +127,66 @@ export function retryLabel(retry: RetryClassification): string {
   return retry === "RETRYABLE" ? "Dapat dicoba ulang" : retry === "NON_RETRYABLE" ? "Jangan retry" : "Perlu pemeriksaan";
 }
 
+const USER_FAILURE_MESSAGES: Record<string, string> = {
+  "131026": "Pesan tidak dapat dikirimkan ke penerima.",
+  "131049": "Pengiriman dibatasi oleh sistem WhatsApp.",
+  "130472": "Pengiriman tidak tersedia untuk nomor ini karena kebijakan WhatsApp.",
+  "131053": "File lampiran gagal diproses oleh WhatsApp.",
+};
+
+export function deliveryFailureUserSummary(failure: DeliveryFailure | null, legacyError?: string | null): string {
+  if (failure?.code && USER_FAILURE_MESSAGES[failure.code]) return USER_FAILURE_MESSAGES[failure.code];
+
+  const searchable = [
+    legacyError,
+    failure?.title,
+    failure?.userMessage,
+    failure?.technicalDetails,
+    failure?.stage,
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  if (/nomor (duplikat|berulang)|duplicate recipient/.test(searchable)) {
+    return "Nomor berulang belum disetujui untuk dikirim.";
+  }
+  if (failure?.source === "BILLING" || /saldo|token tidak cukup|insufficient balance/.test(searchable)) {
+    return "Saldo token tidak mencukupi untuk pengiriman ini.";
+  }
+  if (/nomor.*(format|tidak valid)|invalid (phone|recipient)|not register|not on whatsapp/.test(searchable)) {
+    return "Nomor penerima tidak dapat digunakan untuk pengiriman ini.";
+  }
+  if (/media|lampiran|header.*file|file.*header/.test(searchable)) {
+    return "File lampiran belum tersedia atau tidak sesuai.";
+  }
+  if (/parameter|variable|variabel/.test(searchable)) {
+    return "Data penerima atau parameter pesan belum lengkap.";
+  }
+  if (/template|structure unavailable|capability mismatch/.test(searchable)) {
+    return "Template atau struktur pesan tidak dapat digunakan.";
+  }
+  if (/rate limit|throttl|spam|ecosystem/.test(searchable)) {
+    return "Pengiriman dibatasi oleh sistem WhatsApp.";
+  }
+  if (/recipient_validation_failed/.test(searchable)) {
+    return "Data pengiriman belum memenuhi persyaratan.";
+  }
+  if (failure?.source === "AMBIGUOUS" || (failure?.source === "SIPESA_WORKER" && failure.acceptedByMeta !== false)) {
+    return "Status pengiriman belum dapat dipastikan.";
+  }
+  if (failure?.source === "DATABASE") {
+    return "Pengiriman gagal diproses oleh sistem.";
+  }
+  if (failure?.source === "SIPESA_VALIDATION") {
+    return "Data pengiriman belum memenuhi persyaratan.";
+  }
+  if (failure?.source === "META_SEND_RESPONSE") {
+    return "Permintaan pengiriman ditolak oleh WhatsApp.";
+  }
+  if (failure?.source === "META_WEBHOOK") {
+    return "Pesan gagal dikirimkan oleh WhatsApp.";
+  }
+  return "Pesan tidak berhasil dikirimkan.";
+}
+
 export function deliveryFailureCsvFields(failure: DeliveryFailure | null) {
   return [
     failure?.code ?? "",

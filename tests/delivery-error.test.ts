@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deliveryFailureCsvFields, normalizeDeliveryFailure } from "../src/app/lib/delivery-error.ts";
+import {
+  deliveryFailureCsvFields,
+  deliveryFailureUserSummary,
+  normalizeDeliveryFailure,
+} from "../src/app/lib/delivery-error.ts";
 
 test("parses complete Meta webhook error", () => {
   const failure = normalizeDeliveryFailure({
@@ -40,4 +44,34 @@ test("exports sanitized structured fields without raw Meta payload", () => {
   const fields = deliveryFailureCsvFields(failure);
   assert.equal(fields[0], "131026");
   assert.ok(!fields.join("|").includes("must-not-export"));
+});
+
+test("renders concise Indonesian messages for known Meta error codes", () => {
+  const expected: Record<string, string> = {
+    "131026": "Pesan tidak dapat dikirimkan ke penerima.",
+    "131049": "Pengiriman dibatasi oleh sistem WhatsApp.",
+    "130472": "Pengiriman tidak tersedia untuk nomor ini karena kebijakan WhatsApp.",
+    "131053": "File lampiran gagal diproses oleh WhatsApp.",
+  };
+  for (const [code, message] of Object.entries(expected)) {
+    const failure = normalizeDeliveryFailure({ error_code: code, error: "legacy English error" });
+    assert.equal(deliveryFailureUserSummary(failure), message);
+  }
+});
+
+test("uses safe historical and internal fallbacks without exposing raw English errors", () => {
+  const duplicate = normalizeDeliveryFailure({
+    error: "RECIPIENT_VALIDATION_FAILED: Nomor duplikat dalam broadcast yang sama",
+    failure_source: "SIPESA_VALIDATION",
+  });
+  assert.equal(deliveryFailureUserSummary(duplicate), "Nomor berulang belum disetujui untuk dikirim.");
+
+  const ambiguous = normalizeDeliveryFailure({
+    error: "Meta did not return a message id",
+    failure_source: "AMBIGUOUS",
+    failure_stage: "meta_acknowledgement",
+  });
+  assert.equal(deliveryFailureUserSummary(ambiguous), "Status pengiriman belum dapat dipastikan.");
+
+  assert.equal(deliveryFailureUserSummary(null, "Unknown provider failure"), "Pesan tidak berhasil dikirimkan.");
 });

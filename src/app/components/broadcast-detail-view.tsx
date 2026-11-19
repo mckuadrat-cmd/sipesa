@@ -12,6 +12,7 @@ import type { BroadcastDetailContext } from "./broadcast-history";
 import {
   failureSourceLabel,
   deliveryFailureCsvFields,
+  deliveryFailureUserSummary,
   normalizeDeliveryFailure,
   retryLabel,
   type DeliveryFailure,
@@ -67,30 +68,6 @@ function formatDate(date?: string) {
   } catch {
     return date;
   }
-}
-
-function translateError(err?: string) {
-  if (!err) return "-";
-  const lower = err.toLowerCase();
-  if (lower.includes("capability mismatch") || lower.includes("not register") || lower.includes("not on whatsapp")) {
-    return "Nomor tidak terdaftar di WhatsApp";
-  }
-  if (lower.includes("structure unavailable") || lower.includes("format") || lower.includes("template")) {
-    return "Struktur template tidak cocok atau tidak tersedia";
-  }
-  if (lower.includes("rate limit") || lower.includes("throttled") || lower.includes("spam")) {
-    return "Pengiriman dibatasi / diblokir oleh Meta (Spam/Limit)";
-  }
-  if (lower.includes("balance") || lower.includes("token")) {
-    return "Saldo/token tidak cukup";
-  }
-  if (lower.includes("parameter") || lower.includes("variable")) {
-    return "Variabel parameter tidak sesuai";
-  }
-  if (lower.includes("media") || lower.includes("header")) {
-    return "File media header wajib diunggah";
-  }
-  return err;
 }
 
 const InfoTooltip = ({ text }: { text: string }) => {
@@ -654,14 +631,16 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
                         <td className="px-6 py-4 text-slate-500 max-w-[320px]">
                           {r.status === "failed" ? (() => {
                             const failure = r.failure ?? normalizeDeliveryFailure({ error: r.errorMessage });
-                            if (!failure) return translateError(r.errorMessage);
+                            const userSummary = deliveryFailureUserSummary(failure, r.errorMessage);
+                            if (!failure) return <span className="text-sm text-red-700">{userSummary}</span>;
                             return (
                               <details className="group">
-                                <summary className="cursor-pointer list-none">
-                                  <span className="font-medium text-red-700">{failure.code ? `${failure.code} · ` : ""}{failure.title}</span>
-                                  <span className="block text-xs text-slate-600 line-clamp-2">{failure.userMessage}</span>
+                                <summary className="cursor-pointer list-none rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-red-200">
+                                  <span className="block text-sm font-medium leading-5 text-red-700 whitespace-normal break-words">{userSummary}</span>
+                                  <span className="mt-1 block text-[11px] font-medium text-slate-500 group-open:text-slate-700">Lihat detail teknis</span>
                                 </summary>
                                 <div className="mt-2 space-y-1 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                                  {failure.code && <div><strong>Kode Meta:</strong> {failure.code}</div>}
                                   <div><strong>Sumber:</strong> {failureSourceLabel(failure.source)}</div>
                                   <div><strong>Retry:</strong> {retryLabel(failure.retry)}</div>
                                   <div><strong>Diterima Meta:</strong> {failure.acceptedByMeta === true ? "Ya, delivery kemudian gagal" : failure.acceptedByMeta === false ? "Tidak" : "Belum dapat dipastikan"}</div>

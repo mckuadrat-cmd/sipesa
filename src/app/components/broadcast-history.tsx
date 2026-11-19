@@ -829,12 +829,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                       </td>
 
                       <td className="px-3 py-3 text-red-600 text-xs text-center font-medium">
-                        <span className="block">{log.failed.toLocaleString()}</span>
-                        {log.failureSummary && (
-                          <span className="mt-1 block max-w-[150px] truncate text-[10px] font-normal text-red-700" title={`${log.failureSummary.code ?? "Tanpa kode"} · ${log.failureSummary.title ?? "Kegagalan"}`}>
-                            {log.failureSummary.code ?? "Tanpa kode"} · {log.failureSummary.title ?? "Kegagalan"}
-                          </span>
-                        )}
+                        {log.failed.toLocaleString()}
                       </td>
 
                       <td className="px-3 py-3 text-xs">
