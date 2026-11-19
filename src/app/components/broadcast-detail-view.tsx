@@ -9,6 +9,13 @@ import { supabase } from "../lib/supabaseClient";
 import { toast } from "sonner";
 import { formatStoredScheduledAt } from "../lib/scheduled-at";
 import type { BroadcastDetailContext } from "./broadcast-history";
+import {
+  failureSourceLabel,
+  deliveryFailureCsvFields,
+  normalizeDeliveryFailure,
+  retryLabel,
+  type DeliveryFailure,
+} from "../lib/delivery-error";
 
 interface RecipientStatus {
   id: string;
@@ -17,6 +24,7 @@ interface RecipientStatus {
   status: "pending" | "processing" | "accepted" | "sent" | "delivered" | "read" | "failed" | "cancelled";
   timestamp: string;
   errorMessage?: string;
+  failure?: DeliveryFailure | null;
 }
 
 interface BroadcastDetail {
@@ -238,6 +246,9 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
                         status: updated.status || "pending",
                         timestamp: updated.sent_at ?? updated.updated_at ?? updated.created_at ?? "-",
                         errorMessage: updated.error ?? undefined,
+                        failure: updated.status === "failed"
+                          ? normalizeDeliveryFailure({ error: updated.error })
+                          : null,
                       }
                       : r
                   ),
@@ -408,20 +419,26 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
         status: recipient.status || "pending",
         timestamp: recipient.sent_at ?? recipient.updated_at ?? recipient.created_at ?? "-",
         errorMessage: recipient.error ?? undefined,
+        failure: recipient.failure ?? normalizeDeliveryFailure({ error: recipient.error }),
       })));
       if (page >= result.data.totalPages) break;
       page += 1;
     }
 
-    const header = ["No", "Nama Kontak", "Nomor WhatsApp", "Status", "Keterangan"];
+    const header = ["No", "Nama Kontak", "Nomor WhatsApp", "Status", "Kode Error", "Subcode", "Kategori", "Keterangan", "Detail Teknis", "Tipe", "FB Trace ID", "HTTP Status", "Failure Stage", "Sumber", "Retry", "Diterima Meta", "Tindakan"];
 
-    const rows = exported.map((r, index) => [
-      index + 1,
-      r.contactName,
-      r.contactPhone,
-      r.status,
-      r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp),
-    ]);
+    const rows = exported.map((r, index) => {
+      const failure = r.failure ?? normalizeDeliveryFailure({ error: r.errorMessage });
+      return [
+        index + 1,
+        r.contactName,
+        r.contactPhone,
+        r.status,
+        ...(r.status === "failed" && failure
+          ? deliveryFailureCsvFields(failure)
+          : ["", "", "", formatDate(r.timestamp), "", "", "", "", "", "", "", "", ""]),
+      ];
+    });
 
     const csv = [header, ...rows]
       .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
@@ -634,8 +651,31 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
                         <td className="px-6 py-4 font-medium text-slate-900 max-w-[200px] truncate" title={r.contactName}>{r.contactName}</td>
                         <td className="px-6 py-4 font-mono text-slate-600">{r.contactPhone}</td>
                         <td className="px-6 py-4">{renderStatusBadge(r.status)}</td>
-                        <td className="px-6 py-4 text-slate-500 max-w-[250px] truncate" title={r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp)}>
-                          {r.status === "failed" ? translateError(r.errorMessage) : formatDate(r.timestamp)}
+                        <td className="px-6 py-4 text-slate-500 max-w-[320px]">
+                          {r.status === "failed" ? (() => {
+                            const failure = r.failure ?? normalizeDeliveryFailure({ error: r.errorMessage });
+                            if (!failure) return translateError(r.errorMessage);
+                            return (
+                              <details className="group">
+                                <summary className="cursor-pointer list-none">
+                                  <span className="font-medium text-red-700">{failure.code ? `${failure.code} · ` : ""}{failure.title}</span>
+                                  <span className="block text-xs text-slate-600 line-clamp-2">{failure.userMessage}</span>
+                                </summary>
+                                <div className="mt-2 space-y-1 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                                  <div><strong>Sumber:</strong> {failureSourceLabel(failure.source)}</div>
+                                  <div><strong>Retry:</strong> {retryLabel(failure.retry)}</div>
+                                  <div><strong>Diterima Meta:</strong> {failure.acceptedByMeta === true ? "Ya, delivery kemudian gagal" : failure.acceptedByMeta === false ? "Tidak" : "Belum dapat dipastikan"}</div>
+                                  <div><strong>Tahap:</strong> {failure.stage}</div>
+                                  {failure.technicalDetails && <div><strong>Detail Meta:</strong> {failure.technicalDetails}</div>}
+                                  {failure.subcode && <div><strong>Subcode:</strong> {failure.subcode}</div>}
+                                  {failure.type && <div><strong>Tipe:</strong> {failure.type}</div>}
+                                  {failure.fbtraceId && <div><strong>FB Trace ID:</strong> {failure.fbtraceId}</div>}
+                                  {failure.httpStatus && <div><strong>HTTP:</strong> {failure.httpStatus}</div>}
+                                  <div><strong>Tindakan:</strong> {failure.action}</div>
+                                </div>
+                              </details>
+                            );
+                          })() : formatDate(r.timestamp)}
                         </td>
                       </tr>
                     );

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { ensureBroadcastCreateAttempt, type BroadcastCreateAttempt } from "../lib/broadcast-idempotency";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -26,7 +27,7 @@ import {
   RefreshCw,
   Loader2,
 } from "lucide-react";
-import { api, TemplateItem } from "../lib/api";
+import { api, TemplateItem, type BroadcastPreflightResult } from "../lib/api";
 import {
   formatLocalScheduledAt,
   getLocalCalendarDate,
@@ -35,6 +36,13 @@ import {
 import { BroadcastProgressModal } from "./BroadcastProgressModal";
 import { AppModal } from "./AppModal";
 import { toast } from "sonner";
+import {
+  buildRecipientMessageIdentity,
+  describeRepeatedPayload,
+  normalizeBroadcastPhone,
+  selectRecipientRows,
+  summarizeRepeatedRecipients,
+} from "../lib/broadcast-recipient-validation";
 
 interface Contact {
   name: string;
@@ -53,14 +61,17 @@ export interface DetailedNumberValidation {
   name: string;
   phone: string;
   normalizedPhone: string;
-  status: "valid" | "format_invalid" | "wa_not_found" | "duplicate" | "data_missing";
+  status: "valid" | "format_invalid" | "wa_not_found" | "repeated" | "data_missing";
   statusText: string;
   formatValid: boolean;
   formatReason?: string;
   waExists: boolean | null;
   waStatus: string;
-  isDuplicate: boolean;
-  duplicateOfRow?: number;
+  isRepeatedNumber: boolean;
+  repeatedRows: number[];
+  identicalPayloadRows: number[];
+  differentPayloadRows: number[];
+  payloadSummary?: string;
   missingDataReason?: string;
 }
 
@@ -143,15 +154,7 @@ function parseCsvLine(line: string): string[] {
 }
 
 function normalizePhoneForImport(value: string): string {
-  let raw = String(value || "").trim();
-  raw = raw.replace(/[^\d+]/g, "");
-  if (!raw) return "";
-  if (raw.startsWith("08")) return `62${raw.slice(1)}`;
-  if (raw.startsWith("8")) return `62${raw}`;
-  if (raw.startsWith("+62")) return raw.slice(1);
-  if (raw.startsWith("62")) return raw;
-  if (raw.startsWith("+")) return raw.slice(1);
-  return raw;
+  return normalizeBroadcastPhone(value);
 }
 
 function extractBodyTextFromComponents(components: any): string {
@@ -536,9 +539,11 @@ function evaluateContactsValidation(
   metaResultsMap: Record<string, { waExists: boolean | null; waStatus: string }> = {},
 ): DetailedNumberValidation[] {
   const phoneRowMap = new Map<string, number[]>();
+  const identityByRow = new Map<number, string>();
   const requiresMedia = ["image", "video", "document"].includes(selectedTemplate?.headerType || "none");
 
-  // First pass: collect normalized keys and their row numbers to detect ALL duplicates
+  // First pass: group normalized destinations without assuming that repeated
+  // numbers represent the same student or the same message.
   contactsList.forEach((c, index) => {
     const rowNumber = c.rowNumber ?? index + 1;
     const rawPhone = String(c.phone || "").trim();
@@ -552,6 +557,11 @@ function evaluateContactsValidation(
       }
       phoneRowMap.get(normKey)!.push(rowNumber);
     }
+    identityByRow.set(rowNumber, buildRecipientMessageIdentity(
+      selectedTemplate?.id,
+      c,
+      selectedTemplate?.runtimeRequirements?.bodyVariableCount,
+    ));
   });
 
   // Second pass: evaluate each contact
@@ -579,9 +589,14 @@ function evaluateContactsValidation(
     }
 
     const normKey = digitsOnly.startsWith("62") ? digitsOnly : normalizedPhone;
-    const duplicateRows = normKey ? (phoneRowMap.get(normKey) || []).filter((r) => r !== rowNumber) : [];
-    const isDuplicate = duplicateRows.length > 0;
-    const duplicateOfRow = duplicateRows[0];
+    const repeatedRows = normKey ? (phoneRowMap.get(normKey) || []).filter((r) => r !== rowNumber) : [];
+    const isRepeatedNumber = repeatedRows.length > 0;
+    const identity = identityByRow.get(rowNumber) ?? "";
+    const otherPayloads = repeatedRows.map((otherRowNumber) => ({
+      rowNumber: otherRowNumber,
+      identity: identityByRow.get(otherRowNumber) ?? "",
+    }));
+    const payloadComparison = describeRepeatedPayload(identity, otherPayloads);
 
     let missingDataReason: string | undefined = undefined;
     if (requiresMedia && !String(c.mediaUrl || "").trim()) {
@@ -592,21 +607,21 @@ function evaluateContactsValidation(
     const waExists = metaInfo ? metaInfo.waExists : null;
     const waStatus = metaInfo ? metaInfo.waStatus : "unknown";
 
-    let status: "valid" | "format_invalid" | "wa_not_found" | "duplicate" | "data_missing" = "valid";
+    let status: "valid" | "format_invalid" | "wa_not_found" | "repeated" | "data_missing" = "valid";
     let statusText = "Valid & Siap Dikirim";
 
     if (!formatValid) {
       status = "format_invalid";
       statusText = formatReason || "Format Tidak Valid";
-    } else if (isDuplicate) {
-      status = "duplicate";
-      statusText = `Nomor Duplikat (Sama dengan baris #${duplicateRows.join(", #")})`;
     } else if (missingDataReason) {
       status = "data_missing";
       statusText = missingDataReason;
     } else if (waExists === false) {
       status = "wa_not_found";
       statusText = "Nomor tidak terdaftar di WhatsApp";
+    } else if (isRepeatedNumber) {
+      status = "repeated";
+      statusText = payloadComparison.summary || `Nomor sama dengan baris #${repeatedRows.join(", #")}`;
     } else if (waExists === true) {
       status = "valid";
       statusText = "Terverifikasi di WhatsApp (Aktif)";
@@ -623,8 +638,11 @@ function evaluateContactsValidation(
       formatReason,
       waExists,
       waStatus,
-      isDuplicate,
-      duplicateOfRow,
+      isRepeatedNumber,
+      repeatedRows,
+      identicalPayloadRows: payloadComparison.identicalRows,
+      differentPayloadRows: payloadComparison.differentRows,
+      payloadSummary: payloadComparison.summary,
       missingDataReason,
     };
   });
@@ -674,7 +692,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   const [validationModalOpen, setValidationModalOpen] = useState(false);
   const [validationDetailsModalOpen, setValidationDetailsModalOpen] = useState(false);
   const [validationFilterTab, setValidationFilterTab] = useState<
-    "all" | "valid" | "format_invalid" | "wa_not_found" | "duplicate" | "data_missing"
+    "all" | "valid" | "format_invalid" | "wa_not_found" | "repeated" | "data_missing"
   >("all");
   const [validationSearchQuery, setValidationSearchQuery] = useState("");
   const [selectedValidationRows, setSelectedValidationRows] = useState<number[]>([]);
@@ -690,6 +708,8 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     contacts: Contact[];
     message: string;
     duplicateCount: number;
+    identicalCount: number;
+    differentCount: number;
   } | null>(null);
   const importValidationRequestRef = useRef(0);
 
@@ -713,6 +733,11 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   const localTimezoneLabel = getLocalTimezoneLabel();
 
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [checkingDuplicateRisk, setCheckingDuplicateRisk] = useState(false);
+  const [duplicateRiskAcknowledged, setDuplicateRiskAcknowledged] = useState(false);
+  const [preflightResult, setPreflightResult] = useState<BroadcastPreflightResult | null>(null);
+  const sendInFlightRef = useRef(false);
+  const createAttemptRef = useRef<BroadcastCreateAttempt | null>(null);
   const [progressModalOpen, setProgressModalOpen] = useState(false);
   const [activeBroadcastId, setActiveBroadcastId] = useState<string | null>(null);
   const [resultModal, setResultModal] = useState<{
@@ -751,29 +776,35 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
 
   const validationSummary = useMemo(() => {
     const total = validationDetails.length;
-    const validCount = validationDetails.filter((v) => v.status === "valid").length;
+    const validCount = validationDetails.filter((v) => v.status === "valid" || v.status === "repeated").length;
     const formatInvalidCount = validationDetails.filter((v) => v.status === "format_invalid").length;
     const waNotFoundCount = validationDetails.filter((v) => v.status === "wa_not_found").length;
-    const duplicateCountVal = validationDetails.filter((v) => v.status === "duplicate").length;
+    const repeatedCount = validationDetails.filter((v) => v.isRepeatedNumber).length;
+    const identicalPayloadCount = validationDetails.filter((v) => v.identicalPayloadRows.length > 0).length;
     const dataMissingCount = validationDetails.filter((v) => v.status === "data_missing").length;
+    const uniqueNumberCount = new Set(
+      validationDetails.map((v) => v.normalizedPhone).filter(Boolean),
+    ).size;
 
     return {
       total,
       validCount,
       formatInvalidCount,
       waNotFoundCount,
-      duplicateCount: duplicateCountVal,
+      repeatedCount,
+      identicalPayloadCount,
+      uniqueNumberCount,
       dataMissingCount,
-      hasErrors: formatInvalidCount + waNotFoundCount + duplicateCountVal + dataMissingCount > 0,
+      hasErrors: formatInvalidCount + waNotFoundCount + dataMissingCount > 0,
     };
   }, [validationDetails]);
   const pendingImportOverLimit = (pendingImport?.contacts.length ?? 0) > MAX_BROADCAST_RECIPIENTS;
 
   const filteredValidationList = useMemo(() => {
     return validationDetails.filter((item) => {
-      if (validationFilterTab !== "all" && item.status !== validationFilterTab) {
-        return false;
-      }
+      if (validationFilterTab === "valid" && !["valid", "repeated"].includes(item.status)) return false;
+      if (validationFilterTab === "repeated" && !item.isRepeatedNumber) return false;
+      if (!["all", "valid", "repeated"].includes(validationFilterTab) && item.status !== validationFilterTab) return false;
       if (validationSearchQuery.trim()) {
         const q = validationSearchQuery.toLowerCase();
         return (
@@ -785,6 +816,21 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       return true;
     });
   }, [validationDetails, validationFilterTab, validationSearchQuery]);
+
+  const groupedFilteredValidationList = useMemo(() => {
+    const groups = new Map<string, DetailedNumberValidation[]>();
+    filteredValidationList.forEach((item) => {
+      const key = item.isRepeatedNumber && item.normalizedPhone
+        ? `phone:${item.normalizedPhone}`
+        : `row:${item.rowNumber}`;
+      const group = groups.get(key) ?? [];
+      group.push(item);
+      groups.set(key, group);
+    });
+    return [...groups.values()].flatMap((group) =>
+      [...group].sort((left, right) => left.rowNumber - right.rowNumber),
+    );
+  }, [filteredValidationList]);
 
   const allFilteredValidationRowsSelected =
     filteredValidationList.length > 0 &&
@@ -819,7 +865,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     if (contactsToValidate.length > MAX_META_CONTACT_VALIDATION_RECIPIENTS) {
       setMetaChecked(false);
       setMetaErrorMsg(
-        `Pemeriksaan WhatsApp massal dibatasi ${formatRecipientCount(MAX_META_CONTACT_VALIDATION_RECIPIENTS)} nomor. Validasi format, data wajib, dan duplikat lokal tetap dilakukan untuk seluruh penerima.`,
+        `Pemeriksaan WhatsApp massal dibatasi ${formatRecipientCount(MAX_META_CONTACT_VALIDATION_RECIPIENTS)} nomor. Validasi format, data wajib, dan nomor berulang tetap dilakukan untuk seluruh penerima.`,
       );
       setValidationDetails(evaluateContactsValidation(contactsToValidate, selectedTemplate));
       return;
@@ -858,12 +904,12 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         const evaluated = evaluateContactsValidation(contactsToValidate, selectedTemplate, metaResultsMap);
         setValidationDetails(evaluated);
 
-        const invalidCount = evaluated.filter((v) => v.status !== "valid").length;
+        const invalidCount = evaluated.filter((v) => !["valid", "repeated"].includes(v.status)).length;
         if (invalidCount === 0) {
           toast.success(`Semua ${formatRecipientCount(contactsToValidate.length)} nomor berhasil divalidasi & terdaftar di WA!`);
         } else {
           toast.warning(
-            `Validasi selesai: ${formatRecipientCount(evaluated.filter((v) => v.status === "valid").length)} valid, ${formatRecipientCount(invalidCount)} nomor bermasalah. Klik 'Detail & Filter' untuk melihat.`,
+            `Validasi selesai: ${formatRecipientCount(evaluated.filter((v) => ["valid", "repeated"].includes(v.status)).length)} siap, ${formatRecipientCount(invalidCount)} nomor bermasalah. Klik 'Detail & Filter' untuk melihat.`,
           );
         }
       }
@@ -879,13 +925,14 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   const handleExportValidationCSV = () => {
     if (validationDetails.length === 0) return;
 
-    const headers = ["Row", "Nama", "Nomor", "Status", "Keterangan", "WhatsApp Terdaftar"];
+    const headers = ["Row", "Nama", "Nomor", "Status", "Keterangan", "Ringkasan Payload", "WhatsApp Terdaftar"];
     const rows = validationDetails.map((v) => [
       v.rowNumber,
       `"${(v.name || "").replace(/"/g, '""')}"`,
       `"${v.phone}"`,
       `"${v.status}"`,
       `"${(v.statusText || "").replace(/"/g, '""')}"`,
+      `"${(v.payloadSummary || "").replace(/"/g, '""')}"`,
       v.waExists === true ? "Ya" : v.waExists === false ? "Tidak" : "Belum Diperiksa",
     ]);
 
@@ -981,9 +1028,19 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   };
 
   const requestImportWithDuplicateApproval = (selectedContacts: Contact[], message: string) => {
-    const selectedDuplicateCount = countDuplicateRows(selectedContacts);
-    if (selectedDuplicateCount > 0) {
-      setDuplicateApproval({ contacts: selectedContacts, message, duplicateCount: selectedDuplicateCount });
+    const repeated = summarizeRepeatedRecipients(
+      selectedContacts,
+      selectedTemplate?.id,
+      selectedTemplate?.runtimeRequirements?.bodyVariableCount,
+    );
+    if (repeated.additionalRows > 0) {
+      setDuplicateApproval({
+        contacts: selectedContacts,
+        message,
+        duplicateCount: repeated.additionalRows,
+        identicalCount: repeated.identicalAdditionalRows,
+        differentCount: repeated.differentAdditionalRows,
+      });
       return;
     }
     commitPendingImport(selectedContacts, message, false);
@@ -1000,7 +1057,6 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
   const handleRemoveAllProblematic = () => {
     if (!pendingImport) return;
 
-    const seenPhones = new Set<string>();
     const cleanContacts: Contact[] = [];
 
     pendingImport.contacts.forEach((c, index) => {
@@ -1021,29 +1077,22 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         return;
       }
 
-      // Deduplicate: keep only 1st valid instance of duplicate numbers
-      const phoneKey = detail.normalizedPhone || detail.phone;
-      if (seenPhones.has(phoneKey)) {
-        return;
-      }
-      seenPhones.add(phoneKey);
+      // Repeated destinations are intentional rows until the user chooses
+      // otherwise. Keep every valid row and its original order.
       cleanContacts.push(c);
     });
 
     const removedCount = pendingImport.contacts.length - cleanContacts.length;
-    commitPendingImport(
+    requestImportWithDuplicateApproval(
       cleanContacts,
-      `${formatRecipientCount(removedCount)} nomor bermasalah dihapus. ${formatRecipientCount(cleanContacts.length)} nomor berhasil diimpor.`,
+      `${formatRecipientCount(removedCount)} data invalid dihapus. ${formatRecipientCount(cleanContacts.length)} baris berhasil diimpor.`,
     );
   };
 
   const handleImportSelected = () => {
     if (!pendingImport) return;
 
-    const selectedRows = new Set(selectedValidationRows);
-    const selectedContacts = pendingImport.contacts.filter((contact, index) =>
-      selectedRows.has(contact.rowNumber ?? index + 1),
-    );
+    const selectedContacts = selectRecipientRows(pendingImport.contacts, selectedValidationRows);
 
     if (selectedContacts.length === 0) {
       toast.error("Pilih minimal satu nomor untuk diimpor.");
@@ -1328,6 +1377,8 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     setUploadIssues([]);
     setDuplicateCount(0);
     setAllowDuplicateRecipients(false);
+    setPreflightResult(null);
+    setDuplicateRiskAcknowledged(false);
     setUploadStatus("idle");
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -1609,6 +1660,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     : "Kirim sekarang";
 
   const handleSendBroadcast = async () => {
+    setDuplicateRiskAcknowledged(false);
     if (!selectedNumber || !selectedTemplate || contacts.length === 0) {
       openResultModal("error", "Data belum lengkap", "Pastikan nomor WA, template, dan kontak sudah dipilih.");
       return;
@@ -1667,10 +1719,29 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       }
     }
 
-    setConfirmOpen(true);
+    setCheckingDuplicateRisk(true);
+    try {
+      const riskResult = await api.checkBroadcastPreflight({
+        numberId: selectedNumber,
+        templateId: selectedTemplate.id,
+        contacts,
+      });
+      if (!riskResult.success) {
+        openResultModal(
+          "error",
+          "Pemeriksaan pengiriman ulang gagal",
+          `Broadcast belum dibuat. ${riskResult.error}`,
+        );
+        return;
+      }
+      setPreflightResult(riskResult.data);
+    } finally {
+      setCheckingDuplicateRisk(false);
+    }
   };
 
   const confirmSendBroadcast = async () => {
+    if (sendInFlightRef.current) return;
     if (!selectedTemplate) return;
     if (contacts.length > MAX_BROADCAST_RECIPIENTS) {
       setConfirmOpen(false);
@@ -1683,6 +1754,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
     }
 
     setConfirmOpen(false);
+    sendInFlightRef.current = true;
     setSending(true);
 
     try {
@@ -1695,12 +1767,24 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         }
       }
 
+      const attempt = ensureBroadcastCreateAttempt(createAttemptRef.current, {
+        numberId: selectedNumber,
+        templateId: selectedTemplate.id,
+        contacts,
+        scheduledAt,
+        allowDuplicates: allowDuplicateRecipients,
+        duplicateRiskAcknowledged,
+      });
+      createAttemptRef.current = attempt;
+
       const result = await api.sendBroadcastWithTemplate({
         numberId: selectedNumber,
         templateId: selectedTemplate.id,
         contacts,
         scheduled: scheduledAt,
         allowDuplicates: allowDuplicateRecipients,
+        duplicateRiskAcknowledged,
+        idempotencyKey: attempt.idempotencyKey,
       });
 
       if ("error" in result) {
@@ -1709,6 +1793,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       }
 
       const newBroadcastId = result.data?.id || null;
+      createAttemptRef.current = null;
       setActiveBroadcastId(newBroadcastId);
 
       if (scheduledAt) {
@@ -1752,6 +1837,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       console.error("Error sending broadcast:", error);
       openResultModal("error", "Terjadi kesalahan", "Terjadi kesalahan saat memproses broadcast.");
     } finally {
+      sendInFlightRef.current = false;
       setSending(false);
     }
   };
@@ -1874,8 +1960,8 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                           {formatRecipientCount(contacts.length)} baris penerima
                           {duplicateCount > 0
                             ? allowDuplicateRecipients
-                              ? ` • ${formatRecipientCount(duplicateCount)} duplikat disetujui`
-                              : ` • ${formatRecipientCount(duplicateCount)} duplikat terdeteksi`
+                              ? ` • ${formatRecipientCount(duplicateCount)} nomor berulang disetujui`
+                              : ` • ${formatRecipientCount(duplicateCount)} nomor berulang terdeteksi`
                             : ""}
                           {uploadIssues.length > 0 ? ` • ${uploadIssues.length} baris bermasalah` : ""}
                         </div>
@@ -2207,7 +2293,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                     </h4>
                     <p className="text-xs text-slate-500 mt-0.5">
                       Valid: {formatRecipientCount(validationSummary.validCount)} • Ditolak/bermasalah: {formatRecipientCount(validationSummary.total - validationSummary.validCount)}
-                      {duplicateCount > 0 ? ` • Duplikat terdeteksi: ${formatRecipientCount(duplicateCount)}` : ""}
+                      {duplicateCount > 0 ? ` • Nomor berulang: ${formatRecipientCount(duplicateCount)}` : ""}
                     </p>
                   </div>
                 </div>
@@ -2303,6 +2389,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                 onClick={handleSendBroadcast}
                 disabled={
                   sending ||
+                  checkingDuplicateRisk ||
                   senderLoadState !== "loaded" ||
                   templateLoadState !== "loaded" ||
                   !selectedNumber ||
@@ -2314,7 +2401,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                 }
                 className="bg-white text-primary hover:bg-accent transition-colors"
               >
-                {sending ? "Mengirim..." : (
+                {checkingDuplicateRisk ? "Memeriksa riwayat..." : sending ? "Mengirim..." : (
                   <>
                     {scheduleEnabled ? <Calendar className="w-4 h-4 mr-2" /> : <Send className="w-4 h-4 mr-2" />}
                     {scheduleEnabled ? "Jadwalkan" : "Kirim Sekarang"}
@@ -2358,6 +2445,76 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
           </Card>
         </div>
       </div>
+
+      <AppModal
+        open={!!preflightResult}
+        title="Ringkasan Pre-flight Broadcast"
+        description="Blocker harus diperbaiki. Warning dapat dilanjutkan setelah konfirmasi; informasi tidak menghalangi pengiriman."
+        onClose={() => setPreflightResult(null)}
+        footer={(
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={() => setPreflightResult(null)}>Kembali</Button>
+            <Button
+              disabled={!preflightResult?.canProceed}
+              onClick={() => {
+                setDuplicateRiskAcknowledged((preflightResult?.duplicateRisks.length ?? 0) > 0);
+                setPreflightResult(null);
+                setConfirmOpen(true);
+              }}
+            >
+              {preflightResult?.requiresConfirmation ? "Konfirmasi dan lanjutkan" : "Lanjutkan"}
+            </Button>
+          </div>
+        )}
+      >
+        <div className="space-y-4 text-sm text-slate-700">
+          {preflightResult && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              <div className="rounded-lg bg-slate-50 p-3"><strong className="block">Total baris</strong>{formatRecipientCount(preflightResult.summary.totalRows)}</div>
+              <div className="rounded-lg bg-slate-50 p-3"><strong className="block">Nomor unik</strong>{formatRecipientCount(preflightResult.summary.uniqueNumbers)}</div>
+              <div className="rounded-lg bg-emerald-50 p-3 text-emerald-800"><strong className="block">Siap</strong>{formatRecipientCount(preflightResult.summary.validRecipients)}</div>
+              <div className="rounded-lg bg-amber-50 p-3 text-amber-800"><strong className="block">Nomor berulang</strong>{formatRecipientCount(preflightResult.summary.repeatedRows)}</div>
+              <div className="rounded-lg bg-amber-50 p-3 text-amber-800"><strong className="block">Pesan identik</strong>{formatRecipientCount(preflightResult.summary.identicalRows)}</div>
+              <div className="rounded-lg bg-red-50 p-3 text-red-800"><strong className="block">Blocker</strong>{formatRecipientCount(preflightResult.summary.criticalErrors)}</div>
+              <div className="rounded-lg bg-blue-50 p-3 text-blue-800"><strong className="block">Estimasi token</strong>{formatRecipientCount(preflightResult.summary.estimatedTokens)} / saldo {formatRecipientCount(preflightResult.summary.balance)}</div>
+              <div className="rounded-lg bg-slate-50 p-3"><strong className="block">Template</strong>{preflightResult.summary.templateStatus} · {preflightResult.summary.templateCategory}<span className="block text-[11px] text-slate-500">Sumber: {preflightResult.summary.templateCategorySource}</span></div>
+              <div className="rounded-lg bg-slate-50 p-3"><strong className="block">Sender</strong>{preflightResult.summary.senderStatus}</div>
+              <div className="rounded-lg bg-slate-50 p-3"><strong className="block">Media</strong>{preflightResult.summary.mediaStatus}</div>
+            </div>
+          )}
+          {(preflightResult?.blockers.length ?? 0) > 0 && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800 space-y-1">
+              <strong className="block">BLOCKER</strong>
+              {preflightResult?.blockers.slice(0, 20).map((item, index) => <div key={`${item.code}-${index}`}>{item.rowNumber ? `Baris #${item.rowNumber}: ` : ""}{item.message}</div>)}
+            </div>
+          )}
+          {(preflightResult?.warnings.length ?? 0) > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
+              <strong className="block">WARNING</strong>
+              {preflightResult?.warnings.slice(0, 20).map((item, index) => <div key={`${item.code}-${index}`}>{item.rowNumber ? `Baris #${item.rowNumber}: ` : ""}{item.message}</div>)}
+            </div>
+          )}
+          {(preflightResult?.duplicateRisks.length ?? 0) > 0 && (
+          <div className="max-h-40 overflow-y-auto rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2 text-xs text-amber-900">
+            <strong>Pesan identik lintas broadcast dalam 24 jam</strong>
+            {(preflightResult?.duplicateRisks ?? []).slice(0, 50).map((risk) => (
+              <div key={`${risk.rowNumber}-${risk.latestAt}`} className="flex justify-between gap-3">
+                <span>Baris #{risk.rowNumber}</span>
+                <span className="text-right">
+                  {formatRecipientCount(risk.matchCount)} riwayat • {Object.entries(risk.statusCounts).map(([status, count]) => `${status}: ${count}`).join(", ")}
+                </span>
+              </div>
+            ))}
+            {(preflightResult?.duplicateRisks.length ?? 0) > 50 && (
+              <p>Dan {formatRecipientCount((preflightResult?.duplicateRisks.length ?? 0) - 50)} baris lainnya.</p>
+            )}
+          </div>
+          )}
+          <p className="text-xs text-slate-500">
+            Warning 24 jam adalah kebijakan internal SIPESA, bukan customer service window WhatsApp. Tidak ada penerima yang dihapus otomatis.
+          </p>
+        </div>
+      </AppModal>
 
       <AppModal
         open={confirmOpen && !!selectedTemplate}
@@ -2479,7 +2636,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
             <span>Validasi Nomor Penerima</span>
           </div>
         }
-        description={`${formatRecipientCount(validationSummary.total)} nomor ditemukan dari data yang akan diimpor.`}
+        description={`${formatRecipientCount(validationSummary.total)} baris ditemukan dari data yang akan diimpor.`}
         onClose={closePendingImport}
         maxWidthClassName="max-w-xl"
         footer={
@@ -2493,7 +2650,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                 className="border-red-200 text-red-700 hover:bg-red-50"
               >
                 <Trash2 className="w-4 h-4" />
-                Hapus Nomor
+                Hapus Data Invalid
               </Button>
             )}
             <Button type="button" onClick={handleImportAll} disabled={isValidatingNumbers || pendingImportOverLimit}>
@@ -2518,15 +2675,22 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
               <div className="flex-1 min-w-0">
                 <p className="font-bold text-slate-900">
                   {validationSummary.hasErrors
-                    ? `${formatRecipientCount(validationSummary.total - validationSummary.validCount)} nomor perlu diperiksa`
-                    : `Semua ${formatRecipientCount(validationSummary.total)} nomor lolos validasi`}
+                    ? `${formatRecipientCount(validationSummary.total - validationSummary.validCount)} baris perlu diperiksa`
+                    : `Semua ${formatRecipientCount(validationSummary.total)} baris lolos validasi`}
                 </p>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <span className="rounded-lg bg-white/70 px-3 py-2 text-emerald-700">Valid: {formatRecipientCount(validationSummary.validCount)}</span>
-                  <span className="rounded-lg bg-white/70 px-3 py-2 text-amber-700">Duplikat: {formatRecipientCount(validationSummary.duplicateCount)}</span>
+                  <span className="rounded-lg bg-white/70 px-3 py-2 text-slate-700">Total baris: {formatRecipientCount(validationSummary.total)}</span>
+                  <span className="rounded-lg bg-white/70 px-3 py-2 text-emerald-700">Nomor unik: {formatRecipientCount(validationSummary.uniqueNumberCount)}</span>
+                  <span className="rounded-lg bg-white/70 px-3 py-2 text-amber-700">Nomor berulang: {formatRecipientCount(validationSummary.repeatedCount)}</span>
+                  <span className="rounded-lg bg-white/70 px-3 py-2 text-amber-800">Pesan identik: {formatRecipientCount(validationSummary.identicalPayloadCount)}</span>
                   <span className="rounded-lg bg-white/70 px-3 py-2 text-red-700">Tidak valid: {formatRecipientCount(validationSummary.formatInvalidCount + validationSummary.dataMissingCount)}</span>
                   <span className="rounded-lg bg-white/70 px-3 py-2 text-orange-700">Bukan WhatsApp: {formatRecipientCount(validationSummary.waNotFoundCount)}</span>
                 </div>
+                {validationSummary.repeatedCount > 0 && (
+                  <p className="mt-3 text-xs leading-5 text-slate-700">
+                    Satu nomor WhatsApp dapat mewakili beberapa siswa. Nomor berulang bukan error dan setiap baris tetap membawa personalisasinya sendiri.
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -2576,7 +2740,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
         footer={
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 w-full">
             <span className={selectedValidationRows.length > MAX_BROADCAST_RECIPIENTS ? "text-sm text-red-700" : "text-sm text-slate-600"}>
-              {formatRecipientCount(selectedValidationRows.length)} nomor dipilih • maksimal {formatRecipientCount(MAX_BROADCAST_RECIPIENTS)}
+              {formatRecipientCount(selectedValidationRows.length)} baris dipilih • maksimal {formatRecipientCount(MAX_BROADCAST_RECIPIENTS)}
             </span>
             <Button
               type="button"
@@ -2609,7 +2773,7 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
                 ["valid", "Valid", validationSummary.validCount],
                 ["format_invalid", "Format Salah", validationSummary.formatInvalidCount],
                 ["wa_not_found", "Bukan WA", validationSummary.waNotFoundCount],
-                ["duplicate", "Duplikat", validationSummary.duplicateCount],
+                ["repeated", "Nomor Berulang", validationSummary.repeatedCount],
                 ["data_missing", "Data Kurang", validationSummary.dataMissingCount],
               ] as const).map(([value, label, count]) => (
                 <button
@@ -2650,25 +2814,28 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
               <tbody className="divide-y divide-slate-100 bg-white">
                 {filteredValidationList.length === 0 ? (
                   <tr><td colSpan={6} className="p-8 text-center text-slate-400 italic">Tidak ada nomor yang sesuai.</td></tr>
-                ) : filteredValidationList.map((item) => {
+                ) : groupedFilteredValidationList.map((item, itemIndex) => {
                   const statusStyles: Record<DetailedNumberValidation["status"], string> = {
                     valid: "bg-emerald-100 text-emerald-800 border-emerald-200",
                     format_invalid: "bg-red-100 text-red-800 border-red-200",
                     wa_not_found: "bg-orange-100 text-orange-800 border-orange-200",
-                    duplicate: "bg-amber-100 text-amber-800 border-amber-200",
+                    repeated: "bg-amber-100 text-amber-800 border-amber-200",
                     data_missing: "bg-purple-100 text-purple-800 border-purple-200",
                   };
                   const statusLabels: Record<DetailedNumberValidation["status"], string> = {
                     valid: "Valid",
                     format_invalid: "Format Salah",
                     wa_not_found: "Bukan WA",
-                    duplicate: "Duplikat",
+                    repeated: "Nomor Berulang",
                     data_missing: "Data Kurang",
                   };
                   const checked = selectedValidationRows.includes(item.rowNumber);
 
                   return (
-                    <tr key={`${item.rowNumber}-${item.phone}`} className="hover:bg-slate-50">
+                    <tr
+                      key={`${item.rowNumber}-${item.phone}`}
+                      className={`hover:bg-slate-50 ${item.isRepeatedNumber && (itemIndex === 0 || groupedFilteredValidationList[itemIndex - 1]?.normalizedPhone !== item.normalizedPhone) ? "border-t-2 border-amber-200" : ""}`}
+                    >
                       <td className="p-2.5 text-center">
                         <input
                           type="checkbox"
@@ -2704,8 +2871,8 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
 
       <AppModal
         open={!!duplicateApproval}
-        title="Kirim juga ke nomor duplikat?"
-        description="Nomor yang sama akan menerima pesan lebih dari satu kali."
+        title="Import nomor berulang?"
+        description="Satu nomor dapat mewakili beberapa siswa dan setiap baris akan tetap diproses terpisah."
         onClose={() => setDuplicateApproval(null)}
         footer={(
           <div className="flex justify-end gap-2">
@@ -2724,8 +2891,9 @@ export function BroadcastView({ onViewHistory, onBroadcastSent, user }: Broadcas
       >
         <div className="space-y-3 text-sm text-slate-600">
           <p>
-            Terdapat <strong>{formatRecipientCount(duplicateApproval?.duplicateCount ?? 0)} baris duplikat</strong>.
-            Setiap baris akan diproses sebagai pengiriman tersendiri.
+            Terdapat <strong>{formatRecipientCount(duplicateApproval?.duplicateCount ?? 0)} kemunculan tambahan</strong>:
+            {" "}{formatRecipientCount(duplicateApproval?.differentCount ?? 0)} membawa payload berbeda dan {formatRecipientCount(duplicateApproval?.identicalCount ?? 0)} membawa payload identik.
+            Baris tidak digabung atau dihapus; nama, nomor baris, urutan, dan data personalisasi tetap dipertahankan.
           </p>
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-800">
             Token dan biaya Meta dapat dikenakan untuk setiap pesan yang berhasil dikirim, termasuk pesan ke nomor yang sama.

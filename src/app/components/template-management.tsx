@@ -2014,6 +2014,9 @@ export function TemplateManagement() {
                           <Badge variant="outline" className="capitalize text-xs font-normal">
                             {template.category} · {template.category?.toLowerCase() === "authentication" ? "OTP" : template.flowConfig ? "Flow" : template.commerceConfig ? (template.commerceConfig.type === "multi_product" ? "Multi-product" : "Catalog") : "Default"}
                           </Badge>
+                          <span className="mt-1 block text-[11px] text-slate-500">
+                            {template.categorySource === "meta" ? "Sumber: Meta" : template.categorySource === "local" ? "Sumber: Draft lokal" : template.categorySource === "needs_sync" ? "Perlu sinkronisasi Meta" : "Sumber kategori belum diketahui"}
+                          </span>
                         </td>
                         <td className="px-5 py-3 text-sm text-slate-600 hidden sm:table-cell">
                           <Badge variant="secondary" className="uppercase text-xs font-medium">
@@ -2089,6 +2092,11 @@ export function TemplateManagement() {
               <p className="text-sm text-muted-foreground">Pilih template untuk melihat preview</p>
             ) : (
               <div className="space-y-5">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                  <div><strong>Kategori:</strong> {String(selectedTemplate.category || "unknown").toUpperCase()}</div>
+                  <div><strong>Sumber:</strong> {selectedTemplate.categorySource === "meta" ? "Meta" : selectedTemplate.categorySource === "local" ? "Local Draft" : selectedTemplate.categorySource === "needs_sync" ? "Needs Sync" : "Unknown"}</div>
+                  <div><strong>Terakhir disinkronkan:</strong> {selectedTemplate.categorySyncedAt ? formatTemplateDate(selectedTemplate.categorySyncedAt) : "-"}</div>
+                </div>
                 {selectedTemplate.category?.toLowerCase() === "authentication" && selectedTemplate.authenticationConfig?.supported && (
                   <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-900" role="status">
                     Template Authentication dikelola dengan builder OTP khusus. Pengiriman memerlukan workflow OTP khusus dan tidak tersedia di Broadcast atau Chat normal.

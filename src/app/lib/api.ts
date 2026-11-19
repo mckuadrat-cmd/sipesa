@@ -8,6 +8,8 @@ import {
 } from "./apiClient";
 import { supabase } from "./supabaseClient";
 import { normalizeRejectionReason } from "./template-rejection";
+import { normalizeDeliveryFailure } from "./delivery-error";
+import { normalizeOfficialTemplateCategory, normalizeTemplateCategorySource } from "./template-category";
 
 const API_PREFIX = "";
 
@@ -148,6 +150,8 @@ export type TemplateItem = {
   id: string;
   name: string;
   category: string;
+  categorySource?: "meta" | "local" | "needs_sync" | "unknown" | string;
+  categorySyncedAt?: string | null;
   language: string;
   status: string;
   components?: any;
@@ -236,6 +240,46 @@ export type BroadcastRecipientInput = {
   buttonValues?: Array<{ index: number; type: "URL" | "COPY_CODE"; value: string }>;
   location?: { latitude: number; longitude: number; name: string; address: string };
   rowNumber?: number;
+};
+
+export type BroadcastDuplicateRisk = {
+  inputIndex: number;
+  rowNumber: number;
+  matchCount: number;
+  statusCounts: Record<string, number>;
+  latestAt: string | null;
+};
+
+export type BroadcastDuplicateRiskResult = {
+  windowHours: number;
+  checkedRecipients: number;
+  riskyRecipients: number;
+  risks: BroadcastDuplicateRisk[];
+};
+
+export type BroadcastPreflightResult = {
+  canProceed: boolean;
+  requiresConfirmation: boolean;
+  blockers: Array<{ code: string; scope: string; message: string; rowNumber?: number }>;
+  warnings: Array<{ code: string; scope: string; message: string; rowNumber?: number }>;
+  information: Array<{ code: string; scope: string; message: string }>;
+  duplicateRisks: BroadcastDuplicateRisk[];
+  summary: {
+    totalRows: number;
+    uniqueNumbers: number;
+    validRecipients: number;
+    repeatedRows: number;
+    identicalRows: number;
+    criticalErrors: number;
+    warningCount: number;
+    estimatedTokens: number;
+    balance: number;
+    templateStatus: string;
+    templateCategory: string;
+    templateCategorySource: string;
+    senderStatus: string;
+    mediaStatus: string;
+  };
 };
 
 export type BroadcastHistoryItem = {
@@ -980,6 +1024,7 @@ export const api = {
       status: r.status || "pending",
       timestamp: r.sent_at ?? r.updated_at ?? r.created_at ?? "-",
       errorMessage: r.error ?? undefined,
+      failure: r.failure ?? normalizeDeliveryFailure({ error: r.error }),
     }));
 
     const senderNumber = broadcast.senderNumber || "";
@@ -1065,7 +1110,9 @@ export const api = {
       return {
         id: String(t.id),
         name: String(t.name ?? ""),
-        category: String(t.category ?? "marketing"),
+        category: normalizeOfficialTemplateCategory(t.category) ?? "unknown",
+        categorySource: normalizeTemplateCategorySource(t.categorySource ?? t.category_source, Boolean(t.metaTemplateId || t.meta_template_id)),
+        categorySyncedAt: t.categorySyncedAt ?? t.category_synced_at ?? null,
         language: String(t.language ?? "id"),
         status: String(t.status ?? "unknown").toLowerCase(),
         components: t.components ?? null,
@@ -1215,6 +1262,8 @@ export const api = {
     }>;
     scheduled?: string | null;
     allowDuplicates?: boolean;
+    duplicateRiskAcknowledged?: boolean;
+    idempotencyKey: string;
   }): Promise<AppResult<any>> {
     const templateRes = await this.getBroadcastTemplates();
     if (!templateRes.success) return fail(templateRes.error);
@@ -1245,6 +1294,7 @@ export const api = {
 
     const res = await apiFetch<any>(`${API_PREFIX}/broadcasts`, {
       method: "POST",
+      headers: { "Idempotency-Key": payload.idempotencyKey },
       body: JSON.stringify({
         title: template.name,
         numberId: payload.numberId,
@@ -1254,10 +1304,99 @@ export const api = {
         recipients,
         scheduledAt: payload.scheduled || null,
         allowDuplicates: payload.allowDuplicates === true,
+        duplicateRiskAcknowledged: payload.duplicateRiskAcknowledged === true,
         deferStart: !payload.scheduled,
+        idempotencyKey: payload.idempotencyKey,
       }),
     });
 
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async checkBroadcastDuplicateRisk(payload: {
+    templateId: string;
+    contacts: Array<{
+      name: string;
+      phone: string;
+      variables?: string[];
+      mediaUrl?: string;
+      fileName?: string;
+      headerTextVariables?: string[];
+      buttonValues?: Array<{ index: number; type: "URL" | "COPY_CODE"; value: string }>;
+      location?: { latitude: number; longitude: number; name: string; address: string };
+      rowNumber?: number;
+    }>;
+  }): Promise<AppResult<BroadcastDuplicateRiskResult>> {
+    const templateRes = await this.getBroadcastTemplates();
+    if (!templateRes.success) return fail(templateRes.error);
+    const template = templateRes.data.find((item) => item.id === payload.templateId);
+    if (!template) return fail("Template tidak ditemukan");
+    const requiredVariableCount = Number(template.runtimeRequirements?.bodyVariableCount ?? template.variables?.length ?? 0);
+    const recipients: BroadcastRecipientInput[] = payload.contacts.map((contact) => {
+      const vars: Record<string, string> = { name: contact.name };
+      (contact.variables ?? []).slice(0, requiredVariableCount).forEach((value, index) => {
+        vars[`var${index + 1}`] = value;
+      });
+      return {
+        name: contact.name,
+        phone: contact.phone,
+        vars,
+        mediaUrl: contact.mediaUrl || "",
+        fileName: contact.fileName || "",
+        headerTextVariables: contact.headerTextVariables || [],
+        buttonValues: contact.buttonValues || [],
+        location: contact.location,
+        rowNumber: contact.rowNumber,
+      };
+    });
+    const res = await apiFetch<BroadcastDuplicateRiskResult>(`${API_PREFIX}/broadcasts/duplicate-risk`, {
+      method: "POST",
+      body: JSON.stringify({ templateId: payload.templateId, recipients }),
+    });
+    if (isApiFail(res)) return fail(res.error);
+    return ok(res.data);
+  },
+
+  async checkBroadcastPreflight(payload: {
+    numberId: string;
+    templateId: string;
+    contacts: Array<{
+      name: string;
+      phone: string;
+      variables?: string[];
+      mediaUrl?: string;
+      fileName?: string;
+      headerTextVariables?: string[];
+      buttonValues?: Array<{ index: number; type: "URL" | "COPY_CODE"; value: string }>;
+      location?: { latitude: number; longitude: number; name: string; address: string };
+      rowNumber?: number;
+    }>;
+  }): Promise<AppResult<BroadcastPreflightResult>> {
+    const templateRes = await this.getBroadcastTemplates();
+    if (!templateRes.success) return fail(templateRes.error);
+    const template = templateRes.data.find((item) => item.id === payload.templateId);
+    if (!template) return fail("Template tidak ditemukan");
+    const requiredVariableCount = Number(template.runtimeRequirements?.bodyVariableCount ?? template.variables?.length ?? 0);
+    const recipients: BroadcastRecipientInput[] = payload.contacts.map((contact) => {
+      const vars: Record<string, string> = { name: contact.name };
+      (contact.variables ?? []).slice(0, requiredVariableCount).forEach((value, index) => { vars[`var${index + 1}`] = value; });
+      return {
+        name: contact.name,
+        phone: contact.phone,
+        vars,
+        mediaUrl: contact.mediaUrl || "",
+        fileName: contact.fileName || "",
+        headerTextVariables: contact.headerTextVariables || [],
+        buttonValues: contact.buttonValues || [],
+        location: contact.location,
+        rowNumber: contact.rowNumber,
+      };
+    });
+    const res = await apiFetch<BroadcastPreflightResult>(`${API_PREFIX}/broadcasts/preflight`, {
+      method: "POST",
+      body: JSON.stringify({ numberId: payload.numberId, templateId: payload.templateId, recipients }),
+    });
     if (isApiFail(res)) return fail(res.error);
     return ok(res.data);
   },
@@ -1268,9 +1407,11 @@ export const api = {
     message: string;
     recipients: BroadcastRecipientInput[];
     scheduledAt?: string | null;
+    idempotencyKey?: string;
   }): Promise<AppResult<any>> {
     const res = await apiFetch<any>(`${API_PREFIX}/broadcasts`, {
       method: "POST",
+      headers: payload.idempotencyKey ? { "Idempotency-Key": payload.idempotencyKey } : undefined,
       body: JSON.stringify({
         title: payload.title,
         numberId: payload.numberId,
@@ -1278,6 +1419,7 @@ export const api = {
         mode: "text",
         recipients: payload.recipients,
         scheduledAt: payload.scheduledAt || null,
+        idempotencyKey: payload.idempotencyKey,
       }),
     });
 

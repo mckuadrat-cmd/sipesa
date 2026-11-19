@@ -30,6 +30,7 @@ export interface BroadcastDetailContext {
   delivered: number;
   read: number;
   failed: number;
+  failureSummary?: { code?: string | null; title?: string; source?: string; retry?: string; count?: number; sampled?: boolean } | null;
   cancelled: number;
   createdAt: string;
   scheduledAt?: string;
@@ -316,6 +317,7 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
           delivered: Number(b.delivered ?? 0),
           read: Number(b.read ?? 0),
           failed: Number(b.failed ?? b.totalFailed ?? 0),
+          failureSummary: b.failureSummary ?? null,
           cancelled: Number(b.cancelled ?? b.totalCancelled ?? 0),
           createdAt: b.createdAt ?? "",
           scheduledAt: b.scheduledAt,
@@ -827,7 +829,12 @@ export function BroadcastHistory({ onViewDetail }: BroadcastHistoryProps) {
                       </td>
 
                       <td className="px-3 py-3 text-red-600 text-xs text-center font-medium">
-                        {log.failed.toLocaleString()}
+                        <span className="block">{log.failed.toLocaleString()}</span>
+                        {log.failureSummary && (
+                          <span className="mt-1 block max-w-[150px] truncate text-[10px] font-normal text-red-700" title={`${log.failureSummary.code ?? "Tanpa kode"} · ${log.failureSummary.title ?? "Kegagalan"}`}>
+                            {log.failureSummary.code ?? "Tanpa kode"} · {log.failureSummary.title ?? "Kegagalan"}
+                          </span>
+                        )}
                       </td>
 
                       <td className="px-3 py-3 text-xs">

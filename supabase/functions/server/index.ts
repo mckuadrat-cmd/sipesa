@@ -5,6 +5,18 @@ import { logger } from "npm:hono/logger";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import bcrypt from "npm:bcryptjs";
 import { verifyMetaWebhookSignature } from "./meta-webhook-security.js";
+import {
+  evaluateSenderReadiness,
+  evaluateTemplateMetadataPolicy,
+  inspectMediaReference,
+  isMetaTemplateSendableStatus,
+} from "./preflight-utils.ts";
+import {
+  enforceBroadcastPreflight,
+  fingerprintBroadcastRequest,
+  normalizeIdempotencyKey,
+  resolveIdempotencyReplay,
+} from "./broadcast-create-guards.ts";
 
 // ===== Helpers =====
 function waStatusRank(status?: string | null): number {
@@ -61,7 +73,7 @@ app.use(
   "*",
   cors({
     origin: "*",
-    allowHeaders: ["Content-Type", "Authorization", "apikey", SESSION_HEADER, "x-worker-secret", SCHEDULER_HEADER],
+    allowHeaders: ["Content-Type", "Authorization", "apikey", SESSION_HEADER, "Idempotency-Key", "x-worker-secret", SCHEDULER_HEADER],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     exposeHeaders: [SESSION_HEADER],
   }),
@@ -297,7 +309,6 @@ function getTemplateSendRequirements(template: any) {
   };
 }
 
-const TEMPLATE_SENDABLE_STATUSES = new Set(["approved"]);
 const TEMPLATE_EDITABLE_META_STATUSES = new Set(["approved", "rejected", "paused"]);
 const TEMPLATE_CATEGORIES = new Set(["marketing", "utility", "authentication"]);
 const TEMPLATE_COMPONENT_TYPES = new Set(["HEADER", "BODY", "FOOTER", "BUTTONS", "CAROUSEL"]);
@@ -923,8 +934,10 @@ function validateTemplatePayload(body: any) {
 function getTemplateSendability(template: any, numberRow: any) {
   const reasons: string[] = [];
   const status = normalizeTemplateStatus(template?.status);
+  const category = String(template?.category ?? "").trim().toLowerCase();
   if (!template) reasons.push("Template tidak ditemukan");
-  if (!TEMPLATE_SENDABLE_STATUSES.has(status)) reasons.push(`Template berstatus ${status} dan tidak dapat dikirim`);
+  if (!TEMPLATE_CATEGORIES.has(category)) reasons.push("Kategori resmi template belum tersedia");
+  if (!isMetaTemplateSendableStatus(status)) reasons.push(`Template berstatus ${status} dan tidak dapat dikirim`);
   if (template?.deleted_at || ["paused", "disabled", "deleted", "missing"].includes(status)) reasons.push("Template tidak aktif");
   if (!template?.waba_id) reasons.push("Kepemilikan WABA template belum terselesaikan; lakukan rekonsiliasi manual");
   if (!numberRow?.waba_id) reasons.push("Nomor pengirim belum memiliki WABA");
@@ -1133,6 +1146,115 @@ function parseTemplateRecipientPayload(raw: unknown) {
   }
 }
 
+function canonicalizeBroadcastPayload(value: any): any {
+  if (Array.isArray(value)) return value.map(canonicalizeBroadcastPayload);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalizeBroadcastPayload(item)]),
+    );
+  }
+  return value ?? null;
+}
+
+function templateRecipientIdentity(payload: any, requiredVariableCount: number) {
+  const parsed = parseTemplateRecipientPayload(payload) ?? payload ?? {};
+  const bodyVariables = Array.from(
+    { length: Math.max(0, requiredVariableCount) },
+    (_, index) => String(parsed?.bodyVariables?.[index] ?? ""),
+  );
+  const buttonValues = (Array.isArray(parsed?.buttonValues) ? parsed.buttonValues : [])
+    .map((button: any) => ({
+      index: Number(button?.index),
+      type: String(button?.type ?? "").toUpperCase(),
+      value: String(button?.value ?? ""),
+    }))
+    .sort((left: any, right: any) => left.index - right.index || left.type.localeCompare(right.type));
+
+  return JSON.stringify(canonicalizeBroadcastPayload({
+    bodyVariables,
+    headerTextVariables: (Array.isArray(parsed?.headerTextVariables) ? parsed.headerTextVariables : []).map((value: any) => String(value ?? "")),
+    buttonValues,
+    location: parsed?.location
+      ? {
+          latitude: Number(parsed.location.latitude),
+          longitude: Number(parsed.location.longitude),
+          name: String(parsed.location.name ?? ""),
+          address: String(parsed.location.address ?? ""),
+        }
+      : null,
+    mediaUrl: String(parsed?.mediaUrl ?? ""),
+    fileName: String(parsed?.fileName ?? ""),
+  }));
+}
+
+async function findHistoricalTemplateDuplicateRisks(
+  supa: any,
+  orgId: string,
+  templateId: string,
+  requiredVariableCount: number,
+  prepared: Array<{ inputIndex: number; rowNumber: number; phone: string; identity: string }>,
+) {
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { data: broadcasts, error: broadcastsError } = await supa
+    .from("wa_broadcasts")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("template_id", templateId)
+    .gte("created_at", cutoff)
+    .in("status", ["queued", "sending", "completed", "paused"]);
+  if (broadcastsError) throw broadcastsError;
+
+  const broadcastIds = (broadcasts ?? []).map((row: any) => String(row.id));
+  const phoneSet = [...new Set(prepared.map((item) => item.phone).filter(Boolean))];
+  const historical: any[] = [];
+  for (const broadcastBatch of chunkValues(broadcastIds, 50)) {
+    for (const phoneBatch of chunkValues(phoneSet, 100)) {
+      const { data: rows, error: rowsError } = await supa
+        .from("wa_broadcast_recipients")
+        .select("phone_e164, message, status, broadcast_id, created_at")
+        .eq("org_id", orgId)
+        .gte("created_at", cutoff)
+        .in("broadcast_id", broadcastBatch)
+        .in("phone_e164", phoneBatch)
+        // Failed rows remain relevant: historical rows may be legacy records
+        // without structured source data, or ambiguous attempts where Meta may
+        // already have accepted the request. The UI warns; it never auto-blocks.
+        .in("status", ["pending", "processing", "sent", "delivered", "read", "failed"]);
+      if (rowsError) throw rowsError;
+      historical.push(...(rows ?? []));
+    }
+  }
+
+  const historicalByKey = new Map<string, any[]>();
+  historical.forEach((row: any) => {
+    const identity = templateRecipientIdentity(row.message, requiredVariableCount);
+    const key = `${normalizePhone(row.phone_e164)}\n${identity}`;
+    const matches = historicalByKey.get(key) ?? [];
+    matches.push(row);
+    historicalByKey.set(key, matches);
+  });
+
+  return prepared.flatMap((item) => {
+    const matches = historicalByKey.get(`${item.phone}\n${item.identity}`) ?? [];
+    if (!matches.length) return [];
+    const statusCounts = matches.reduce((counts: Record<string, number>, row: any) => {
+      const status = String(row.status ?? "unknown");
+      counts[status] = (counts[status] ?? 0) + 1;
+      return counts;
+    }, {});
+    const latestAt = matches.map((row: any) => String(row.created_at ?? "")).sort().at(-1) ?? null;
+    return [{
+      inputIndex: item.inputIndex,
+      rowNumber: item.rowNumber,
+      matchCount: matches.length,
+      statusCounts,
+      latestAt,
+    }];
+  });
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -1318,6 +1440,117 @@ async function parseMetaGraphResponse(response: Response) {
   }
 }
 
+type FailureSource = "META_WEBHOOK" | "META_SEND_RESPONSE" | "SIPESA_VALIDATION" | "SIPESA_WORKER" | "BILLING" | "DATABASE" | "AMBIGUOUS";
+type RetryClassification = "RETRYABLE" | "NON_RETRYABLE" | "REVIEW_REQUIRED";
+
+class StructuredSendError extends Error {
+  failure: any;
+  constructor(message: string, failure: any) {
+    super(message);
+    this.name = "StructuredSendError";
+    this.failure = failure;
+  }
+}
+
+function diagnosticString(value: unknown, max = 1500) {
+  const normalized = typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+  return normalized ? normalized.slice(0, max) : null;
+}
+
+function classifyMetaRetry(code: string | null, httpStatus: number | null): RetryClassification {
+  if (code && ["130472"].includes(code)) return "NON_RETRYABLE";
+  if (code && ["131026", "131049", "131053"].includes(code)) return "REVIEW_REQUIRED";
+  if (httpStatus === 429 || (httpStatus !== null && httpStatus >= 500)) return "RETRYABLE";
+  return "REVIEW_REQUIRED";
+}
+
+function extractStructuredFailure(input: any, context: {
+  source: FailureSource;
+  stage: string;
+  httpStatus?: number | null;
+  acceptedByMeta?: boolean | null;
+  fallbackMessage?: string;
+}) {
+  const error = input?.error && typeof input.error === "object"
+    ? input.error
+    : Array.isArray(input?.errors) && input.errors[0] && typeof input.errors[0] === "object"
+      ? input.errors[0]
+      : input && typeof input === "object" ? input : {};
+  const code = diagnosticString(error?.code, 80);
+  const httpStatus = Number.isFinite(Number(context.httpStatus)) ? Number(context.httpStatus) : null;
+  const title = diagnosticString(error?.title, 300);
+  const providerMessage = diagnosticString(error?.message, 1000);
+  const details = diagnosticString(error?.error_data?.details, 1500);
+  const fallback = diagnosticString(context.fallbackMessage, 1000) ?? "Pengiriman gagal";
+  return {
+    error_code: code,
+    error_subcode: diagnosticString(error?.error_subcode, 80),
+    error_title: title,
+    error_message: providerMessage ?? title ?? details ?? fallback,
+    error_details: details,
+    error_type: diagnosticString(error?.type, 120),
+    error_fbtrace_id: diagnosticString(error?.fbtrace_id, 200),
+    error_http_status: httpStatus,
+    failure_stage: context.stage,
+    failure_source: context.source,
+    retry_classification: classifyMetaRetry(code, httpStatus),
+    accepted_by_meta: context.acceptedByMeta ?? null,
+    error_payload: input && typeof input === "object" ? input : null,
+  };
+}
+
+function failureStoragePatch(failure: any) {
+  return {
+    error_code: failure?.error_code ?? null,
+    error_subcode: failure?.error_subcode ?? null,
+    error_title: failure?.error_title ?? null,
+    error_message: failure?.error_message ?? null,
+    error_details: failure?.error_details ?? null,
+    error_type: failure?.error_type ?? null,
+    error_fbtrace_id: failure?.error_fbtrace_id ?? null,
+    error_http_status: failure?.error_http_status ?? null,
+    failure_stage: failure?.failure_stage ?? "unknown",
+    failure_source: failure?.failure_source ?? "AMBIGUOUS",
+    retry_classification: failure?.retry_classification ?? "REVIEW_REQUIRED",
+  };
+}
+
+function deliveryFailureDto(recipient: any, message: any) {
+  const rawPayload = message?.meta_status_payload ?? recipient?.error_payload ?? null;
+  const parsed = extractStructuredFailure(rawPayload, {
+    source: rawPayload?.status === "failed" ? "META_WEBHOOK" : "AMBIGUOUS",
+    stage: "unknown",
+    fallbackMessage: recipient?.error ?? message?.error ?? "Pengiriman gagal",
+  });
+  const code = diagnosticString(recipient?.error_code ?? message?.error_code ?? parsed.error_code, 80);
+  const known: Record<string, { title: string; message: string; action: string; retry: RetryClassification }> = {
+    "131026": { title: "Message undeliverable", message: "Meta tidak berhasil menyampaikan pesan kepada penerima.", action: "Periksa nomor dan riwayat penerima; jangan retry massal tanpa evaluasi.", retry: "REVIEW_REQUIRED" },
+    "130472": { title: "User's number is part of an experiment", message: "Meta membatasi pengiriman karena eksperimen platform.", action: "Jangan melakukan retry otomatis.", retry: "NON_RETRYABLE" },
+    "131049": { title: "Healthy ecosystem engagement", message: "Meta tidak mengirim pesan ini untuk menjaga kualitas interaksi ekosistem.", action: "Evaluasi frekuensi dan relevansi pesan.", retry: "REVIEW_REQUIRED" },
+    "131053": { title: "Media upload error", message: "Meta tidak dapat mengambil atau memproses media pesan.", action: "Perbaiki akses, tipe, atau ukuran media sebelum retry.", retry: "REVIEW_REQUIRED" },
+  };
+  const guidance = code ? known[code] : null;
+  const source = diagnosticString(recipient?.failure_source ?? message?.failure_source ?? parsed.failure_source, 80) ?? "AMBIGUOUS";
+  const retry = diagnosticString(recipient?.retry_classification ?? message?.retry_classification, 80)
+    ?? guidance?.retry
+    ?? "REVIEW_REQUIRED";
+  return {
+    code,
+    subcode: diagnosticString(recipient?.error_subcode ?? message?.error_subcode ?? parsed.error_subcode, 80),
+    title: diagnosticString(recipient?.error_title ?? message?.error_title, 300) ?? guidance?.title ?? parsed.error_title ?? "Kegagalan pengiriman",
+    userMessage: guidance?.message ?? diagnosticString(recipient?.error_message ?? message?.error_message ?? recipient?.error ?? message?.error, 1000) ?? parsed.error_message,
+    technicalDetails: diagnosticString(recipient?.error_details ?? message?.error_details ?? parsed.error_details, 1500),
+    type: diagnosticString(recipient?.error_type ?? message?.error_type ?? parsed.error_type, 120),
+    fbtraceId: diagnosticString(recipient?.error_fbtrace_id ?? message?.error_fbtrace_id ?? parsed.error_fbtrace_id, 200),
+    httpStatus: Number.isFinite(Number(recipient?.error_http_status ?? message?.error_http_status)) ? Number(recipient?.error_http_status ?? message?.error_http_status) : null,
+    stage: diagnosticString(recipient?.failure_stage ?? message?.failure_stage, 100) ?? parsed.failure_stage,
+    source,
+    retry,
+    action: guidance?.action ?? (retry === "NON_RETRYABLE" ? "Perbaiki penyebab sebelum mengirim kembali." : "Periksa detail teknis sebelum menentukan retry."),
+    acceptedByMeta: source === "META_WEBHOOK" ? true : source === "META_SEND_RESPONSE" || source === "SIPESA_VALIDATION" ? false : null,
+  };
+}
+
 function logMetaUploadFailure(step: string, response: Response, data: any, malformed = false) {
   const graphError = data?.error && typeof data.error === "object" ? data.error : {};
   console.error("Meta media sample upload failed", {
@@ -1355,15 +1588,28 @@ function sleep(ms: number) {
 
 async function metaFetch(path: string, accessToken: string, init?: RequestInit) {
   const url = `https://graph.facebook.com/${graphVersion()}/${path}`;
-
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-      ...(init?.headers || {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+        ...(init?.headers || {}),
+      },
+    });
+  } catch (networkError) {
+    const message = networkError instanceof Error ? networkError.message : "Meta network request failed";
+    throw new StructuredSendError(message, {
+      ...extractStructuredFailure(null, {
+        source: "AMBIGUOUS",
+        stage: "meta_send",
+        acceptedByMeta: null,
+        fallbackMessage: message,
+      }),
+      retry_classification: "REVIEW_REQUIRED",
+    });
+  }
 
   const raw = await res.text();
   let data: any = null;
@@ -1375,11 +1621,14 @@ async function metaFetch(path: string, accessToken: string, init?: RequestInit) 
   }
 
   if (!res.ok) {
-    const msg =
-      data?.error?.message ||
-      data?.message ||
-      `Meta API error ${res.status}`;
-    throw new Error(msg);
+    const failure = extractStructuredFailure(data, {
+      source: "META_SEND_RESPONSE",
+      stage: "meta_send",
+      httpStatus: res.status,
+      acceptedByMeta: false,
+      fallbackMessage: data?.message || `Meta API error ${res.status}`,
+    });
+    throw new StructuredSendError(failure.error_message, failure);
   }
 
   return data;
@@ -1694,6 +1943,10 @@ async function syncMetaTemplatesForNumber(params: {
 
   for (const tpl of items) {
     const rawStatus = String(tpl.status ?? "UNKNOWN");
+    const metaCategory = String(tpl.category ?? "").trim().toLowerCase();
+    if (!TEMPLATE_CATEGORIES.has(metaCategory)) {
+      throw new Error(`Meta tidak mengembalikan kategori resmi untuk template ${String(tpl.name ?? tpl.id ?? "unknown")}`);
+    }
     const metaTemplateId = String(tpl.id ?? "").trim() || null;
     if (metaTemplateId) seenMetaIds.add(metaTemplateId);
     const syncedComponents = (Array.isArray(tpl.components) ? tpl.components : []).map((component: any) => {
@@ -1710,7 +1963,9 @@ async function syncMetaTemplatesForNumber(params: {
       org_id: params.orgId,
       waba_id: params.wabaId,
       name: String(tpl.name ?? "").trim().toLowerCase(),
-      category: String(tpl.category ?? "marketing").toLowerCase(),
+      category: metaCategory,
+      category_source: "meta",
+      category_synced_at: syncedAt,
       language: String(tpl.language ?? "id"),
       status: normalizeTemplateStatus(rawStatus),
       components: syncedComponents,
@@ -1780,6 +2035,43 @@ async function syncMetaTemplatesForNumber(params: {
     total: items.length,
     templates: items,
   };
+}
+
+async function reconcileMetaTemplateCategory(params: {
+  orgId: string;
+  wabaId: string;
+  metaTemplateId: string;
+  accessToken: string;
+}) {
+  const url = new URL(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(params.metaTemplateId)}`);
+  url.searchParams.set("fields", "id,name,status,category,language,components,quality_score,rejected_reason,reason,previous_category");
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${params.accessToken}` } });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json?.error?.message || "Meta gagal merekonsiliasi kategori template");
+  const category = String(json?.category ?? "").trim().toLowerCase();
+  if (!TEMPLATE_CATEGORIES.has(category)) throw new Error("Kategori resmi Meta tidak tersedia");
+  const syncedAt = nowIso();
+  const { error } = await sb()
+    .from("wa_templates")
+    .update({
+      category,
+      category_source: "meta",
+      category_synced_at: syncedAt,
+      status: normalizeTemplateStatus(json?.status),
+      meta_status_raw: String(json?.status ?? "UNKNOWN"),
+      components: Array.isArray(json?.components) ? json.components : [],
+      previous_category: json?.previous_category ?? null,
+      quality_rating: json?.quality_score?.score ?? json?.quality_score ?? null,
+      rejection_reason: normalizeTemplateStatus(json?.status) === "rejected"
+        ? normalizeMetaRejectionReason(json?.rejected_reason ?? json?.reason)
+        : null,
+      synced_at: syncedAt,
+      updated_at: syncedAt,
+    })
+    .eq("org_id", params.orgId)
+    .eq("waba_id", params.wabaId)
+    .eq("meta_template_id", params.metaTemplateId);
+  if (error) throw error;
 }
 
 // ===== Auth middleware =====
@@ -3174,7 +3466,6 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
 
     if (numberErr) return c.json(jsonFail(numberErr.message), 500);
     if (!numberRow) return c.json(jsonFail("Nomor tidak ditemukan"), 404);
-
     let authoritativeTemplate: any = null;
     if (isTemplate) {
       if (!templateId) return c.json(jsonFail("templateId wajib untuk pengiriman template"), 400);
@@ -3443,6 +3734,12 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
           .update({
             status: "failed",
             error: billingMessage,
+            error_code: insufficientBalance ? "INSUFFICIENT_BALANCE" : "BILLING_DEBIT_FAILED",
+            error_title: insufficientBalance ? "Saldo token tidak cukup" : "Billing gagal",
+            error_message: billingMessage,
+            failure_stage: "token_debit",
+            failure_source: "BILLING",
+            retry_classification: insufficientBalance ? "NON_RETRYABLE" : "REVIEW_REQUIRED",
             manual_billing_state: billingState,
             manual_billing_ledger_id: compensationLedgerId,
           })
@@ -3502,7 +3799,10 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
       metaRes = isTemplate && templateName
         ? await (() => {
             const runtime = validateTemplateRuntimeInput(authoritativeTemplate, body);
-            if (!runtime.valid) throw new Error(runtime.errors[0]);
+            if (!runtime.valid) throw new StructuredSendError(runtime.errors[0], {
+              ...extractStructuredFailure(null, { source: "SIPESA_VALIDATION", stage: "manual_preflight", acceptedByMeta: false, fallbackMessage: runtime.errors[0] }),
+              retry_classification: "NON_RETRYABLE",
+            });
             return sendMetaTemplateMessage({
             phoneNumberId: numberRow.phone_number_id,
             accessToken: numberRow.access_token,
@@ -3522,15 +3822,20 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
             text: content,
           });
 
-      if (!metaRes?.messages?.[0]?.id) {
-        throw new Error("Meta tidak mengembalikan message_id");
-      }
+      if (!metaRes?.messages?.[0]?.id) throw new StructuredSendError("Meta tidak mengembalikan message_id", {
+        ...extractStructuredFailure(metaRes, { source: "AMBIGUOUS", stage: "meta_acknowledgement", acceptedByMeta: null, fallbackMessage: "Meta tidak mengembalikan message_id" }),
+        retry_classification: "REVIEW_REQUIRED",
+      });
     } catch (metaError) {
       const message = metaError instanceof Error ? metaError.message : String(metaError);
+      const failure = metaError instanceof StructuredSendError
+        ? metaError.failure
+        : extractStructuredFailure(null, { source: "AMBIGUOUS", stage: "meta_send", acceptedByMeta: null, fallbackMessage: message });
+      const acceptanceUnknown = failure?.failure_source === "AMBIGUOUS";
       let billingState = requiresBilling ? "compensation_pending" : "not_required";
       let refundLedgerId: string | null = null;
 
-      if (requiresBilling) {
+      if (requiresBilling && !acceptanceUnknown) {
         try {
           const refundResult = await refundPaidSend(msg.id);
           billingState = "refunded";
@@ -3550,6 +3855,8 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
         .update({
           status: "failed",
           error: message,
+          ...failureStoragePatch(failure),
+          meta_status_payload: failure?.error_payload ?? null,
           manual_billing_state: billingState,
           manual_billing_ledger_id: refundLedgerId ?? debitResult?.ledger_id ?? null,
         })
@@ -3557,12 +3864,14 @@ app.post(`${API_PREFIX}/numbers/:numberId/contacts/:contactId/messages`, require
 
       return c.json({
         success: false,
-        error: billingState === "compensation_pending"
+        error: acceptanceUnknown
+          ? "Status penerimaan Meta belum pasti; jangan kirim ulang sebelum rekonsiliasi"
+          : billingState === "compensation_pending"
           ? "Meta menolak pengiriman dan kompensasi billing perlu rekonsiliasi"
           : message,
-        code: billingState === "compensation_pending" ? "COMPENSATION_PENDING" : "META_REJECTED",
-        retryable: billingState === "compensation_pending",
-      }, billingState === "compensation_pending" ? 503 : 400);
+        code: acceptanceUnknown ? "DELIVERY_STATUS_UNKNOWN" : billingState === "compensation_pending" ? "COMPENSATION_PENDING" : "META_REJECTED",
+        retryable: acceptanceUnknown ? false : billingState === "compensation_pending",
+      }, acceptanceUnknown || billingState === "compensation_pending" ? 503 : 400);
     }
 
     const metaMessageId = metaRes.messages[0].id;
@@ -4029,7 +4338,9 @@ app.get(`${API_PREFIX}/templates`, requireAuth, async (c) => {
       return {
         id: row.id,
         name: row.name,
-        category: row.category ?? "marketing",
+        category: row.category ?? "unknown",
+        categorySource: row.category_source ?? (row.meta_template_id ? "unknown" : "local"),
+        categorySyncedAt: row.category_synced_at ?? null,
         language: row.language ?? "id",
         status: normalizeTemplateStatus(row.status),
         components: row.components ?? [],
@@ -4414,6 +4725,8 @@ app.put(`${API_PREFIX}/templates/:id`, requireAuth, requireOrgAdmin, async (c) =
           ? normalizeTemplateStatus(body.__metaResponseStatus)
           : normalizeTemplateStatus(existing.status || "draft"),
         meta_status_raw: body.__metaResponseStatus ?? existing.meta_status_raw ?? null,
+        category_source: existing.meta_template_id ? "needs_sync" : "local",
+        category_synced_at: existing.meta_template_id ? null : existing.category_synced_at ?? null,
         updated_at: nowIso(),
       })
       .eq("org_id", user.org_id)
@@ -4619,9 +4932,11 @@ app.post(`${API_PREFIX}/templates/:id/push-meta`, requireAuth, requireOrgAdmin, 
     }
     const formattedComponents = formatComponentsForMeta(rawComponents);
 
+    const pushCategory = String(tpl.category ?? "").trim().toLowerCase();
+    if (!TEMPLATE_CATEGORIES.has(pushCategory)) return c.json(jsonFail("Kategori template lokal tidak valid; sinkronisasi diperlukan"), 409);
     const payload = {
       name: tpl.name,
-      category: String(tpl.category ?? "marketing").toUpperCase(),
+      category: pushCategory.toUpperCase(),
       language: tpl.language || "id",
       components: formattedComponents,
     };
@@ -4650,6 +4965,8 @@ app.post(`${API_PREFIX}/templates/:id/push-meta`, requireAuth, requireOrgAdmin, 
         meta_template_id: json?.id ?? null,
         status: normalizeTemplateStatus(json?.status ?? "pending"),
         meta_status_raw: String(json?.status ?? "PENDING"),
+        category_source: "needs_sync",
+        category_synced_at: null,
         synced_at: nowIso(),
         updated_at: nowIso(),
       })
@@ -5048,6 +5365,33 @@ app.get(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
 
     if (error) return c.json(jsonFail(error.message), 500);
 
+    const pageBroadcastIds = (data ?? []).map((row: any) => String(row.id));
+    const failureSummaryByBroadcast = new Map<string, any>();
+    if (pageBroadcastIds.length > 0) {
+      const { data: failedRows, error: failedRowsError } = await supa
+        .from("wa_broadcast_recipients")
+        .select("broadcast_id, error, error_code, error_subcode, error_title, error_message, error_details, error_type, error_fbtrace_id, error_http_status, failure_stage, failure_source, retry_classification, error_payload, wa_messages(error, error_code, error_subcode, error_title, error_message, error_details, error_type, error_fbtrace_id, error_http_status, failure_stage, failure_source, retry_classification, meta_status_payload)")
+        .eq("org_id", user.org_id)
+        .eq("status", "failed")
+        .in("broadcast_id", pageBroadcastIds)
+        .limit(1000);
+      if (failedRowsError) return c.json(jsonFail(failedRowsError.message), 500);
+      const counts = new Map<string, Map<string, { count: number; failure: any }>>();
+      for (const row of failedRows ?? []) {
+        const failure = deliveryFailureDto(row, row.wa_messages);
+        const key = `${failure.code ?? "NO_CODE"}|${failure.source}|${failure.retry}`;
+        const broadcastCounts = counts.get(String(row.broadcast_id)) ?? new Map();
+        const current = broadcastCounts.get(key) ?? { count: 0, failure };
+        current.count += 1;
+        broadcastCounts.set(key, current);
+        counts.set(String(row.broadcast_id), broadcastCounts);
+      }
+      for (const [broadcastId, broadcastCounts] of counts) {
+        const top = [...broadcastCounts.values()].sort((left, right) => right.count - left.count)[0];
+        if (top) failureSummaryByBroadcast.set(broadcastId, { ...top.failure, count: top.count, sampled: (failedRows ?? []).length >= 1000 });
+      }
+    }
+
     const mapped = (data ?? []).map((r: any) => {
       const waNumObj = r.wa_numbers;
       const phone = waNumObj?.phone_e164 ? normalizePhone(waNumObj.phone_e164) : "";
@@ -5075,6 +5419,7 @@ app.get(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
         templateId: r.template_id ?? null,
         numberId: r.number_id,
         numberName: senderText,
+        failureSummary: failureSummaryByBroadcast.get(String(r.id)) ?? null,
       };
     });
 
@@ -5099,6 +5444,268 @@ app.get(`${API_PREFIX}/broadcasts`, requireAuth, async (c) => {
   }
 });
 
+async function evaluateBroadcastPreflightCore(supa: any, user: any, body: any) {
+    const numberId = String(body.numberId ?? "").trim();
+    const mode = String(body.mode ?? (body.templateId ? "template" : "text")).trim();
+    const templateId = mode === "template" ? String(body.templateId ?? "").trim() : "";
+    const recipients = Array.isArray(body.recipients) ? body.recipients : [];
+    const [numberResult, templateResult, balanceResult, activeResult] = await Promise.all([
+      supa.from("wa_numbers").select("id, org_id, is_active, phone_number_id, access_token, waba_id").eq("id", numberId).eq("org_id", user.org_id).maybeSingle(),
+      mode === "template"
+        ? supa.from("wa_templates").select("*").eq("id", templateId).eq("org_id", user.org_id).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+      supa.from("billing_balance").select("tokens_balance").eq("org_id", user.org_id).maybeSingle(),
+      supa.from("wa_broadcasts").select("id", { count: "exact", head: true }).eq("org_id", user.org_id).in("status", ["queued", "sending", "paused"]),
+    ]);
+    if (numberResult.error) throw numberResult.error;
+    if (templateResult.error) throw templateResult.error;
+    if (balanceResult.error) throw balanceResult.error;
+    if (activeResult.error) throw activeResult.error;
+
+    const blockers: any[] = [];
+    const warnings: any[] = [];
+    const information: any[] = [];
+    const numberRow = numberResult.data;
+    let template = templateResult.data;
+    if (template?.meta_template_id && numberRow?.access_token && numberRow?.waba_id) {
+      const initialMetadataPolicy = evaluateTemplateMetadataPolicy(template);
+      if (initialMetadataPolicy.shouldRefresh) {
+        try {
+          await reconcileMetaTemplateCategory({
+            orgId: user.org_id,
+            wabaId: String(numberRow.waba_id),
+            metaTemplateId: String(template.meta_template_id),
+            accessToken: String(numberRow.access_token),
+          });
+          const refreshed = await supa.from("wa_templates").select("*").eq("id", templateId).eq("org_id", user.org_id).maybeSingle();
+          if (!refreshed.error && refreshed.data) template = refreshed.data;
+        } catch (refreshError) {
+          warnings.push({
+            code: "TEMPLATE_REFRESH_FAILED",
+            scope: "template",
+            message: "Meta tidak dapat dihubungi untuk refresh; metadata terakhir yang terpercaya tetap digunakan bila tersedia.",
+          });
+        }
+      }
+    }
+    blockers.push(...evaluateSenderReadiness(numberRow));
+    if (numberRow?.access_token && numberRow?.phone_number_id) {
+      try {
+        await testMetaNumber(String(numberRow.access_token), String(numberRow.phone_number_id));
+        information.push({ code: "SENDER_META_VERIFIED", scope: "sender", message: "Sender berhasil diverifikasi secara read-only ke Meta." });
+      } catch (senderCheckError) {
+        const failure = senderCheckError instanceof StructuredSendError ? senderCheckError.failure : null;
+        const httpStatus = Number(failure?.error_http_status ?? 0);
+        const issue = {
+          code: "SENDER_META_UNVERIFIED",
+          scope: "sender",
+          message: "Koneksi atau permission sender tidak dapat diverifikasi ke Meta.",
+        };
+        if ([400, 401, 403].includes(httpStatus)) blockers.push(issue);
+        else warnings.push(issue);
+      }
+    }
+
+    if (mode === "template" && !template) blockers.push({ code: "TEMPLATE_NOT_FOUND", scope: "template", message: "Template tidak ditemukan." });
+    if (mode === "template" && template && numberRow) {
+      for (const reason of getTemplateSendability(template, numberRow).reasons) {
+        blockers.push({ code: "TEMPLATE_NOT_SENDABLE", scope: "template", message: reason });
+      }
+      if (!template.meta_template_id) blockers.push({ code: "TEMPLATE_LOCAL_DRAFT", scope: "template", message: "Template belum memiliki identitas resmi Meta." });
+      const metadataPolicy = evaluateTemplateMetadataPolicy(template);
+      blockers.push(...metadataPolicy.blockers);
+      warnings.push(...metadataPolicy.warnings);
+    }
+
+    const requirements = getTemplateSendRequirements(template);
+    const seenPhones = new Map<string, number>();
+    const seenIdentities = new Map<string, Set<string>>();
+    const warnedMediaUrls = new Set<string>();
+    const preparedForHistory: any[] = [];
+    let validRecipients = 0;
+    let repeatedRows = 0;
+    let identicalRows = 0;
+    let mediaRows = 0;
+    recipients.forEach((raw: any, index: number) => {
+      const rowNumber = Number(raw?.rowNumber ?? index + 1);
+      const phoneValidation = validatePhoneDestination(raw?.phone);
+      const vars = raw?.vars && typeof raw.vars === "object" && !Array.isArray(raw.vars) ? raw.vars : {};
+      const bodyVariables = Array.from({ length: requirements.bodyVariableCount }, (_, variableIndex) => String(vars[`var${variableIndex + 1}`] ?? ""));
+      const mediaUrl = String(raw?.mediaUrl ?? "").trim();
+      const runtime = mode === "template"
+        ? validateTemplateRuntimeInput(template, {
+            bodyVariables,
+            headerTextVariables: raw?.headerTextVariables,
+            buttonValues: raw?.buttonValues,
+            location: raw?.location,
+            mediaUrl,
+            fileName: raw?.fileName,
+            headerMedia: mediaUrl ? { type: requirements.mediaType, link: mediaUrl, filename: raw?.fileName } : null,
+          })
+        : { errors: [] };
+      const rowErrors = [
+        ...(!phoneValidation.valid ? [String(phoneValidation.reason)] : []),
+        ...(mode === "template" && (!raw?.vars || typeof raw.vars !== "object" || Array.isArray(raw.vars))
+          ? ["Data variable template malformed"]
+          : []),
+        ...runtime.errors,
+      ];
+      if (mode === "template" && mediaUrl) {
+        mediaRows += 1;
+        const mediaInspection = inspectMediaReference(mediaUrl);
+        rowErrors.push(...mediaInspection.blockers);
+        if (mediaInspection.reachabilityWarning && !warnedMediaUrls.has(mediaUrl)) {
+          warnedMediaUrls.add(mediaUrl);
+          warnings.push({ code: "MEDIA_REACHABILITY_UNVERIFIED", scope: "media", rowNumber, message: "Aksesibilitas URL media belum dapat dijamin tanpa fetch aman saat runtime." });
+        }
+      }
+      if (rowErrors.length) {
+        blockers.push({ code: "RECIPIENT_INVALID", scope: "recipient", rowNumber, message: rowErrors.join("; ") });
+        return;
+      }
+      validRecipients += 1;
+      const phone = phoneValidation.normalized;
+      const identity = templateRecipientIdentity({
+        bodyVariables,
+        headerTextVariables: raw?.headerTextVariables,
+        buttonValues: raw?.buttonValues,
+        location: raw?.location,
+        mediaUrl,
+        fileName: raw?.fileName,
+      }, requirements.bodyVariableCount);
+      if (seenPhones.has(phone)) repeatedRows += 1;
+      seenPhones.set(phone, (seenPhones.get(phone) ?? 0) + 1);
+      const identities = seenIdentities.get(phone) ?? new Set<string>();
+      if (identities.has(identity)) identicalRows += 1;
+      identities.add(identity);
+      seenIdentities.set(phone, identities);
+      preparedForHistory.push({ inputIndex: index, rowNumber, phone, identity });
+    });
+
+    const duplicateRisks = mode === "template" && template
+      ? await findHistoricalTemplateDuplicateRisks(supa, user.org_id, templateId, requirements.bodyVariableCount, preparedForHistory)
+      : [];
+    if (duplicateRisks.length) warnings.push({ code: "IDENTICAL_MESSAGE_24H", scope: "history", message: `${duplicateRisks.length} baris identik pernah dikirim atau masih antre dalam 24 jam terakhir.` });
+    if ((activeResult.count ?? 0) > 0) warnings.push({ code: "CONCURRENT_BROADCAST", scope: "billing", message: `${activeResult.count} broadcast organisasi masih aktif; saldo dapat berubah sebelum campaign selesai.` });
+
+    const balance = Number(balanceResult.data?.tokens_balance ?? 0);
+    if (balance < validRecipients) blockers.push({ code: "INSUFFICIENT_BALANCE", scope: "billing", message: `Saldo ${balance} token tidak cukup untuk ${validRecipients} pesan valid.` });
+    information.push({ code: "REPEATED_NUMBERS_ALLOWED", scope: "recipient", message: "Nomor berulang tetap dihitung dan dikirim per baris." });
+
+    const result = {
+      canProceed: blockers.length === 0,
+      requiresConfirmation: warnings.length > 0,
+      blockers,
+      warnings,
+      information,
+      duplicateRisks,
+      summary: {
+        totalRows: recipients.length,
+        uniqueNumbers: seenPhones.size,
+        validRecipients,
+        repeatedRows,
+        identicalRows,
+        criticalErrors: blockers.length,
+        warningCount: warnings.length,
+        estimatedTokens: validRecipients,
+        balance,
+        templateStatus: mode === "template" ? (template ? normalizeTemplateStatus(template.status) : "missing") : "not_required",
+        templateCategory: mode === "template" ? template?.category ?? "unknown" : "not_required",
+        templateCategorySource: mode === "template" ? template?.category_source ?? (template?.meta_template_id ? "unknown" : "local") : "not_required",
+        senderStatus: numberRow && blockers.every((item) => item.scope !== "sender") ? "ready" : "blocked",
+        mediaStatus: blockers.some((item) => item.scope === "media" || (item.scope === "recipient" && String(item.message).toLowerCase().includes("media"))) ? "blocked" : mediaRows ? "warning" : "not_required",
+      },
+    };
+
+    return { result, numberRow, template, requirements, balance };
+}
+
+app.post(`${API_PREFIX}/broadcasts/preflight`, requireAuth, requireOrgAdmin, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const body = await c.req.json();
+    const numberId = String(body.numberId ?? "").trim();
+    const templateId = String(body.templateId ?? "").trim();
+    const recipients = Array.isArray(body.recipients) ? body.recipients : [];
+    if (!numberId || !templateId) return c.json(jsonFail("numberId dan templateId wajib"), 400);
+    if (!recipients.length || recipients.length > BROADCAST_MAX_RECIPIENTS) return c.json(jsonFail("Jumlah recipients tidak valid"), 400);
+
+    const evaluation = await evaluateBroadcastPreflightCore(sb(), user, {
+      ...body,
+      mode: "template",
+      numberId,
+      templateId,
+      recipients,
+    });
+    return c.json(jsonOk(evaluation.result));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
+app.post(`${API_PREFIX}/broadcasts/duplicate-risk`, requireAuth, requireOrgAdmin, async (c) => {
+  try {
+    const user = c.get("authUser");
+    const body = await c.req.json();
+    const templateId = String(body.templateId ?? "").trim();
+    const recipients = Array.isArray(body.recipients) ? body.recipients : [];
+    if (!templateId) return c.json(jsonFail("templateId wajib"), 400);
+    if (recipients.length === 0) return c.json(jsonFail("recipients wajib"), 400);
+    if (recipients.length > BROADCAST_MAX_RECIPIENTS) return c.json(jsonFail("Jumlah recipients melebihi batas broadcast"), 413);
+
+    const supa = sb();
+    const { data: template, error: templateError } = await supa
+      .from("wa_templates")
+      .select("id, components")
+      .eq("id", templateId)
+      .eq("org_id", user.org_id)
+      .maybeSingle();
+    if (templateError) return c.json(jsonFail(templateError.message), 500);
+    if (!template) return c.json(jsonFail("Template tidak ditemukan"), 404);
+
+    const requirements = getTemplateSendRequirements(template);
+    const prepared = recipients.map((raw: any, index: number) => {
+      const phone = normalizePhone(raw?.phone);
+      const vars = raw?.vars && typeof raw.vars === "object" && !Array.isArray(raw.vars) ? raw.vars : {};
+      const bodyVariables = Array.from(
+        { length: requirements.bodyVariableCount },
+        (_, variableIndex) => String(vars[`var${variableIndex + 1}`] ?? ""),
+      );
+      const identity = templateRecipientIdentity({
+        bodyVariables,
+        headerTextVariables: raw?.headerTextVariables,
+        buttonValues: raw?.buttonValues,
+        location: raw?.location,
+        mediaUrl: raw?.mediaUrl,
+        fileName: raw?.fileName,
+      }, requirements.bodyVariableCount);
+      return {
+        inputIndex: index,
+        rowNumber: Number(raw?.rowNumber ?? index + 1),
+        phone,
+        identity,
+      };
+    }).filter((item: any) => item.phone);
+
+    const risks = await findHistoricalTemplateDuplicateRisks(
+      supa,
+      user.org_id,
+      templateId,
+      requirements.bodyVariableCount,
+      prepared,
+    );
+
+    return c.json(jsonOk({
+      windowHours: 24,
+      checkedRecipients: prepared.length,
+      riskyRecipients: risks.length,
+      risks,
+    }));
+  } catch (e) {
+    return c.json(jsonFail(e), 500);
+  }
+});
+
 app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => {
   try {
     const user = c.get("authUser");
@@ -5110,45 +5717,102 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
     const message = String(body.message ?? "").trim();
     const recipients = Array.isArray(body.recipients) ? body.recipients : [];
     const mode = String(body.mode ?? "text").trim();
-    const templateId = body.templateId ?? null;
+    const templateId = body.templateId == null ? null : String(body.templateId).trim();
     const templateVariables = body.templateVariables ?? null;
     const allowDuplicateRecipients = body.allowDuplicates === true;
+    const duplicateRiskAcknowledged = body.duplicateRiskAcknowledged === true;
     const deferStart = body.deferStart === true;
     const schedule = parseScheduledAt(body.scheduledAt ?? null);
     const scheduledAt = schedule.value;
+    let idempotencyKey: string | null = null;
+    try {
+      idempotencyKey = normalizeIdempotencyKey(c.req.header("Idempotency-Key") ?? body.idempotencyKey);
+    } catch (idempotencyError) {
+      return c.json({ ...jsonFail(idempotencyError), code: "INVALID_IDEMPOTENCY_KEY" }, 400);
+    }
 
     if (!title) return c.json(jsonFail("title wajib"), 400);
     if (!numberId) return c.json(jsonFail("numberId wajib"), 400);
     if (recipients.length === 0) return c.json(jsonFail("recipients wajib"), 400);
+    if (recipients.length > BROADCAST_MAX_RECIPIENTS) return c.json(jsonFail("Jumlah recipients melebihi batas broadcast"), 413);
     if (!['text', 'template'].includes(mode)) return c.json(jsonFail("mode broadcast tidak valid"), 400);
     if (mode === "text" && !message) return c.json(jsonFail("message wajib"), 400);
+    if (mode === "template" && !templateId) return c.json(jsonFail("templateId wajib"), 400);
     if (schedule.error) return c.json(jsonFail(schedule.error), 400);
 
-    const { data: numberRow, error: numberErr } = await supa
-      .from("wa_numbers")
-      .select("*")
-      .eq("id", numberId)
-      .eq("org_id", user.org_id)
-      .maybeSingle();
+    const requestFingerprint = idempotencyKey
+      ? await fingerprintBroadcastRequest({
+          orgId: user.org_id,
+          title,
+          numberId,
+          message: mode === "text" ? message : null,
+          recipients,
+          mode,
+          templateId: mode === "template" ? templateId : null,
+          templateVariables,
+          allowDuplicateRecipients,
+          duplicateRiskAcknowledged,
+          deferStart,
+          scheduledAt,
+        })
+      : null;
 
-    if (numberErr) return c.json(jsonFail(numberErr.message), 500);
-    if (!numberRow) return c.json(jsonFail("Nomor tidak ditemukan"), 404);
-
-    let templateRow: any = null;
-    if (mode === "template") {
-      if (!templateId) return c.json(jsonFail("templateId wajib"), 400);
-      const { data: template, error: templateErr } = await supa
-        .from("wa_templates")
-        .select("*")
-        .eq("id", templateId)
+    const resolveExistingRequest = async () => {
+      if (!idempotencyKey || !requestFingerprint) return null;
+      const { data: existing, error: existingError } = await supa
+        .from("wa_broadcasts")
+        .select("id, title, status, total_recipients, request_fingerprint, idempotency_completed_at")
         .eq("org_id", user.org_id)
+        .eq("idempotency_key", idempotencyKey)
         .maybeSingle();
-      if (templateErr) return c.json(jsonFail(templateErr.message), 500);
-      if (!template) return c.json(jsonFail("Template tidak ditemukan"), 404);
-      const sendability = getTemplateSendability(template, numberRow);
-      if (!sendability.sendable) return c.json(jsonFail(sendability.reasons[0]), 409);
-      templateRow = template;
+      if (existingError) throw existingError;
+      const replay = resolveIdempotencyReplay(existing, requestFingerprint);
+      if (replay.outcome === "conflict") {
+        return c.json({
+          ...jsonFail("Idempotency-Key sudah digunakan untuk payload broadcast yang berbeda"),
+          code: "IDEMPOTENCY_KEY_REUSED",
+        }, 409);
+      }
+      if (replay.outcome === "in_progress") {
+        return c.json({
+          ...jsonFail("Pembuatan broadcast dengan Idempotency-Key ini masih diproses atau memerlukan pemeriksaan recovery"),
+          code: "IDEMPOTENCY_IN_PROGRESS",
+          retryable: true,
+        }, 409);
+      }
+      if (replay.outcome === "replay" && existing) {
+        return c.json(jsonOk({
+          id: existing.id,
+          title: existing.title,
+          status: existing.status,
+          totalRecipients: Number(existing.total_recipients ?? 0),
+          idempotentReplay: true,
+        }));
+      }
+      return null;
+    };
+
+    const existingRequest = await resolveExistingRequest();
+    if (existingRequest) return existingRequest;
+
+    const preflight = await evaluateBroadcastPreflightCore(supa, user, {
+      ...body,
+      numberId,
+      templateId,
+      recipients,
+      mode,
+    });
+    const preflightDecision = enforceBroadcastPreflight(preflight.result, { duplicateRiskAcknowledged });
+    if (!preflightDecision.allowed) {
+      // A concurrent request may have committed while this request was doing
+      // read-only pre-flight work. Prefer the authoritative replay over a
+      // duplicate-history warning caused by that same logical request.
+      const concurrentRequest = await resolveExistingRequest();
+      if (concurrentRequest) return concurrentRequest;
+      return c.json({ ...jsonFail(preflightDecision.message), code: preflightDecision.code }, 409);
     }
+    const numberRow = preflight.numberRow;
+    const templateRow = preflight.template;
 
     const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const requestedContactIds = [...new Set(
@@ -5185,6 +5849,16 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
           for (const contact of result.data ?? []) ownedContactIds.add(String(contact.id));
         }
       }
+    }
+    const invalidOwnedContact = recipients.find((recipient: any) => {
+      const contactId = String(recipient?.contactId ?? "").trim();
+      return contactId && (!uuidPattern.test(contactId) || !ownedContactIds.has(contactId));
+    });
+    if (invalidOwnedContact) {
+      return c.json({
+        ...jsonFail("Pre-flight gagal: contact penerima tidak ditemukan pada organisasi ini"),
+        code: "PREFLIGHT_BLOCKED",
+      }, 409);
     }
 
     const templateRequirements = getTemplateSendRequirements(templateRow);
@@ -5267,21 +5941,17 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
         error: rejectionReasons.length === 0
           ? null
           : `RECIPIENT_VALIDATION_FAILED: ${rejectionReasons.join("; ")}`,
+        error_code: rejectionReasons.length === 0 ? null : "RECIPIENT_VALIDATION_FAILED",
+        error_title: rejectionReasons.length === 0 ? null : "Validasi penerima gagal",
+        error_message: rejectionReasons.length === 0 ? null : rejectionReasons.join("; "),
+        failure_stage: rejectionReasons.length === 0 ? null : "recipient_preflight",
+        failure_source: rejectionReasons.length === 0 ? null : "SIPESA_VALIDATION",
+        retry_classification: rejectionReasons.length === 0 ? null : "NON_RETRYABLE",
         sequence_no: recipientIndex + 1,
       };
     });
     const validRecipientCount = preparedRecipients.filter((recipient: any) => recipient.status === "pending").length;
     const rejectedRecipientCount = preparedRecipients.length - validRecipientCount;
-    if (validRecipientCount > BROADCAST_MAX_RECIPIENTS) {
-      const excess = validRecipientCount - BROADCAST_MAX_RECIPIENTS;
-      const formatCount = (value: number) => new Intl.NumberFormat("id-ID").format(value);
-      return c.json(
-        jsonFail(
-          `Maksimal ${formatCount(BROADCAST_MAX_RECIPIENTS)} penerima dalam satu broadcast. Saat ini terdapat ${formatCount(validRecipientCount)} penerima valid. Kurangi ${formatCount(excess)} penerima untuk melanjutkan.`,
-        ),
-        413,
-      );
-    }
     const finalBroadcastStatus = validRecipientCount === 0 ? "failed" : "queued";
 
     const { data: createdBroadcast, error: bErr } = await supa
@@ -5302,6 +5972,7 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
             ? templateVariables
             : {}),
           allowDuplicates: allowDuplicateRecipients,
+          duplicateRiskAcknowledged,
         },
         text_body: mode === "text" ? message : null,
         total_recipients: recipients.length,
@@ -5309,11 +5980,49 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
         total_failed: 0,
         scheduled_at: scheduledAt,
         created_by: user.id,
+        idempotency_key: idempotencyKey,
+        request_fingerprint: requestFingerprint,
       })
       .select("*")
       .single();
 
-    if (bErr) return c.json(jsonFail(bErr.message), 500);
+    if (bErr) {
+      if (idempotencyKey && requestFingerprint && String(bErr.code ?? "") === "23505") {
+        const { data: existing, error: existingError } = await supa
+          .from("wa_broadcasts")
+          .select("id, title, status, total_recipients, total_failed, request_fingerprint, idempotency_completed_at")
+          .eq("org_id", user.org_id)
+          .eq("idempotency_key", idempotencyKey)
+          .maybeSingle();
+        if (existingError) return c.json(jsonFail(existingError.message), 500);
+        const replay = resolveIdempotencyReplay(existing, requestFingerprint);
+        if (replay.outcome === "conflict") {
+          return c.json({
+            ...jsonFail("Idempotency-Key sudah digunakan untuk payload broadcast yang berbeda"),
+            code: "IDEMPOTENCY_KEY_REUSED",
+          }, 409);
+        }
+        if (replay.outcome === "in_progress") {
+          return c.json({
+            ...jsonFail("Pembuatan broadcast dengan Idempotency-Key ini masih diproses atau memerlukan pemeriksaan recovery"),
+            code: "IDEMPOTENCY_IN_PROGRESS",
+            retryable: true,
+          }, 409);
+        }
+        if (replay.outcome === "replay" && existing) {
+          return c.json(jsonOk({
+            id: existing.id,
+            title: existing.title,
+            status: existing.status,
+            totalRecipients: Number(existing.total_recipients ?? 0),
+            validRecipients: Math.max(0, Number(existing.total_recipients ?? 0) - Number(existing.total_failed ?? 0)),
+            rejectedRecipients: Number(existing.total_failed ?? 0),
+            idempotentReplay: true,
+          }));
+        }
+      }
+      return c.json(jsonFail(bErr.message), 500);
+    }
     let broadcast = createdBroadcast;
 
     const recipientRows = preparedRecipients.map((recipient: any) => ({
@@ -5346,6 +6055,20 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
       broadcast = queuedBroadcast;
     }
 
+    if (idempotencyKey && requestFingerprint) {
+      const { data: completedBroadcast, error: completionError } = await supa
+        .from("wa_broadcasts")
+        .update({ idempotency_completed_at: nowIso() })
+        .eq("id", broadcast.id)
+        .eq("org_id", user.org_id)
+        .eq("idempotency_key", idempotencyKey)
+        .eq("request_fingerprint", requestFingerprint)
+        .select("*")
+        .single();
+      if (completionError) return c.json(jsonFail(completionError.message), 500);
+      broadcast = completedBroadcast;
+    }
+
     // The UI may defer an immediate start until its realtime subscription is ready.
     if (!scheduledAt && validRecipientCount > 0 && !deferStart) {
       const baseUrl = new URL(c.req.url).origin;
@@ -5366,6 +6089,7 @@ app.post(`${API_PREFIX}/broadcasts`, requireAuth, requireOrgAdmin, async (c) => 
         scheduled_at: scheduledAt,
         mode,
         allow_duplicate_recipients: allowDuplicateRecipients,
+        duplicate_risk_acknowledged: duplicateRiskAcknowledged,
         deferred_start: deferStart,
       },
     });
@@ -5435,7 +6159,7 @@ app.get(`${API_PREFIX}/broadcasts/:id/recipients`, requireAuth, async (c) => {
 
     let query = supa
       .from("wa_broadcast_recipients")
-      .select("id, broadcast_id, recipient_name, phone_e164, status, sent_at, updated_at, created_at, error, sequence_no, wa_messages(status)", { count: "exact" })
+      .select("id, broadcast_id, recipient_name, phone_e164, status, sent_at, updated_at, created_at, error, error_code, error_subcode, error_title, error_message, error_details, error_type, error_fbtrace_id, error_http_status, failure_stage, failure_source, retry_classification, error_payload, sequence_no, wa_messages(status, error, error_code, error_subcode, error_title, error_message, error_details, error_type, error_fbtrace_id, error_http_status, failure_stage, failure_source, retry_classification, meta_status_payload)", { count: "exact" })
       .eq("org_id", user.org_id)
       .eq("broadcast_id", id);
 
@@ -5462,10 +6186,18 @@ app.get(`${API_PREFIX}/broadcasts/:id/recipients`, requireAuth, async (c) => {
         finalStatus = msgStatus;
       }
       
-      const { wa_messages, ...rest } = r;
       return {
-        ...rest,
+        id: r.id,
+        broadcast_id: r.broadcast_id,
+        recipient_name: r.recipient_name,
+        phone_e164: r.phone_e164,
+        sent_at: r.sent_at,
+        updated_at: r.updated_at,
+        created_at: r.created_at,
+        error: r.error,
+        sequence_no: r.sequence_no,
         status: finalStatus,
+        failure: finalStatus === "failed" ? deliveryFailureDto(r, r.wa_messages) : null,
       };
     });
 
@@ -6235,7 +6967,15 @@ async function runBroadcastWorker(
           .select("*")
           .single();
 
-        if (msgErr) throw new Error(msgErr.message);
+        if (msgErr) throw new StructuredSendError(msgErr.message, {
+          ...extractStructuredFailure(null, {
+            source: "DATABASE",
+            stage: "message_persistence",
+            acceptedByMeta: false,
+            fallbackMessage: msgErr.message,
+          }),
+          retry_classification: "RETRYABLE",
+        });
 
         let metaRes: any = null;
 
@@ -6260,7 +7000,15 @@ async function runBroadcastWorker(
             fileName,
             headerMedia: mediaUrl ? { type: getTemplateSendRequirements(tpl).mediaType, link: mediaUrl, filename: fileName } : null,
           });
-          if (!runtime.valid) throw new Error(runtime.errors[0]);
+          if (!runtime.valid) throw new StructuredSendError(runtime.errors[0], {
+            ...extractStructuredFailure(null, {
+              source: "SIPESA_VALIDATION",
+              stage: "recipient_preflight",
+              acceptedByMeta: false,
+              fallbackMessage: runtime.errors[0],
+            }),
+            retry_classification: "NON_RETRYABLE",
+          });
 
           sendAttemptStartedAt = Date.now();
           metaRes = await sendMetaTemplateMessage({
@@ -6286,9 +7034,15 @@ async function runBroadcastWorker(
 
         const metaMessageId = metaRes?.messages?.[0]?.id ?? null;
 
-        if (!metaMessageId) {
-          throw new Error("Meta tidak mengembalikan message_id");
-        }
+        if (!metaMessageId) throw new StructuredSendError("Meta tidak mengembalikan message_id", {
+          ...extractStructuredFailure(metaRes, {
+            source: "AMBIGUOUS",
+            stage: "meta_acknowledgement",
+            acceptedByMeta: null,
+            fallbackMessage: "Meta tidak mengembalikan message_id",
+          }),
+          retry_classification: "REVIEW_REQUIRED",
+        });
 
         const { data: rpcRes, error: rpcErr } = await supa.rpc("link_and_advance_wa_message", {
           p_msg_id: msg.id,
@@ -6325,6 +7079,17 @@ async function runBroadcastWorker(
 
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        const failure = err instanceof StructuredSendError
+          ? err.failure
+          : {
+              ...extractStructuredFailure(null, {
+                source: sendAttemptStartedAt === null ? "SIPESA_WORKER" : "AMBIGUOUS",
+                stage: sendAttemptStartedAt === null ? "worker" : "meta_send",
+                acceptedByMeta: sendAttemptStartedAt === null ? false : null,
+                fallbackMessage: message,
+              }),
+              retry_classification: sendAttemptStartedAt === null ? "RETRYABLE" : "REVIEW_REQUIRED",
+            };
         console.error(`[WORKER] Recipient ${rec.phone_e164} send error:`, message);
 
         await supa
@@ -6332,9 +7097,21 @@ async function runBroadcastWorker(
           .update({
             status: "failed",
             error: message,
+            ...failureStoragePatch(failure),
+            error_payload: failure?.error_payload ?? null,
             updated_at: nowIso(),
           })
           .eq("id", rec.id);
+
+        await supa
+          .from("wa_messages")
+          .update({
+            status: "failed",
+            error: message,
+            ...failureStoragePatch(failure),
+            meta_status_payload: failure?.error_payload ?? null,
+          })
+          .eq("id", msg.id);
 
       }
 
@@ -6965,23 +7742,54 @@ const handleWebhookPost = async (c: any) => {
               language: language || null,
             });
           } else {
+            const webhookCategory = String(value?.category ?? value?.new_category ?? "").trim().toLowerCase();
+            const categoryIsAuthoritative = TEMPLATE_CATEGORIES.has(webhookCategory);
+            const templateUpdate: any = {
+              status: event,
+              meta_status_raw: eventRaw,
+              rejection_reason: event === "rejected"
+                ? normalizeMetaRejectionReason(value?.reason ?? value?.rejection_reason)
+                : null,
+              quality_rating: value?.quality_score?.score ?? value?.quality_score ?? value?.quality_rating ?? null,
+              previous_category: value?.previous_category ?? null,
+              category_source: categoryIsAuthoritative ? "meta" : "needs_sync",
+              category_synced_at: categoryIsAuthoritative ? nowIso() : null,
+              synced_at: nowIso(),
+              updated_at: nowIso(),
+            };
+            if (categoryIsAuthoritative) templateUpdate.category = webhookCategory;
             const { error: tplUpdErr } = await supa
               .from("wa_templates")
-              .update({
-                status: event,
-                meta_status_raw: eventRaw,
-                rejection_reason: event === "rejected"
-                  ? normalizeMetaRejectionReason(value?.reason ?? value?.rejection_reason)
-                  : null,
-                quality_rating: value?.quality_score?.score ?? value?.quality_score ?? value?.quality_rating ?? null,
-                previous_category: value?.previous_category ?? null,
-                synced_at: nowIso(),
-                updated_at: nowIso(),
-              })
+              .update(templateUpdate)
               .eq("id", resolved.id)
               .eq("org_id", resolved.org_id)
               .eq("waba_id", resolved.waba_id);
             if (tplUpdErr) console.error("Webhook template status update failed.", { templateId: resolved.id, error: tplUpdErr.message });
+            if (!tplUpdErr && !categoryIsAuthoritative && metaTemplateId) {
+              const { data: credential } = await supa
+                .from("wa_numbers")
+                .select("access_token")
+                .eq("org_id", resolved.org_id)
+                .eq("waba_id", resolved.waba_id)
+                .not("access_token", "is", null)
+                .limit(1)
+                .maybeSingle();
+              if (credential?.access_token) {
+                try {
+                  await reconcileMetaTemplateCategory({
+                    orgId: resolved.org_id,
+                    wabaId: resolved.waba_id,
+                    metaTemplateId,
+                    accessToken: String(credential.access_token),
+                  });
+                } catch (categoryError) {
+                  console.warn("Targeted template category reconciliation failed.", {
+                    templateId: resolved.id,
+                    message: categoryError instanceof Error ? categoryError.message : "unknown",
+                  });
+                }
+              }
+            }
           }
         }
 
@@ -7061,10 +7869,13 @@ const handleWebhookPost = async (c: any) => {
               patch.read_at = timestamp;
             } else if (status === "failed") {
               patch.status = "failed";
-              patch.error =
-                statusRow?.errors?.[0]?.title ||
-                statusRow?.errors?.[0]?.message ||
-                "Message failed";
+              patch.failure = extractStructuredFailure(statusRow, {
+                source: "META_WEBHOOK",
+                stage: "delivery",
+                acceptedByMeta: true,
+                fallbackMessage: "Message failed",
+              });
+              patch.error = patch.failure.error_message;
             }
 
             // 1. Store the webhook event in key_info monotonically first to handle race conditions
@@ -7145,6 +7956,21 @@ const handleWebhookPost = async (c: any) => {
                     .eq("key", `webhook_status:${metaMessageId}`);
                 }
               }
+            }
+
+            if (patch.status === "failed" && patch.failure) {
+              const structuredPatch = failureStoragePatch(patch.failure);
+              const { error: messageFailureError } = await supa
+                .from("wa_messages")
+                .update(structuredPatch)
+                .eq("meta_message_id", metaMessageId);
+              if (messageFailureError) console.error("Structured webhook message error persistence failed:", messageFailureError.message);
+
+              const { error: recipientFailureError } = await supa
+                .from("wa_broadcast_recipients")
+                .update({ ...structuredPatch, error_payload: statusRow })
+                .eq("provider_message_id", metaMessageId);
+              if (recipientFailureError) console.error("Structured webhook recipient error persistence failed:", recipientFailureError.message);
             }
           }
 
