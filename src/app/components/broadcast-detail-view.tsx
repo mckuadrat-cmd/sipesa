@@ -491,7 +491,7 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
           {/* Info Broadcast */}
           <Card className="p-4 sm:p-5">
             <div className="flex flex-col gap-4">
-              <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm sm:grid-cols-5">
+              <div className="grid grid-cols-2 items-center gap-x-3 gap-y-4 rounded-xl border border-slate-100 bg-slate-50 p-4 text-center text-sm sm:grid-cols-[minmax(0,1.15fr)_minmax(0,0.9fr)_minmax(0,1.8fr)_minmax(0,1.35fr)_minmax(0,0.55fr)] sm:gap-x-4">
                 <div className="min-w-0">
                   <div className="text-xs text-slate-500">Tipe</div>
                   <div
@@ -502,7 +502,7 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
                   </div>
                 </div>
                 <div className="min-w-0"><div className="text-xs text-slate-500">Status Proses</div><div className="mt-1 truncate font-semibold text-slate-800">{getProcessStatus(broadcast.status, broadcast.startedAt)}</div></div>
-                <div className="min-w-0"><div className="text-xs text-slate-500">Pengirim</div><div className="mt-1 truncate font-semibold text-slate-800" title={broadcast.numberName}>{broadcast.numberName}</div></div>
+                <div className="col-span-2 min-w-0 sm:col-span-1"><div className="text-xs text-slate-500">Pengirim</div><div className="mt-1 truncate font-semibold text-slate-800" title={broadcast.numberName}>{broadcast.numberName}</div></div>
                 <div className="min-w-0"><div className="text-xs text-slate-500">Dibuat</div><div className="mt-1 truncate font-medium text-slate-700">{formatDate(broadcast.createdAt)}</div></div>
                 <div className="min-w-0"><div className="text-xs text-slate-500">Total</div><div className="mt-1 truncate font-bold text-slate-800">{broadcast.totalRecipients.toLocaleString("id-ID")}</div></div>
               </div>
@@ -641,7 +641,7 @@ export function BroadcastDetailView({ broadcastId, historyContext, onBack }: Bro
                                       <Info className="h-3.5 w-3.5" aria-hidden="true" />
                                     </button>
                                   </HoverCardTrigger>
-                                  <HoverCardContent side="left" align="center" className="w-80 space-y-1.5 border-slate-200 p-3 text-xs text-slate-700 shadow-xl">
+                                  <HoverCardContent side="left" align="center" collisionPadding={16} className="z-[200] w-80 space-y-1.5 border-slate-200 p-3 text-xs text-slate-700 shadow-xl">
                                     <div className="mb-2 font-semibold text-slate-900">Metadata kegagalan</div>
                                   {failure.code && <div><strong>Kode Meta:</strong> {failure.code}</div>}
                                   <div><strong>Sumber:</strong> {failureSourceLabel(failure.source)}</div>
